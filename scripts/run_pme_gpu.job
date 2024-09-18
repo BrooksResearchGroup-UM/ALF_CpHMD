@@ -1,0 +1,193 @@
+#!/bin/bash
+
+#SBATCH --partition=Super
+#SBATCH --job-name=1beg_1
+#SBATCH --time=1-00:00:00
+#SBATCH --ntasks=15
+#SBATCH --ntasks-per-node=1
+#SBATCH --gpus-per-task=1
+#SBATCH --cpus-per-task=1
+#SBATCH --gres=gpu:1
+#SBATCH --no-requeue
+#SBATCH --output=%x.out
+#SBATCH --error=%x.err
+
+#=====================================================================
+# CPHMD Simulation Script with GPU Checks
+# 
+# This script runs a CPHMD simulation using CHARMM, with checks for GPU
+# availability on all nodes before and during the simulation.
+#=====================================================================
+
+# Function to check GPU availability and print information
+check_gpu() {
+    if ! command -v nvidia-smi &> /dev/null; then
+        echo "Error: nvidia-smi not found on $(hostname)" >&2
+        return 1
+    fi
+
+    gpu_info=$(nvidia-smi --query-gpu=index,name,memory.total,memory.free,temperature.gpu,utilization.gpu --format=csv,noheader,nounits 2>/dev/null)
+    if [ $? -ne 0 ]; then
+        echo "Error: Unable to communicate with GPU on $(hostname)" >&2
+        return 1
+    fi
+
+    # Use hostname and a local counter for unique identification
+    local hostname=$(hostname)
+    local counter=0
+    while read -r line; do
+        echo "$hostname:$counter:$line"
+        ((counter++))
+    done <<< "$gpu_info"
+    
+    return 0
+}
+
+# Function to process and display GPU information
+process_gpu_info() {
+    echo "======== GPU Information ========"
+    local current_host=""
+    local global_counter=0
+    while IFS=':,' read -r hostname local_id index name total_mem free_mem temp util; do
+        if [ "$hostname" != "$current_host" ]; then
+            [ -n "$current_host" ] && echo "--------------------------------"
+            echo "Hostname: $hostname"
+            echo "--------------------------------"
+            current_host="$hostname"
+        fi
+        echo "Task $global_counter - GPU $index: $name"
+        echo "  Memory: $free_mem MB free / $total_mem MB total"
+        echo "  Temperature: $temp°C"
+        echo "  Utilization: $util%"
+        ((global_counter++))
+    done
+    echo "================================"
+}
+
+
+#=====================================================================
+# Script Configuration
+#=====================================================================
+
+# Simulation parameters
+its=1                     # Start iteration
+itt=10                    # End iteration
+phstart=0                 # pH start
+phend=14                  # pH end
+step=0.004                # Step size
+temp=298.15               # Temperature
+seed=$((RANDOM % 10000 + 1))  # Random seed
+
+# Job information
+nsim=${SLURM_JOB_NAME: -1}
+nrep=$SLURM_NTASKS
+
+# CHARMM setup
+# CHARMMDIR=/home/rhaye/CHARMM/chv1/charmm_exe
+CHARMMDIR=/home/stanislc/software/charmm/c49a2
+CHARMMEXEC=$CHARMMDIR/gnu/charmm
+
+
+# MPI parameters
+mpipar="-np $nrep -x OMP_NUM_THREADS=1 --bind-to none --map-by node --mca btl_tcp_if_exclude virbr0,docker0,lo"
+
+#=====================================================================
+# Initialization
+#=====================================================================
+
+echo "========== Simulation Information =========="
+echo "Simulation system: $SLURM_JOB_NAME"
+echo "Simulation run: $nsim"
+echo "Number of replicas: $nrep"
+echo "Temperature: $temp K"
+echo "pH range: $phstart to $phend"
+echo "Step size: $step"
+echo "Random seed: $seed"
+echo "===========================================" 
+
+# Load necessary modules and activate environment
+source /home/stanislc/.bashrc
+mamba activate charmm
+
+# Create directory structure
+mkdir -p sim_$nsim/{dcd,res,lambdas,logs,pdb,.debug_info}
+
+# Log environment information
+{
+    echo "========== Environment Information =========="
+    echo "Hostname: $(hostname)"
+    echo "Time: $(date)"
+    echo "CHARMM executable: $CHARMMEXEC"
+    echo "Loaded modules:"
+    module list 2>&1
+    echo "SLURM environment variables:"
+    printenv | grep SLURM
+    echo "===========================================" 
+} > sim_$nsim/.debug_info/environment_info.log
+
+# Log initial GPU information
+echo "Initial GPU Information:" > sim_$nsim/.debug_info/initial_gpu_info.log
+mpirun -np $nrep bash -c "$(declare -f check_gpu); check_gpu" | sort -t: -k2 -n | process_gpu_info >> sim_$nsim/.debug_info/initial_gpu_info.log
+
+#=====================================================================
+# GPU Availability Check
+#=====================================================================
+
+echo "Checking GPU availability on all nodes:"
+gpu_check_output=$(mpirun $mpipar bash -c "$(declare -f check_gpu); check_gpu")
+if [ $? -ne 0 ]; then
+    echo "Error: GPU not available on one or more nodes. Exiting." >&2
+    exit 1
+fi
+echo "$gpu_check_output" | sort -t: -k2 -n | process_gpu_info
+
+#=====================================================================
+# Main Simulation Loop
+#=====================================================================
+
+for (( i=its; i<=itt; i++ ))
+do
+    itt3=$(printf "%03d" $i)
+    if [ ! -f sim_${nsim}/lambdas/${itt3}_00.parquet ]; then
+        echo "========== Starting Iteration $i =========="
+        
+        # Check GPU availability before each iteration
+        echo "Checking GPU availability for iteration $i:"
+        gpu_check_output=$(mpirun $mpipar bash -c "$(declare -f check_gpu); check_gpu")
+        if [ $? -ne 0 ]; then
+            echo "Error: GPU not available on one or more nodes for iteration $i. Exiting." >&2
+            exit 1
+        fi
+        echo "$gpu_check_output" | sort -t: -k2 -n | process_gpu_info
+        
+        # Define CHARMM parameters
+        charmmpar="nsim=$nsim nrep=$nrep phstart=$phstart phend=$phend temp=$temp seed=$seed step=$step -i ../simulation_cphmd.inp itt=$i -o sim_$nsim/logs/prestart_${itt3}.out"
+        
+        # Run simulation and ensure .parquet files are created
+        while true; do
+            mpirun $mpipar $CHARMMEXEC $charmmpar
+            
+            if [ $? -ne 0 ]; then
+                echo "Error during mpirun on iteration $i."
+                # Uncomment the following line to exit on error
+                # exit 1
+            fi
+            
+            if ls sim_$nsim/lambdas/${itt3}*.parquet 1> /dev/null 2>&1; then
+                echo "Parquet files for iteration $i successfully created."
+                break
+            else
+                echo "Parquet files for iteration $i not found. Re-running mpirun."
+            fi
+        done
+        
+        # Uncomment the following line if you want to remove DCD files
+        # rm sim_$nsim/dcd/???_??.dcd
+        
+        echo "========== Completed Iteration $i =========="
+    else
+        echo "Simulation $nsim, iteration $i, already exists. Skipping."
+    fi
+done
+
+echo "========== Simulation Complete =========="

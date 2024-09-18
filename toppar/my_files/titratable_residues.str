@@ -1,0 +1,356 @@
+* Patches to acheive charged and uncharged amino acids D, E, H and K
+* Contact C.L. Brooks III for additional information
+*
+
+read rtf card append
+* title
+*
+ 36 1
+
+AUTO ANGLE DIHE
+
+!----------------------------------------------------------------------------
+! ASPARTIC ACID (ASP) PATCHES
+! Note: ASPP1x series must be read in before ASPP2x due to NB exclusion
+!       setup in BLOCK. ASPP1x usage depends on the position of the
+!       residue in the protein
+!----------------------------------------------------------------------------
+
+pres ASH1 0           ! od1 protonated species
+! pKA = 3.37
+! HB1M   OD1M-HD1
+!  |     /
+! -CBM--CGM
+!  |     \\
+! HB2M   OD2M
+
+group
+atom cb  ct2  -0.21
+atom hb1 ha2   0.09
+atom hb2 ha2   0.09
+group
+atom cg  cd    0.75
+group
+atom od1 oh1  -0.61
+atom hd1 h     0.44
+group
+atom od2 ob   -0.55
+
+bond od1 hd1
+donor hd1 od1
+impr cg cb od2 od1
+ic hd1 od1 cg od2 0 0 0 0 0
+
+
+pres ASH2 0           ! od2 protonated species
+! pKA = 3.37
+! HB1P   OD1P
+!  |     //
+! -CBP--CGP
+!  |     \
+! HB2P   OD2P-HD2
+
+group
+atom cb  ct2  -0.21
+atom hb1 ha2   0.09
+atom hb2 ha2   0.09
+group
+atom cg  cd    0.75
+group
+atom od1 ob   -0.55
+group
+atom od2 oh1  -0.61
+atom hd2 h     0.44
+
+bond od2 hd2
+donor hd2 od2
+impr cg cb od2 od1
+ic hd2 od2 cg od1 0 0 0 0 0
+
+
+!----------------------------------------------------------------------------
+! GLUTAMIC ACID (GLU) PATCHES
+! Note: GLUP1 must be read in before GLUP2 due to NB exclusion setup in BLOCK.
+!       There is no GLUP1x series as the patch does not extend to atoms 
+!       that are relevant to amide linkage.
+!----------------------------------------------------------------------------
+
+pres GLH1 0           ! oe1 protonated species
+! pKa = 3.95
+! HG1M    OE1M-HE1M
+!  |     /
+! -CGM--CD
+!  |     \\
+! HG2M     OE2M
+
+atom cg   ct2    -0.21
+atom hg1  ha2     0.09
+atom hg2  ha2     0.09
+atom cd   cd      0.75
+atom oe2  ob     -0.55
+atom oe1  oh1    -0.61
+atom he1  h       0.44
+
+bond oe1 he1  !!proton
+impr cd cg oe2 oe1
+donor he1 oe1
+ic he1 oe1 cd oe2 0 0 0 0 0
+
+pres GLH2 0           ! oe2 protonated species
+! pKa = 3.95
+! HG1P    OE1P
+!  |     //
+! -CGP--CD
+!  |     \
+! HG2P     OE2P-HE2P
+
+atom cg   ct2    -0.21
+atom hg1  ha2     0.09 
+atom hg2  ha2     0.09 
+atom cd   cd      0.75 
+atom oe1  ob     -0.55
+atom oe2  oh1    -0.61
+atom he2  h       0.44
+
+bond oe2 he2  !!proton
+donor he2 oe2
+impr cd  cg oe2 oe1
+ic he2 oe2 cd oe1 0 0 0 0 0
+
+!----------------------------------------------------------------------------
+! HISTIDINE (HSP) PATCHES
+! Note: Histidines must be entered as doubly-protonated form (HSP) for the wt
+!       followed by hsdn and then hsen.
+!----------------------------------------------------------------------------
+
+! Neutral histidine (HIS)
+! This is the patch for neutral Histidine with the proton on (HSD)
+
+pres HSPD 0
+! pKa = 6.6
+ !     |          HD1    HE1M
+ !  HN-N           |     /
+ !     |   HB1M   ND1M--CE1M
+ !     |   |     /      ||
+ !  HA-CA--CBM--CGM     ||
+ !     |   |     \\     ||
+ !     |   HB2M   CD2M--NE2M
+ !   O=C           |
+ !     |          HD2
+
+group
+atom cb   ct2    -0.09
+atom hb1  ha2     0.09
+atom hb2  ha2     0.09
+atom cd2  cph1    0.22
+atom hd2  hr3     0.10
+atom cg   cph1   -0.05
+group
+atom nd1  nr1    -0.36
+atom hd1  h       0.32
+atom ce1  cph2    0.25
+atom he1  hr1     0.13
+atom ne2  nr2    -0.70
+dele atom he2 
+
+impr nd1 cg ce1 hd1
+impr cd2 cg  ne2 hd2
+impr ce1 nd1 ne2 he1
+impr nd1 ce1 cg hd1
+impr cd2 ne2 cg hd2
+impr ce1 ne2 nd1 he1
+
+! Neutral histidine (HIS)
+! This is the patch for neutral Histidine with the proton on (HSE)
+
+pres HSPE 0
+! pKa = 7.0
+ !     |                 HE1P
+ !  HN-N             __  /
+ !     |   HB1P   ND1P--CE1P
+ !     |   |     /      |
+ !  HA-CA--CBP--CGP     |
+ !     |   |     \\     |
+ !     |   HB2P   CD2P--NE2P
+ !   O=C           |     \
+ !     |          HD2    HE2P
+group
+atom cb   ct2    -0.08
+atom hb1  ha2     0.09
+atom hb2  ha2     0.09
+atom cd2  cph1   -0.05
+atom hd2  hr3     0.09
+atom cg   cph1    0.22
+group
+atom nd1  nr2    -0.70
+atom ce1  cph2    0.25
+atom he1  hr1     0.13
+atom ne2  nr1    -0.36
+atom he2  h       0.32
+dele atom hd1
+
+impr ne2 cd2 ce1 he2
+impr cd2 cg  ne2 hd2
+impr ce1 nd1 ne2 he1
+impr ne2 ce1 cd2 he2
+impr cd2 ne2 cg  hd2
+impr ce1 ne2 nd1 he1
+
+!----------------------------------------------------------------------------
+! LYSINE (LYS) PATCHES
+!----------------------------------------------------------------------------
+
+! Neutral lysine (LSY). This is the patch for neutral lysine. The HZ3 atom was deleted.
+
+pres LYSU 0
+! pKa = 10.4
+ !     |
+ !  HN-N
+ !     |   HB1 HG1 HD1 HE1    HZ1
+ !     |   |   |   |   |     /
+ !  HA-CA--CB--CG--CD--CE--NZ--HZ2
+ !     |   |   |   |   |     
+ !     |   HB2 HG2 HD2 HE2    
+ !   O=C
+ !     |
+group
+atom ce   ct2     0.13 
+atom he1  ha2     0.075
+atom he2  ha2     0.075
+group
+atom nz   nh2    -0.96 
+atom hz1  hc      0.34 
+atom hz2  hc      0.34
+dele atom hz3 
+
+!----------------------------------------------------------------------------
+! TYROSINE (TYR) PATCHES
+!----------------------------------------------------------------------------
+
+! Deprotonated tyrosine (TYR)
+! This is the patch for deprotonated tyrosine. The HH atom was deleted
+
+pres TYRU -1
+! pKA = 9.6
+!     |        HD1  HE1M   
+!  HN-N         |    |   
+!     |   HB1  CD1--CE1M
+!     |   |   //      \\
+!  HA-CA--CB--CG      CZ--OHM
+!     |   |    \  __  /
+!     |   HB2  CD2--CE2M
+!   O=C         |    |  
+!     |        HD2  HE2M  
+
+group
+atom ce1  ca     -0.60
+atom he1  hp      0.28
+group
+atom ce2  ca     -0.60
+atom he2  hp      0.28
+group
+atom cz   ca      0.40
+atom oh   oh1    -0.76
+dele atom hh
+
+
+!----------------------------------------------------------------------------
+! ARGENINE (ARG) PATCHES
+!----------------------------------------------------------------------------
+
+pres ARU1 0.00
+! pKa = 12.5
+!     |                      
+!  HN-N                       
+!     |   HB1 HG1 HD1 HE     NH1-H11
+!     |   |   |   |   |    //  
+!  HA-CA--CB--CG--CD--NE--CZ
+!     |   |   |   |         \
+!     |   HB2 HG2 HD2        NH2-H22
+!   O=C                       |
+!     |                      H21
+
+atom cd  ct2   0.00  
+atom hd1 ha2   0.09  
+atom hd2 ha2   0.09  
+atom ne  nc2  -0.70 
+atom he  hc    0.43  
+atom cz  c     0.40  
+atom nh1 nc2  -0.62 
+atom hh11 hc   0.31  
+atom nh2 nc2  -0.62 
+atom hh21 hc   0.31  
+atom hh22 hc   0.31
+dele atom hh12
+
+impr ne  cd cz he
+impr nh2 hh21 hh22 cz
+
+pres ARU2 0.00
+! pKa = 12.5
+!     |                       HH11
+!  HN-N                       /
+!     |   HB1 HG1 HD1 HE     NH1-HH12
+!     |   |   |   |   |    /  
+!  HA-CA--CB--CG--CD--NE--CZ
+!     |   |   |   |         \\
+!     |   HB2 HG2 HD2        NH2-HH21
+!   O=C                       
+!     |                      
+
+atom cd   ct2   0.00 
+atom hd1  ha2   0.09 
+atom hd2  ha2   0.09 
+atom ne   nc2  -0.70
+atom he   hc    0.43 
+atom cz   c     0.40 
+atom nh2  nc2  -0.62
+atom hh21  hc   0.31 
+atom nh1  nc2  -0.62
+atom hh11  hc   0.31 
+atom hh12  hc   0.31 
+dele atom hh22
+
+impr ne  cd cz he
+impr nh1 hh11 hh12 cz
+
+!----------------------------------------------------------------------------
+! CYSTINE (CYS) PATCHES
+!----------------------------------------------------------------------------
+pres CYSD        -1.00 ! patch to deprotonate cysteine by kevo
+! pKa =  8.37
+atom CB   CS     -0.38
+atom HB1  HA2     0.09
+atom HB2  HA2     0.09
+atom SG   SS     -0.80
+dele atom HG1        ! from RESI ES1 in toppar_*_prot_model.str
+
+!----------------------------------------------------------------------------
+! SERINE (SER) PATCHES
+!----------------------------------------------------------------------------
+PRES SERD        -1.00 ! patch to deprotonate serine by kevo
+! pKa = 15.60
+ATOM CB   CT2    -0.30
+ATOM HB1  HA2     0.11
+ATOM HB2  HA2     0.11
+ATOM OG   OC     -0.92
+DELETE ATOM HG1        ! from RESI ETO in toppar_*_prot_model.str
+
+
+end
+
+
+read param card flex append
+
+
+dihedrals
+nh2 cc ct1 ct2 0 1 0
+
+
+improper
+oh1 x x cd 96 0 0
+
+
+end
+
+return

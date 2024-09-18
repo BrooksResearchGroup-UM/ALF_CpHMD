@@ -1,0 +1,16 @@
+lams1s1,     0.00
+lams1s2,  -132.90
+cs1s1s1s2,  -159.59
+xs1s1s1s2,    -3.78
+xs1s2s1s1,    -4.78
+ss1s1s1s2,     0.10
+ss1s2s1s1,     0.30
+sysname, "tyr
+nnodes, 1
+nreps, 5
+ncentral, 0
+nblocks, 2
+nsites, 1
+nsubs1, 2
+temp, 298.15
+minimize, 0

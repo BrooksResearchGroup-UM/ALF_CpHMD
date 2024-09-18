@@ -1,0 +1,16 @@
+lams1s1,     0.00
+lams1s2,   -82.01
+cs1s1s1s2,   -83.99
+xs1s1s1s2,     2.28
+xs1s2s1s1,     1.58
+ss1s1s1s2,    -0.24
+ss1s2s1s1,    -0.37
+sysname, "cys
+nnodes, 1
+nreps, 5
+ncentral, 0
+nblocks, 2
+nsites, 1
+nsubs1, 2
+temp, 298.15
+minimize, 0
