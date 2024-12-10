@@ -8,7 +8,7 @@ usage() {
     exit 1
 }
 
-# Parse command-line options
+# Parse command-line options 
 while getopts "i:o:" opt; do
     case $opt in
         i) input_folder="$OPTARG" ;;

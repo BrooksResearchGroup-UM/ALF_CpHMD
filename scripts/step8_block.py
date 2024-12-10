@@ -197,7 +197,7 @@ file.close()
 
 restrains = ''
 if restrain_type == 'NOE':
-    restrains += 'cons fix resname TIP3.or. resname POT .or. resname CLA end \n'
+    restrains += 'cons fix resname TIP3 .or. resname POT .or. resname CLA end \n'
     restrains += 'mini sd nstep 100 nprint 100 step 0.005 \n'
 elif restrain_type == 'SCAT':
     restrains += 'BLOCK\n'

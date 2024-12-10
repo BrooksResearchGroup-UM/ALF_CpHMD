@@ -1,3 +1,5 @@
+# Copyright (c) 2024, Stanislav Cherepanov
+
 import os
 import random
 import numpy as np
@@ -24,20 +26,23 @@ import argparse
 filename = 'preparation/pdb/lys'
 output = 'lys'
 XTLtype = 'OCTAhedral'
-pad = 15.0
+pad = 10.0
 salt_concentration = 0.10 # (mM)
 pos_ion = 'POT'
 neg_ion = 'CLA'
 skip_ions = False
 T = 298.15 #(K)
 min_ion_distance = 5  #(A) Minimum distance between ions, adjust as needed
-topology_path = 'toppar'
+topology_path = '/home/stanislc/toppar'
 topology_files = [
     'top_all36_prot.rtf',
     'par_all36m_prot.prm',
-    'toppar_water_ions.str'
+    'toppar_water_ions.str',
+    'top_all36_na.rtf',
+    'par_all36_na.prm'
 ]
 #######
+
 
 def parse_terminal_arguments():
     # Create the parser
@@ -240,8 +245,10 @@ def read_topology_files(verbose=True):
 if not os.path.exists(output):
     os.makedirs(output)
 
+
 read_topology_files()
 lingo.charmm_script('IOFOrmat EXTEnded')
+
 
 # Reading the structure
 read.psf_card(f'{filename}.psf')

@@ -46,10 +46,13 @@ toppar = 'toppar'
 topology_files = [
     'top_all36_prot.rtf',
     'par_all36m_prot.prm',
+    'top_all36_na.rtf',
+    'par_all36_na.prm',
     'toppar_water_ions.str',
     'top_all36_cgenff.rtf',
     'par_all36_cgenff.prm',
-    'my_files/titratable_residues.str'
+    'my_files/titratable_residues.str',
+    'my_files/nucleic_c36.str'
     # 'top_all22_prot.rtf',
     # 'par_all22_prot.prm',
     # 'my_files/titratable_residues_c22.str'
@@ -165,7 +168,7 @@ class PatchParser:
 
     # find lines starting with 'pres {amino_acid}', save patch_name pres {patch_name} as dictionary key,
     # read following lines starting with 'atom', and save atom names for patch, as dictionary values
-    def __init__(self, segment_path='toppar_my/protpatch_protein_segments.str', topology_path='toppar/top_all36_prot.rtf'):
+    def __init__(self, segment_path='toppar/my_files/nucleic_c36.str', topology_path='toppar/top_all36_na.rtf'):
         self.segment_path = segment_path
         self.topology_path = topology_path
         self.atom_groups = {}
@@ -187,7 +190,7 @@ class PatchParser:
 
         for i in range(len(lines)):
             if lines[i].startswith("!") and lines[i].endswith("PATCHES\n"):
-                resname = re.search(r'\((\w+)\)', lines[i])
+                resname = re.search(r'\((\w+)\)', string=lines[i])
                 if resname:
                     resname = resname.group(1).upper()
                     self.residues.append(resname)
@@ -520,8 +523,9 @@ for seg_id in seg_ids:
     sublist = [residue for residue in titratable_dict if residue[0] == seg_id]
     patching(input_folder, patches_topology, sublist, i, f)
     deleteConnectingAtoms(patches_topology, sublist)
-    ic.prm_fill(replace_all=True)
+    pycharmm.charmm_script('hbuild')
     ic.build()
+    ic.prm_fill(replace_all=True)
     write.coor_card(f'{input_folder}/tmp/{seg_id}.crd')
     write.psf_card(f'{input_folder}/tmp/{seg_id}.psf')
     f.close()

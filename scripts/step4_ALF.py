@@ -44,10 +44,13 @@ toppar = 'toppar'
 topology_files = [
     'top_all36_prot.rtf',
     'par_all36m_prot.prm',
+    'top_all36_na.rtf',
+    'par_all36_na.prm',
     'toppar_water_ions.str',
     'top_all36_cgenff.rtf',
     'par_all36_cgenff.prm',
-    'my_files/titratable_residues.str'
+    'my_files/titratable_residues.str',
+    'my_files/nucleic_c36.str'
 ]
 
 # topology_files = [
@@ -311,6 +314,7 @@ class ALF_simulation:
                 self.scat()
                 self.minimization(i)
                 self.dynamics(i, letter)
+                lingo.charmm_script('BLOCK CLEAR END')
                 self.return_output()
             self.alf_analysis(i)
             end_time = time.time()
@@ -342,7 +346,7 @@ class ALF_simulation:
 
     def crystal(self, run, letter=''):
         global nb_param
-        settings.set_verbosity(5)
+        settings.set_verbosity(level=5)
         if run == self.start and (letter == '' or letter == '_a'):
             try:
                 psf.delete_atoms(pycharmm.SelectAtoms.all_atoms())
@@ -967,6 +971,7 @@ class ALF_simulation:
         f.write(f'{self.box_size[0]} {self.box_size[1]} {self.box_size[2]}\n')
         f.write(f'{self.angles[0]} {self.angles[1]} {self.angles[2]}')
         f.close()
+        
 
     def alf_analysis(self,run):
         try:

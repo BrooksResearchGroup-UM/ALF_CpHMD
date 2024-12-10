@@ -1,0 +1,441 @@
+*------------------------------------------------------------------------------*
+* This CpHMD script was adopted for usage of ALF and BLaDE                     *
+* (c) by Stanislav Cherepanov, 2023                                            *
+*..............................................................................*
+* with help of T.Paul, R.Hayes, X.Liu                                          *
+* Charles L. Brooks, III Laboratory                                            *
+* Department of Chemistry and Biophysics Program                               *
+* University of Michigan                                                       *
+* 930 N. University Ave.                                                       *
+* Ann Arbor, MI 48109-1055                                                     *
+*------------------------------------------------------------------------------*
+
+TIME DIFF
+IOFOrmat EXTEnded
+!------------------------------------------------------------------------------!
+! Working folders                                                              !
+!..............................................................................!
+! prep folder contains all the files needed for the simulation                 !
+! toppar folder contains all the topology and parameter files for proteins     !
+! mytop folder contains all the topology and parameter files for ligands       !
+!------------------------------------------------------------------------------!
+if @?prep      eq 0 then set prep      prep
+
+if @?toppar    eq 0 then set toppar    ../../toppar
+
+if @?mytop     eq 0 then set mytop     ../../toppar_my
+
+!------------------------------------------------------------------------------!
+! Input parameters                                                             !
+!..............................................................................!
+! nrep - number of replicas                                                    !
+! nsim - number of simulation                                                  !
+! fft  - number of FFT boxes                                                   !
+! size  - size of the box                                                      !
+!------------------------------------------------------------------------------!
+
+!--------------------------------------
+! if nrep is defined, if not set it to 1
+!--------------------------------------
+if @?nrep eq 0 then -
+  set nrep 1
+
+!--------------------------------------
+! if nsim is defined, if not set it to 1
+!--------------------------------------
+if @?nsim eq 0 then -
+  set nsim 1
+
+!--------------------------------------
+! Reading FFT and size from files
+!--------------------------------------
+open read unit 10 card name @prep/fft.dat
+if ?IOSTAT .eq. 1 then 
+  get unit 10 fft
+  close unit 10
+  set fftx @fft
+  set ffty @fft
+  set fftz @fft
+  trim fftx from 0 to 2
+  trim ffty from 3 to 5
+  trim fftz from 6 to 8
+else 
+  echo "ERROR: "@prep"fft.dat file is missing"
+  stop
+endif
+
+open read unit 10 card name @prep/size.dat
+if ?IOSTAT .eq. 1 then
+  get unit 10 size
+  close unit 10
+else
+  echo "ERROR: "@prep"/size.dat file is missing"
+  stop
+endif
+
+!------------------------------------------------------------------------------!
+! PHMD parameters                                                              !
+!------------------------------------------------------------------------------!
+
+!--------------------------------------
+! Time step and number of steps
+!--------------------------------------
+if @?step eq 0 then -
+  set step 0.002 ! time step, default 0.002 (ps)
+
+format (I10)
+calc nstep = 1000 / @step ! number of steps in 1 ns !0
+format
+
+!--------------------------------------
+! Temperature of system
+!--------------------------------------
+if @?temp eq 0 then -
+  set temp 298.15 ! temperature, default 298.15 (K)
+
+!---------------------------------------
+! Test if phstart is defined, if not set it to 7
+!---------------------------------------
+if @?phstart eq 0 then -
+  set phstart 7
+
+!---------------------------------------
+! Test if phend is defined, if not set it to 7
+!---------------------------------------
+if @?phend eq 0 then -
+  set phend 7
+
+!---------------------------------------
+! Itteration
+!---------------------------------------
+if @?itt eq 0 then
+  echo "ERROR: itteration is not defined"
+  stop
+endif
+
+!--------------------------------------
+! Starting Seed
+!--------------------------------------
+if @?seed eq 0 then
+  set seed 12345   ! 
+endif
+
+if @itt .lt. 100 then set iti 0
+if @itt .lt. 10  then set iti 0@iti
+
+!------------------------------------------------------------------------------!
+! Read topology and parameter files                                            !
+! We read minimum of required files, that's why we use bomblevel to supress    !
+! warnings                                                                     !
+! If you have ligand, add it to folder @toppar_my as stream file ligands.str   !
+!------------------------------------------------------------------------------!
+PRNLev 0
+WRNLEV -5
+open read card unit 10 name @toppar/top_all36_prot.rtf
+read rtf card unit 10
+
+open read card unit 20 name @toppar/par_all36m_prot.prm
+read para card unit 20 flex
+
+bomblev -2 
+open read card unit 10 name @toppar/top_all36_cgenff.rtf
+read rtf card unit 10 append
+
+open read card unit 20 name @toppar/par_all36_cgenff.prm
+read para card unit 20 flex append
+
+stream @toppar_my/ligands.str
+
+bomblevel 0
+
+stream @toppar/toppar_water_ions.str
+stream @mytop/protpatch_protein_segments.str
+WRNLEV 5
+PRNLev 5
+
+!------------------------------------------------------------------------------!
+! Reading Parameters System File and Coordinate File of the system             !
+! The files should be named system.psf and system.crd                          !
+!------------------------------------------------------------------------------!
+
+LABEL BEGIN
+
+!--------------------------------------
+! Read PSF file                           
+!--------------------------------------
+if @step .gt. 0.002 then
+  open read unit 10 card name prep/system_hmr.psf
+else
+  open read unit 10 card name prep/system.psf
+endif
+read psf  unit 10 card xplor
+
+!---------------------------------------
+!Read Coordinate
+!---------------------------------------
+open read unit 10 card name prep/system.crd
+read coor unit 10 card
+
+
+!------------------------------------------------------------------------------!
+! Seting up CRYSTAL and PBC                                                    !
+!------------------------------------------------------------------------------!
+
+
+!------------------------------------
+! Setup PBC (Periodic Boundary Condition)
+!------------------------------------
+
+
+CRYSTAL DEFINE OCTA @size @size @size 109.4712206344907 109.4712206344907 109.4712206344907
+CRYSTAL BUILD CUTOff 14
+
+!------------------------------------
+!Image centering by residue
+!------------------------------------
+IMAGE BYRESid SELE        segid SOLV .or. segid IONS  END
+IMAGE BYSEGid SELE .not. (segid SOLV .or. segid IONS) END
+
+!------------------------------------
+! Nonbonded Options
+!------------------------------------
+
+nbonds -
+        elec -
+        atom -
+        cdie - 
+        eps 1 -
+        cutnb 14.0 -
+        cutim 14.0 -
+        ctofnb 12.0 -
+        ctonnb 10.0 -
+        inbfrq -1 -
+        imgfrq -1 -
+        switch -
+        vfswitch -
+        ewald -
+        pmEwald -
+        kappa 0.320 -
+        order 6 - 
+        fftx @fftx -
+        ffty @ffty -
+        fftz @fftz
+
+
+!---------------------------------------------------------------
+! Set up l-dynamics by setting BLOCK parameters
+!---------------------------------------------------------------
+stream prep/select.str
+stream prep/block.str
+stream prep/restrains.str
+
+!------------------------------------------
+! Use BLaDE GPU calculations
+!------------------------------------------
+
+faster on 
+
+
+
+set minimization = 0
+bomblev -1 
+open read unit 101 name @prep/minimized.crd
+if ?IOSTAT .eq. 1 then
+  set minimization = 1
+endif
+close unit 101
+bomblev 0
+
+if @minimization .eq. 0 then
+  mini abnr nstep 100 nprint 100 step 0.005 tolg 0.01 !! Do min, ABNR (no BLaDE support)
+  blade on
+  mini sd   nstep 1000   nprint 100  step 0.005             !! Do min, Steepest-Decent
+  write coor pdb name @prep/minimized.pdb
+  * after minimization pdb
+  *
+  write coor card name @prep/minimized.crd
+  * after minimization crd
+  *
+else
+  read coor card name @prep/minimized.crd
+  blade on
+endif
+
+! Check and create minimized_no_solv files
+bomblev -1 
+
+open read unit 101 name @prep/minimized_no_solv.pdb
+if ?IOSTAT .ne. 1 then  ! File does not exist
+  close unit 101
+  ! Write minimized structure without SOLV
+  write coor sele .not. (segid SOLV) end -
+    pdb name @prep/minimized_no_solv.pdb
+  * After minimization without SOLV - PDB
+  *
+  write coor sele .not. (segid SOLV) end -
+    card name @prep/minimized_no_solv.crd
+  * After minimization without SOLV - CRD
+  *
+  write psf card name @prep/minimized_no_solv.psf -
+    sele .not. (segid SOLV) end
+  * After minimization without SOLV - PSF
+  *
+endif
+
+
+TIME DIFF
+
+
+!------------------------------------------------------------------------------!
+! Initiate REX MSLD 
+!(Exchange frequency 500, FAST is for DOMDEC)
+!------------------------------------------------------------------------------!
+
+if @nrep .ne. 1 then
+ calc phint = ( @phend - @phstart ) / (@nrep - 1)
+else
+ calc phint = 0
+endif
+
+if @nrep .ne. 1 then 
+repd nrep @nrep EXLM FREQuency 1000 MSPH SPH @phstart DPH @phint unit 27
+endif
+
+if @nrep .eq. 1 then 
+repd nrep @nrep EXLM FREQuency 1000 MSPH SPH @phstart unit 27
+endif
+
+!------------------------------------------
+! Direct output of replicas to their individual files
+!------------------------------------------
+
+
+set myrep = ?myrep
+
+if @myrep .lt. 10 then 
+set myrep = 0@myrep
+endif
+
+REPD IORES ! _myrep wouldn't be appended 
+
+open write form unit 28 name sim_@nsim/logs/dyna_@iti@itt_@myrep.log
+outu 28
+
+!------------------------------------------------------------------------------!
+! New Flag for BLaDE, supported in c50a1
+!------------------------------------------------------------------------------!
+if @nrep .ne. 1 then 
+  blade off ! Turn off BLaDE
+  ! Here we check GPU availability and assign GPU ID to the replica using 
+  ! script in bash
+  system "get_gpu_id > sim_@NSIM/logs/gpu_id_@MYREP.log"
+  open read unit 29 card name sim_@nsim/logs/gpu_id_@myrep.log
+  get unit 29 gpuid
+  close unit 29
+  blade on gpuid @gpuid ! Turn on BLaDE with GPU ID
+  system "rm sim_@NSIM/logs/gpu_id_@MYREP.log"
+endif
+
+
+shake fast bonh param
+scalar fbeta set 0.1 sele all end
+
+SHOW PARA
+
+coor copy comp
+coor shake
+
+calc ittm1 = @itt - 1
+if @ittm1 .lt. 100 then set ittm1 = 0@ittm1
+if @ittm1 .lt. 10  then set ittm1 = 0@ittm1
+
+!------------------------------------------
+! PRODUCATION-10ns
+!------------------------------------------
+
+
+open unit 21 write unform name sim_@nsim/dcd/@iti@itt_@myrep.dcd
+open unit 22 write form name sim_@nsim/res/@iti@itt_@myrep.res 
+
+open unit 24 write file name sim_@nsim/lambdas/@iti@itt_@myrep.lmd
+
+if @nrep .gt. 1 then -
+  open unit 27 write form name sim_@nsim/logs/rex_@iti@itt_@myrep.log
+if @itt .eq. 1 then
+  set resttoken = start
+  set iurest = -1
+else
+  set resttoken = restart
+  open unit 23 read form name sim_@nsim/res/@ittm1_@myrep.res
+  set iurest = 23
+endif
+
+calc seed = @seed + @itt
+calc pmass = ?natom * 0.12
+dynamics cpt @resttoken -
+  blade prmc iprs 100 pref 1 prdv 100 - !leap langevin -
+  iseed @seed @seed @seed @seed -
+  timestep @step - !!timestep interval
+  nstep @nstep -    !!no. of steps
+  nprint 50000 -    !!freq of printout (0.1 ns)
+  iprfrq 50000 -    !!freq of calc avg/rms energy (0.1 ns)
+  nsavc 500 -      !!freq of writing coordinates (2 ps)
+  nsavl 5 -        !!freq of writing lambda histograms (2 fs)
+  isvfrq 50000 -    !!freq of writing out restart files (0.1 ns)
+  -
+  iunread @iurest -  !!read restart file
+  iuncrd 21 -        !!write out coordinates
+  iunwri 22 -        !!write out restart file
+  iunldm 24 -        !!write out lambda histograms and biasing potential
+  -
+  firstt @temp -    !!initial temp
+  finalt @temp -    !!final temp
+  tstruc @temp -    !!temp at which starting structure has been equilibrated
+  tbath  @temp -    !!temp of langevin bath
+  pconstant -       !! use constant pressure (pressure.doc recommendations)
+  pmass @pmass -    !! pressure "mass" 2% of mass or 400.0 amu
+  pref 1.0 -        !! pressure in atm
+  pgamma 20.0 -     !! pressure collision frequency
+  hoover -
+  reft @temp -
+  tmass 1000 -
+  -
+  ichecw 0 -            !!do not scale velocities to final temp (i.e. equilibrate)
+  ihtfrq 0 -            !!freq of heating
+  ieqfrq 0 -            !!freq of scaling/assigning velocity(X)
+  iasors 1 -            !!assign velocities during heating (0 will be scale velocities)
+  iasvel 1 -            !!using gaussian distribution to assign velocities
+  iscvel 0 -
+  ihbfrq 0 -
+  inbfrq 0 - ! -1 -     !! BLaDE does it's own neighbor searching
+  ilbfrq 0 -
+  imgfrq 0 - ! -1 -     !! BLaDE does it's own neighbor searching
+  ntrfrq 0 - ! 500 -
+  echeck -1             !!energy tolerance check before crashing
+
+
+
+TIME DIFF 
+
+PRNLev 0
+open unit 31 read unform name sim_@nsim/dcd/@iti@itt_@myrep.dcd
+open unit 32 write unform name sim_@nsim/dcd/@iti@itt_@myrep_lite.dcd
+
+merge firstu 31 nunit 1 output 32 recenter -
+sele .not. (segid SOLV) end - 
+sele .not. (segid SOLV .or. segid IONS) .and. .not. hydrogen end
+
+close unit 31
+close unit 32
+PRNLev 5
+
+SYSTem "rm sim_@{NSIM}/dcd/@{ITI}@{ITT}_@{MYREP}.dcd"
+SYSTem "mv sim_@{NSIM}/dcd/@{ITI}@{ITT}_@{MYREP}_lite.dcd sim_@{NSIM}/dcd/@{ITI}@{ITT}_@{MYREP}.dcd"
+SYSTem "/home/stanislc/software/mambaforge/envs/charmm/bin/python /home/stanislc/projects/1_cphmd/scripts/lambda_converter_single.py -i sim_@{NSIM}/lambdas/@{ITI}@{ITT}_@{MYREP}.lmd"
+SYSTem "rm sim_@{NSIM}/lambdas/@{ITI}@{ITT}_@{MYREP}.lmd"
+TIME DIFF
+! If we use same node, we need to wait for some time to avoid conflicts
+REPDstr SYNC
+REPDstr RESET
+stop
+! I deleted stop, so it will continue till the end
