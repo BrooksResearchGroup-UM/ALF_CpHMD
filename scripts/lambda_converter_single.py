@@ -1,3 +1,5 @@
+# Copyright Stanislav Cherepanov
+
 import os
 import re
 from scipy.io import FortranFile

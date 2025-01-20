@@ -1,0 +1,6 @@
+/home/stanislc/software/ALF/alf/dca/CMakeFiles/Filter.dir
+/home/stanislc/software/ALF/alf/dca/CMakeFiles/Moment.dir
+/home/stanislc/software/ALF/alf/dca/CMakeFiles/LM.dir
+/home/stanislc/software/ALF/alf/dca/CMakeFiles/PLM.dir
+/home/stanislc/software/ALF/alf/dca/CMakeFiles/edit_cache.dir
+/home/stanislc/software/ALF/alf/dca/CMakeFiles/rebuild_cache.dir

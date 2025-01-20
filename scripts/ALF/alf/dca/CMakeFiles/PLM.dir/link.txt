@@ -1,0 +1,1 @@
+/home/stanislc/software/mambaforge/envs/charmm/bin/c++  -fopenmp   /home/stanislc/software/mambaforge/envs/charmm/lib/libmpi.so -Wl,-rpath,/home/stanislc/software/mambaforge/envs/charmm/lib -pthread -rdynamic CMakeFiles/PLM.dir/src/PLM_generated_PLM.cu.o -o PLM  -Wl,-Bstatic -lcudart_static -Wl,-Bdynamic -ldl -lrt -lpthread 

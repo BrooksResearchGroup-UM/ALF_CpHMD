@@ -1,0 +1,1 @@
+/home/stanislc/software/mambaforge/envs/charmm/bin/cc  -fopenmp   /home/stanislc/software/mambaforge/envs/charmm/lib/libmpi.so -Wl,-rpath,/home/stanislc/software/mambaforge/envs/charmm/lib -pthread -rdynamic CMakeFiles/LM.dir/src/LM.c.o -o LM  -lm 

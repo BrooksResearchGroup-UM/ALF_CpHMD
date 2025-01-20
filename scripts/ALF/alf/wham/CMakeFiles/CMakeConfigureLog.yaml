@@ -1,0 +1,386 @@
+
+---
+events:
+  -
+    kind: "message-v1"
+    backtrace:
+      - "/home/stanislc/software/mambaforge/envs/charmm/share/cmake-3.26/Modules/CMakeDetermineSystem.cmake:204 (message)"
+      - "CMakeLists.txt:4 (project)"
+    message: |
+      The system is: Linux - 3.10.0-862.14.4.el7.x86_64 - x86_64
+  -
+    kind: "message-v1"
+    backtrace:
+      - "/home/stanislc/software/mambaforge/envs/charmm/share/cmake-3.26/Modules/CMakeDetermineCompilerId.cmake:17 (message)"
+      - "/home/stanislc/software/mambaforge/envs/charmm/share/cmake-3.26/Modules/CMakeDetermineCompilerId.cmake:64 (__determine_compiler_id_test)"
+      - "/home/stanislc/software/mambaforge/envs/charmm/share/cmake-3.26/Modules/CMakeDetermineCXXCompiler.cmake:126 (CMAKE_DETERMINE_COMPILER_ID)"
+      - "CMakeLists.txt:4 (project)"
+    message: |
+      Compiling the CXX compiler identification source file "CMakeCXXCompilerId.cpp" succeeded.
+      Compiler: /home/stanislc/software/mambaforge/envs/charmm/bin/c++ 
+      Build flags: 
+      Id flags:  
+      
+      The output was:
+      0
+      
+      
+      Compilation of the CXX compiler identification source "CMakeCXXCompilerId.cpp" produced "a.out"
+      
+      The CXX compiler identification is GNU, found in:
+        /home/stanislc/software/ALF/alf/wham/CMakeFiles/3.26.4/CompilerIdCXX/a.out
+      
+  -
+    kind: "try_compile-v1"
+    backtrace:
+      - "/home/stanislc/software/mambaforge/envs/charmm/share/cmake-3.26/Modules/CMakeDetermineCompilerABI.cmake:57 (try_compile)"
+      - "/home/stanislc/software/mambaforge/envs/charmm/share/cmake-3.26/Modules/CMakeTestCXXCompiler.cmake:26 (CMAKE_DETERMINE_COMPILER_ABI)"
+      - "CMakeLists.txt:4 (project)"
+    checks:
+      - "Detecting CXX compiler ABI info"
+    directories:
+      source: "/home/stanislc/software/ALF/alf/wham/CMakeFiles/CMakeScratch/TryCompile-psO2rn"
+      binary: "/home/stanislc/software/ALF/alf/wham/CMakeFiles/CMakeScratch/TryCompile-psO2rn"
+    cmakeVariables:
+      CMAKE_CXX_FLAGS: ""
+    buildResult:
+      variable: "CMAKE_CXX_ABI_COMPILED"
+      cached: true
+      stdout: |
+        Change Dir: /home/stanislc/software/ALF/alf/wham/CMakeFiles/CMakeScratch/TryCompile-psO2rn
+        
+        Run Build Command(s):/home/stanislc/software/mambaforge/envs/charmm/bin/cmake -E env VERBOSE=1 /usr/bin/gmake -f Makefile cmTC_0abed/fast && /usr/bin/gmake  -f CMakeFiles/cmTC_0abed.dir/build.make CMakeFiles/cmTC_0abed.dir/build
+        gmake[1]: Entering directory `/home/stanislc/software/ALF/alf/wham/CMakeFiles/CMakeScratch/TryCompile-psO2rn'
+        Building CXX object CMakeFiles/cmTC_0abed.dir/CMakeCXXCompilerABI.cpp.o
+        /home/stanislc/software/mambaforge/envs/charmm/bin/c++   -v -o CMakeFiles/cmTC_0abed.dir/CMakeCXXCompilerABI.cpp.o -c /home/stanislc/software/mambaforge/envs/charmm/share/cmake-3.26/Modules/CMakeCXXCompilerABI.cpp
+        Reading specs from /home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0/specs
+        could not find specs file conda.specs
+        COLLECT_GCC=/home/stanislc/software/mambaforge/envs/charmm/bin/c++
+        Target: x86_64-conda-linux-gnu
+        Configured with: ../configure --prefix=/home/conda/feedstock_root/build_artifacts/gcc_compilers_1665882792052/_h_env_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placeho --with-slibdir=/home/conda/feedstock_root/build_artifacts/gcc_compilers_1665882792052/_h_env_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placeho/lib --libdir=/home/conda/feedstock_root/build_artifacts/gcc_compilers_1665882792052/_h_env_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placeho/lib --mandir=/home/conda/feedstock_root/build_artifacts/gcc_compilers_1665882792052/_h_env_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placeho/man --build=x86_64-conda-linux-gnu --host=x86_64-conda-linux-gnu --target=x86_64-conda-linux-gnu --enable-default-pie --enable-languages=c,c++,fortran,objc,obj-c++ --enable-__cxa_atexit --disable-libmudflap --enable-libgomp --disable-libssp --enable-libquadmath --enable-libquadmath-support --enable-libsanitizer --enable-lto --enable-threads=posix --enable-target-optspace --enable-plugin --enable-gold --disable-nls --disable-bootstrap --disable-multilib --enable-long-long --with-sysroot=/home/conda/feedstock_root/build_artifacts/gcc_compilers_1665882792052/_h_env_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placeho/x86_64-conda-linux-gnu/sysroot --with-build-sysroot=/home/conda/feedstock_root/build_artifacts/gcc_compilers_1665882792052/_build_env/x86_64-conda-linux-gnu/sysroot --with-gxx-include-dir=/home/conda/feedstock_root/build_artifacts/gcc_compilers_1665882792052/_h_env_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placeho/x86_64-conda-linux-gnu/include/c++/12.1.0 --with-pkgversion='conda-forge gcc 12.1.0-17' --with-bugurl=https://github.com/conda-forge/ctng-compilers-feedstock/issues/new/choose
+        Thread model: posix
+        Supported LTO compression algorithms: zlib
+        gcc version 12.1.0 (conda-forge gcc 12.1.0-17) 
+        COLLECT_GCC_OPTIONS='-v' '-o' 'CMakeFiles/cmTC_0abed.dir/CMakeCXXCompilerABI.cpp.o' '-c' '-shared-libgcc' '-mtune=generic' '-march=x86-64' '-dumpdir' 'CMakeFiles/cmTC_0abed.dir/'
+         /home/stanislc/software/mambaforge/envs/charmm/bin/../libexec/gcc/x86_64-conda-linux-gnu/12.1.0/cc1plus -quiet -v -iprefix /home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0/ -isysroot /home/stanislc/software/mambaforge/envs/charmm/bin/../x86_64-conda-linux-gnu/sysroot -D_GNU_SOURCE /home/stanislc/software/mambaforge/envs/charmm/share/cmake-3.26/Modules/CMakeCXXCompilerABI.cpp -quiet -dumpdir CMakeFiles/cmTC_0abed.dir/ -dumpbase CMakeCXXCompilerABI.cpp.cpp -dumpbase-ext .cpp -mtune=generic -march=x86-64 -version -o /tmp/ccsEQRYq.s
+        GNU C++17 (conda-forge gcc 12.1.0-17) version 12.1.0 (x86_64-conda-linux-gnu)
+        	compiled by GNU C version 12.1.0, GMP version 6.2.1, MPFR version 4.1.0, MPC version 1.2.1, isl version isl-0.24-GMP
+        
+        GGC heuristics: --param ggc-min-expand=100 --param ggc-min-heapsize=131072
+        ignoring duplicate directory "/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/../../lib/gcc/x86_64-conda-linux-gnu/12.1.0/include"
+        ignoring nonexistent directory "/home/stanislc/software/mambaforge/envs/charmm/bin/../x86_64-conda-linux-gnu/sysroot/usr/local/include"
+        ignoring duplicate directory "/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/../../lib/gcc/x86_64-conda-linux-gnu/12.1.0/include-fixed"
+        ignoring duplicate directory "/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/../../lib/gcc/x86_64-conda-linux-gnu/12.1.0/../../../../x86_64-conda-linux-gnu/include"
+        #include "..." search starts here:
+        #include <...> search starts here:
+         /home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0/include
+         /home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0/include-fixed
+         /home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0/../../../../x86_64-conda-linux-gnu/include
+         /home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/../../x86_64-conda-linux-gnu/include/c++/12.1.0
+         /home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/../../x86_64-conda-linux-gnu/include/c++/12.1.0/x86_64-conda-linux-gnu
+         /home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/../../x86_64-conda-linux-gnu/include/c++/12.1.0/backward
+         /home/stanislc/software/mambaforge/envs/charmm/bin/../x86_64-conda-linux-gnu/sysroot/usr/include
+        End of search list.
+        GNU C++17 (conda-forge gcc 12.1.0-17) version 12.1.0 (x86_64-conda-linux-gnu)
+        	compiled by GNU C version 12.1.0, GMP version 6.2.1, MPFR version 4.1.0, MPC version 1.2.1, isl version isl-0.24-GMP
+        
+        GGC heuristics: --param ggc-min-expand=100 --param ggc-min-heapsize=131072
+        Compiler executable checksum: da050e9a1930aa68c73250365c391332
+        COLLECT_GCC_OPTIONS='-v' '-o' 'CMakeFiles/cmTC_0abed.dir/CMakeCXXCompilerABI.cpp.o' '-c' '-shared-libgcc' '-mtune=generic' '-march=x86-64' '-dumpdir' 'CMakeFiles/cmTC_0abed.dir/'
+         /home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0/../../../../x86_64-conda-linux-gnu/bin/as -v --64 -o CMakeFiles/cmTC_0abed.dir/CMakeCXXCompilerABI.cpp.o /tmp/ccsEQRYq.s
+        GNU assembler version 2.40 (x86_64-conda-linux-gnu) using BFD version (GNU Binutils) 2.40
+        COMPILER_PATH=/home/stanislc/software/mambaforge/envs/charmm/bin/../libexec/gcc/x86_64-conda-linux-gnu/12.1.0/:/home/stanislc/software/mambaforge/envs/charmm/bin/../libexec/gcc/:/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0/../../../../x86_64-conda-linux-gnu/bin/
+        LIBRARY_PATH=/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0/:/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/:/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0/../../../../x86_64-conda-linux-gnu/lib/../lib/:/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0/../../../../lib/:/home/stanislc/software/mambaforge/envs/charmm/bin/../x86_64-conda-linux-gnu/sysroot/lib/../lib/:/home/stanislc/software/mambaforge/envs/charmm/bin/../x86_64-conda-linux-gnu/sysroot/usr/lib/../lib/:/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0/../../../../x86_64-conda-linux-gnu/lib/:/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0/../../../:/home/stanislc/software/mambaforge/envs/charmm/bin/../x86_64-conda-linux-gnu/sysroot/lib/:/home/stanislc/software/mambaforge/envs/charmm/bin/../x86_64-conda-linux-gnu/sysroot/usr/lib/
+        COLLECT_GCC_OPTIONS='-v' '-o' 'CMakeFiles/cmTC_0abed.dir/CMakeCXXCompilerABI.cpp.o' '-c' '-shared-libgcc' '-mtune=generic' '-march=x86-64' '-dumpdir' 'CMakeFiles/cmTC_0abed.dir/CMakeCXXCompilerABI.cpp.'
+        Linking CXX executable cmTC_0abed
+        /home/stanislc/software/mambaforge/envs/charmm/bin/cmake -E cmake_link_script CMakeFiles/cmTC_0abed.dir/link.txt --verbose=1
+        /home/stanislc/software/mambaforge/envs/charmm/bin/c++  -v -rdynamic CMakeFiles/cmTC_0abed.dir/CMakeCXXCompilerABI.cpp.o -o cmTC_0abed 
+        Reading specs from /home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0/specs
+        could not find specs file conda.specs
+        COLLECT_GCC=/home/stanislc/software/mambaforge/envs/charmm/bin/c++
+        COLLECT_LTO_WRAPPER=/home/stanislc/software/mambaforge/envs/charmm/bin/../libexec/gcc/x86_64-conda-linux-gnu/12.1.0/lto-wrapper
+        Target: x86_64-conda-linux-gnu
+        Configured with: ../configure --prefix=/home/conda/feedstock_root/build_artifacts/gcc_compilers_1665882792052/_h_env_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placeho --with-slibdir=/home/conda/feedstock_root/build_artifacts/gcc_compilers_1665882792052/_h_env_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placeho/lib --libdir=/home/conda/feedstock_root/build_artifacts/gcc_compilers_1665882792052/_h_env_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placeho/lib --mandir=/home/conda/feedstock_root/build_artifacts/gcc_compilers_1665882792052/_h_env_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placeho/man --build=x86_64-conda-linux-gnu --host=x86_64-conda-linux-gnu --target=x86_64-conda-linux-gnu --enable-default-pie --enable-languages=c,c++,fortran,objc,obj-c++ --enable-__cxa_atexit --disable-libmudflap --enable-libgomp --disable-libssp --enable-libquadmath --enable-libquadmath-support --enable-libsanitizer --enable-lto --enable-threads=posix --enable-target-optspace --enable-plugin --enable-gold --disable-nls --disable-bootstrap --disable-multilib --enable-long-long --with-sysroot=/home/conda/feedstock_root/build_artifacts/gcc_compilers_1665882792052/_h_env_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placeho/x86_64-conda-linux-gnu/sysroot --with-build-sysroot=/home/conda/feedstock_root/build_artifacts/gcc_compilers_1665882792052/_build_env/x86_64-conda-linux-gnu/sysroot --with-gxx-include-dir=/home/conda/feedstock_root/build_artifacts/gcc_compilers_1665882792052/_h_env_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placeho/x86_64-conda-linux-gnu/include/c++/12.1.0 --with-pkgversion='conda-forge gcc 12.1.0-17' --with-bugurl=https://github.com/conda-forge/ctng-compilers-feedstock/issues/new/choose
+        Thread model: posix
+        Supported LTO compression algorithms: zlib
+        gcc version 12.1.0 (conda-forge gcc 12.1.0-17) 
+        COMPILER_PATH=/home/stanislc/software/mambaforge/envs/charmm/bin/../libexec/gcc/x86_64-conda-linux-gnu/12.1.0/:/home/stanislc/software/mambaforge/envs/charmm/bin/../libexec/gcc/:/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0/../../../../x86_64-conda-linux-gnu/bin/
+        LIBRARY_PATH=/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0/:/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/:/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0/../../../../x86_64-conda-linux-gnu/lib/../lib/:/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0/../../../../lib/:/home/stanislc/software/mambaforge/envs/charmm/bin/../x86_64-conda-linux-gnu/sysroot/lib/../lib/:/home/stanislc/software/mambaforge/envs/charmm/bin/../x86_64-conda-linux-gnu/sysroot/usr/lib/../lib/:/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0/../../../../x86_64-conda-linux-gnu/lib/:/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0/../../../:/home/stanislc/software/mambaforge/envs/charmm/bin/../x86_64-conda-linux-gnu/sysroot/lib/:/home/stanislc/software/mambaforge/envs/charmm/bin/../x86_64-conda-linux-gnu/sysroot/usr/lib/
+        COLLECT_GCC_OPTIONS='-v' '-rdynamic' '-o' 'cmTC_0abed' '-shared-libgcc' '-mtune=generic' '-march=x86-64' '-dumpdir' 'cmTC_0abed.'
+         /home/stanislc/software/mambaforge/envs/charmm/bin/../libexec/gcc/x86_64-conda-linux-gnu/12.1.0/collect2 -plugin /home/stanislc/software/mambaforge/envs/charmm/bin/../libexec/gcc/x86_64-conda-linux-gnu/12.1.0/liblto_plugin.so -plugin-opt=/home/stanislc/software/mambaforge/envs/charmm/bin/../libexec/gcc/x86_64-conda-linux-gnu/12.1.0/lto-wrapper -plugin-opt=-fresolution=/tmp/cc7OtOCx.res -plugin-opt=-pass-through=-lgcc_s -plugin-opt=-pass-through=-lgcc -plugin-opt=-pass-through=-lc -plugin-opt=-pass-through=-lgcc_s -plugin-opt=-pass-through=-lgcc --sysroot=/home/stanislc/software/mambaforge/envs/charmm/bin/../x86_64-conda-linux-gnu/sysroot --eh-frame-hdr -m elf_x86_64 -export-dynamic -dynamic-linker /lib64/ld-linux-x86-64.so.2 -pie -o cmTC_0abed /home/stanislc/software/mambaforge/envs/charmm/bin/../x86_64-conda-linux-gnu/sysroot/usr/lib/../lib/Scrt1.o /home/stanislc/software/mambaforge/envs/charmm/bin/../x86_64-conda-linux-gnu/sysroot/usr/lib/../lib/crti.o /home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0/crtbeginS.o -L/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0 -L/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc -L/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0/../../../../x86_64-conda-linux-gnu/lib/../lib -L/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0/../../../../lib -L/home/stanislc/software/mambaforge/envs/charmm/bin/../x86_64-conda-linux-gnu/sysroot/lib/../lib -L/home/stanislc/software/mambaforge/envs/charmm/bin/../x86_64-conda-linux-gnu/sysroot/usr/lib/../lib -L/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0/../../../../x86_64-conda-linux-gnu/lib -L/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0/../../.. -L/home/stanislc/software/mambaforge/envs/charmm/bin/../x86_64-conda-linux-gnu/sysroot/lib -L/home/stanislc/software/mambaforge/envs/charmm/bin/../x86_64-conda-linux-gnu/sysroot/usr/lib CMakeFiles/cmTC_0abed.dir/CMakeCXXCompilerABI.cpp.o -lstdc++ -lm -lgcc_s -lgcc -lc -lgcc_s -lgcc /home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0/crtendS.o /home/stanislc/software/mambaforge/envs/charmm/bin/../x86_64-conda-linux-gnu/sysroot/usr/lib/../lib/crtn.o -rpath /home/stanislc/software/mambaforge/envs/charmm/lib
+        COLLECT_GCC_OPTIONS='-v' '-rdynamic' '-o' 'cmTC_0abed' '-shared-libgcc' '-mtune=generic' '-march=x86-64' '-dumpdir' 'cmTC_0abed.'
+        gmake[1]: Leaving directory `/home/stanislc/software/ALF/alf/wham/CMakeFiles/CMakeScratch/TryCompile-psO2rn'
+        
+      exitCode: 0
+  -
+    kind: "message-v1"
+    backtrace:
+      - "/home/stanislc/software/mambaforge/envs/charmm/share/cmake-3.26/Modules/CMakeDetermineCompilerABI.cmake:127 (message)"
+      - "/home/stanislc/software/mambaforge/envs/charmm/share/cmake-3.26/Modules/CMakeTestCXXCompiler.cmake:26 (CMAKE_DETERMINE_COMPILER_ABI)"
+      - "CMakeLists.txt:4 (project)"
+    message: |
+      Parsed CXX implicit include dir info: rv=done
+        found start of include info
+        found start of implicit include info
+          add: [/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0/include]
+          add: [/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0/include-fixed]
+          add: [/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0/../../../../x86_64-conda-linux-gnu/include]
+          add: [/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/../../x86_64-conda-linux-gnu/include/c++/12.1.0]
+          add: [/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/../../x86_64-conda-linux-gnu/include/c++/12.1.0/x86_64-conda-linux-gnu]
+          add: [/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/../../x86_64-conda-linux-gnu/include/c++/12.1.0/backward]
+          add: [/home/stanislc/software/mambaforge/envs/charmm/bin/../x86_64-conda-linux-gnu/sysroot/usr/include]
+        end of search list found
+        collapse include dir [/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0/include] ==> [/home/stanislc/software/mambaforge/envs/charmm/lib/gcc/x86_64-conda-linux-gnu/12.1.0/include]
+        collapse include dir [/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0/include-fixed] ==> [/home/stanislc/software/mambaforge/envs/charmm/lib/gcc/x86_64-conda-linux-gnu/12.1.0/include-fixed]
+        collapse include dir [/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0/../../../../x86_64-conda-linux-gnu/include] ==> [/home/stanislc/software/mambaforge/envs/charmm/x86_64-conda-linux-gnu/include]
+        collapse include dir [/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/../../x86_64-conda-linux-gnu/include/c++/12.1.0] ==> [/home/stanislc/software/mambaforge/envs/charmm/x86_64-conda-linux-gnu/include/c++/12.1.0]
+        collapse include dir [/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/../../x86_64-conda-linux-gnu/include/c++/12.1.0/x86_64-conda-linux-gnu] ==> [/home/stanislc/software/mambaforge/envs/charmm/x86_64-conda-linux-gnu/include/c++/12.1.0/x86_64-conda-linux-gnu]
+        collapse include dir [/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/../../x86_64-conda-linux-gnu/include/c++/12.1.0/backward] ==> [/home/stanislc/software/mambaforge/envs/charmm/x86_64-conda-linux-gnu/include/c++/12.1.0/backward]
+        collapse include dir [/home/stanislc/software/mambaforge/envs/charmm/bin/../x86_64-conda-linux-gnu/sysroot/usr/include] ==> [/home/stanislc/software/mambaforge/envs/charmm/x86_64-conda-linux-gnu/sysroot/usr/include]
+        implicit include dirs: [/home/stanislc/software/mambaforge/envs/charmm/lib/gcc/x86_64-conda-linux-gnu/12.1.0/include;/home/stanislc/software/mambaforge/envs/charmm/lib/gcc/x86_64-conda-linux-gnu/12.1.0/include-fixed;/home/stanislc/software/mambaforge/envs/charmm/x86_64-conda-linux-gnu/include;/home/stanislc/software/mambaforge/envs/charmm/x86_64-conda-linux-gnu/include/c++/12.1.0;/home/stanislc/software/mambaforge/envs/charmm/x86_64-conda-linux-gnu/include/c++/12.1.0/x86_64-conda-linux-gnu;/home/stanislc/software/mambaforge/envs/charmm/x86_64-conda-linux-gnu/include/c++/12.1.0/backward;/home/stanislc/software/mambaforge/envs/charmm/x86_64-conda-linux-gnu/sysroot/usr/include]
+      
+      
+  -
+    kind: "message-v1"
+    backtrace:
+      - "/home/stanislc/software/mambaforge/envs/charmm/share/cmake-3.26/Modules/CMakeDetermineCompilerABI.cmake:152 (message)"
+      - "/home/stanislc/software/mambaforge/envs/charmm/share/cmake-3.26/Modules/CMakeTestCXXCompiler.cmake:26 (CMAKE_DETERMINE_COMPILER_ABI)"
+      - "CMakeLists.txt:4 (project)"
+    message: |
+      Parsed CXX implicit link information:
+        link line regex: [^( *|.*[/\\])(ld|CMAKE_LINK_STARTFILE-NOTFOUND|([^/\\]+-)?ld|collect2)[^/\\]*( |$)]
+        ignore line: [Change Dir: /home/stanislc/software/ALF/alf/wham/CMakeFiles/CMakeScratch/TryCompile-psO2rn]
+        ignore line: []
+        ignore line: [Run Build Command(s):/home/stanislc/software/mambaforge/envs/charmm/bin/cmake -E env VERBOSE=1 /usr/bin/gmake -f Makefile cmTC_0abed/fast && /usr/bin/gmake  -f CMakeFiles/cmTC_0abed.dir/build.make CMakeFiles/cmTC_0abed.dir/build]
+        ignore line: [gmake[1]: Entering directory `/home/stanislc/software/ALF/alf/wham/CMakeFiles/CMakeScratch/TryCompile-psO2rn']
+        ignore line: [Building CXX object CMakeFiles/cmTC_0abed.dir/CMakeCXXCompilerABI.cpp.o]
+        ignore line: [/home/stanislc/software/mambaforge/envs/charmm/bin/c++   -v -o CMakeFiles/cmTC_0abed.dir/CMakeCXXCompilerABI.cpp.o -c /home/stanislc/software/mambaforge/envs/charmm/share/cmake-3.26/Modules/CMakeCXXCompilerABI.cpp]
+        ignore line: [Reading specs from /home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0/specs]
+        ignore line: [could not find specs file conda.specs]
+        ignore line: [COLLECT_GCC=/home/stanislc/software/mambaforge/envs/charmm/bin/c++]
+        ignore line: [Target: x86_64-conda-linux-gnu]
+        ignore line: [Configured with: ../configure --prefix=/home/conda/feedstock_root/build_artifacts/gcc_compilers_1665882792052/_h_env_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placeho --with-slibdir=/home/conda/feedstock_root/build_artifacts/gcc_compilers_1665882792052/_h_env_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placeho/lib --libdir=/home/conda/feedstock_root/build_artifacts/gcc_compilers_1665882792052/_h_env_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placeho/lib --mandir=/home/conda/feedstock_root/build_artifacts/gcc_compilers_1665882792052/_h_env_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placeho/man --build=x86_64-conda-linux-gnu --host=x86_64-conda-linux-gnu --target=x86_64-conda-linux-gnu --enable-default-pie --enable-languages=c c++ fortran objc obj-c++ --enable-__cxa_atexit --disable-libmudflap --enable-libgomp --disable-libssp --enable-libquadmath --enable-libquadmath-support --enable-libsanitizer --enable-lto --enable-threads=posix --enable-target-optspace --enable-plugin --enable-gold --disable-nls --disable-bootstrap --disable-multilib --enable-long-long --with-sysroot=/home/conda/feedstock_root/build_artifacts/gcc_compilers_1665882792052/_h_env_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placeho/x86_64-conda-linux-gnu/sysroot --with-build-sysroot=/home/conda/feedstock_root/build_artifacts/gcc_compilers_1665882792052/_build_env/x86_64-conda-linux-gnu/sysroot --with-gxx-include-dir=/home/conda/feedstock_root/build_artifacts/gcc_compilers_1665882792052/_h_env_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placeho/x86_64-conda-linux-gnu/include/c++/12.1.0 --with-pkgversion='conda-forge gcc 12.1.0-17' --with-bugurl=https://github.com/conda-forge/ctng-compilers-feedstock/issues/new/choose]
+        ignore line: [Thread model: posix]
+        ignore line: [Supported LTO compression algorithms: zlib]
+        ignore line: [gcc version 12.1.0 (conda-forge gcc 12.1.0-17) ]
+        ignore line: [COLLECT_GCC_OPTIONS='-v' '-o' 'CMakeFiles/cmTC_0abed.dir/CMakeCXXCompilerABI.cpp.o' '-c' '-shared-libgcc' '-mtune=generic' '-march=x86-64' '-dumpdir' 'CMakeFiles/cmTC_0abed.dir/']
+        ignore line: [ /home/stanislc/software/mambaforge/envs/charmm/bin/../libexec/gcc/x86_64-conda-linux-gnu/12.1.0/cc1plus -quiet -v -iprefix /home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0/ -isysroot /home/stanislc/software/mambaforge/envs/charmm/bin/../x86_64-conda-linux-gnu/sysroot -D_GNU_SOURCE /home/stanislc/software/mambaforge/envs/charmm/share/cmake-3.26/Modules/CMakeCXXCompilerABI.cpp -quiet -dumpdir CMakeFiles/cmTC_0abed.dir/ -dumpbase CMakeCXXCompilerABI.cpp.cpp -dumpbase-ext .cpp -mtune=generic -march=x86-64 -version -o /tmp/ccsEQRYq.s]
+        ignore line: [GNU C++17 (conda-forge gcc 12.1.0-17) version 12.1.0 (x86_64-conda-linux-gnu)]
+        ignore line: [	compiled by GNU C version 12.1.0  GMP version 6.2.1  MPFR version 4.1.0  MPC version 1.2.1  isl version isl-0.24-GMP]
+        ignore line: []
+        ignore line: [GGC heuristics: --param ggc-min-expand=100 --param ggc-min-heapsize=131072]
+        ignore line: [ignoring duplicate directory "/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/../../lib/gcc/x86_64-conda-linux-gnu/12.1.0/include"]
+        ignore line: [ignoring nonexistent directory "/home/stanislc/software/mambaforge/envs/charmm/bin/../x86_64-conda-linux-gnu/sysroot/usr/local/include"]
+        ignore line: [ignoring duplicate directory "/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/../../lib/gcc/x86_64-conda-linux-gnu/12.1.0/include-fixed"]
+        ignore line: [ignoring duplicate directory "/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/../../lib/gcc/x86_64-conda-linux-gnu/12.1.0/../../../../x86_64-conda-linux-gnu/include"]
+        ignore line: [#include "..." search starts here:]
+        ignore line: [#include <...> search starts here:]
+        ignore line: [ /home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0/include]
+        ignore line: [ /home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0/include-fixed]
+        ignore line: [ /home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0/../../../../x86_64-conda-linux-gnu/include]
+        ignore line: [ /home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/../../x86_64-conda-linux-gnu/include/c++/12.1.0]
+        ignore line: [ /home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/../../x86_64-conda-linux-gnu/include/c++/12.1.0/x86_64-conda-linux-gnu]
+        ignore line: [ /home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/../../x86_64-conda-linux-gnu/include/c++/12.1.0/backward]
+        ignore line: [ /home/stanislc/software/mambaforge/envs/charmm/bin/../x86_64-conda-linux-gnu/sysroot/usr/include]
+        ignore line: [End of search list.]
+        ignore line: [GNU C++17 (conda-forge gcc 12.1.0-17) version 12.1.0 (x86_64-conda-linux-gnu)]
+        ignore line: [	compiled by GNU C version 12.1.0  GMP version 6.2.1  MPFR version 4.1.0  MPC version 1.2.1  isl version isl-0.24-GMP]
+        ignore line: []
+        ignore line: [GGC heuristics: --param ggc-min-expand=100 --param ggc-min-heapsize=131072]
+        ignore line: [Compiler executable checksum: da050e9a1930aa68c73250365c391332]
+        ignore line: [COLLECT_GCC_OPTIONS='-v' '-o' 'CMakeFiles/cmTC_0abed.dir/CMakeCXXCompilerABI.cpp.o' '-c' '-shared-libgcc' '-mtune=generic' '-march=x86-64' '-dumpdir' 'CMakeFiles/cmTC_0abed.dir/']
+        ignore line: [ /home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0/../../../../x86_64-conda-linux-gnu/bin/as -v --64 -o CMakeFiles/cmTC_0abed.dir/CMakeCXXCompilerABI.cpp.o /tmp/ccsEQRYq.s]
+        ignore line: [GNU assembler version 2.40 (x86_64-conda-linux-gnu) using BFD version (GNU Binutils) 2.40]
+        ignore line: [COMPILER_PATH=/home/stanislc/software/mambaforge/envs/charmm/bin/../libexec/gcc/x86_64-conda-linux-gnu/12.1.0/:/home/stanislc/software/mambaforge/envs/charmm/bin/../libexec/gcc/:/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0/../../../../x86_64-conda-linux-gnu/bin/]
+        ignore line: [LIBRARY_PATH=/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0/:/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/:/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0/../../../../x86_64-conda-linux-gnu/lib/../lib/:/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0/../../../../lib/:/home/stanislc/software/mambaforge/envs/charmm/bin/../x86_64-conda-linux-gnu/sysroot/lib/../lib/:/home/stanislc/software/mambaforge/envs/charmm/bin/../x86_64-conda-linux-gnu/sysroot/usr/lib/../lib/:/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0/../../../../x86_64-conda-linux-gnu/lib/:/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0/../../../:/home/stanislc/software/mambaforge/envs/charmm/bin/../x86_64-conda-linux-gnu/sysroot/lib/:/home/stanislc/software/mambaforge/envs/charmm/bin/../x86_64-conda-linux-gnu/sysroot/usr/lib/]
+        ignore line: [COLLECT_GCC_OPTIONS='-v' '-o' 'CMakeFiles/cmTC_0abed.dir/CMakeCXXCompilerABI.cpp.o' '-c' '-shared-libgcc' '-mtune=generic' '-march=x86-64' '-dumpdir' 'CMakeFiles/cmTC_0abed.dir/CMakeCXXCompilerABI.cpp.']
+        ignore line: [Linking CXX executable cmTC_0abed]
+        ignore line: [/home/stanislc/software/mambaforge/envs/charmm/bin/cmake -E cmake_link_script CMakeFiles/cmTC_0abed.dir/link.txt --verbose=1]
+        ignore line: [/home/stanislc/software/mambaforge/envs/charmm/bin/c++  -v -rdynamic CMakeFiles/cmTC_0abed.dir/CMakeCXXCompilerABI.cpp.o -o cmTC_0abed ]
+        ignore line: [Reading specs from /home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0/specs]
+        ignore line: [could not find specs file conda.specs]
+        ignore line: [COLLECT_GCC=/home/stanislc/software/mambaforge/envs/charmm/bin/c++]
+        ignore line: [COLLECT_LTO_WRAPPER=/home/stanislc/software/mambaforge/envs/charmm/bin/../libexec/gcc/x86_64-conda-linux-gnu/12.1.0/lto-wrapper]
+        ignore line: [Target: x86_64-conda-linux-gnu]
+        ignore line: [Configured with: ../configure --prefix=/home/conda/feedstock_root/build_artifacts/gcc_compilers_1665882792052/_h_env_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placeho --with-slibdir=/home/conda/feedstock_root/build_artifacts/gcc_compilers_1665882792052/_h_env_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placeho/lib --libdir=/home/conda/feedstock_root/build_artifacts/gcc_compilers_1665882792052/_h_env_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placeho/lib --mandir=/home/conda/feedstock_root/build_artifacts/gcc_compilers_1665882792052/_h_env_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placeho/man --build=x86_64-conda-linux-gnu --host=x86_64-conda-linux-gnu --target=x86_64-conda-linux-gnu --enable-default-pie --enable-languages=c c++ fortran objc obj-c++ --enable-__cxa_atexit --disable-libmudflap --enable-libgomp --disable-libssp --enable-libquadmath --enable-libquadmath-support --enable-libsanitizer --enable-lto --enable-threads=posix --enable-target-optspace --enable-plugin --enable-gold --disable-nls --disable-bootstrap --disable-multilib --enable-long-long --with-sysroot=/home/conda/feedstock_root/build_artifacts/gcc_compilers_1665882792052/_h_env_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placeho/x86_64-conda-linux-gnu/sysroot --with-build-sysroot=/home/conda/feedstock_root/build_artifacts/gcc_compilers_1665882792052/_build_env/x86_64-conda-linux-gnu/sysroot --with-gxx-include-dir=/home/conda/feedstock_root/build_artifacts/gcc_compilers_1665882792052/_h_env_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placehold_placeho/x86_64-conda-linux-gnu/include/c++/12.1.0 --with-pkgversion='conda-forge gcc 12.1.0-17' --with-bugurl=https://github.com/conda-forge/ctng-compilers-feedstock/issues/new/choose]
+        ignore line: [Thread model: posix]
+        ignore line: [Supported LTO compression algorithms: zlib]
+        ignore line: [gcc version 12.1.0 (conda-forge gcc 12.1.0-17) ]
+        ignore line: [COMPILER_PATH=/home/stanislc/software/mambaforge/envs/charmm/bin/../libexec/gcc/x86_64-conda-linux-gnu/12.1.0/:/home/stanislc/software/mambaforge/envs/charmm/bin/../libexec/gcc/:/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0/../../../../x86_64-conda-linux-gnu/bin/]
+        ignore line: [LIBRARY_PATH=/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0/:/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/:/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0/../../../../x86_64-conda-linux-gnu/lib/../lib/:/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0/../../../../lib/:/home/stanislc/software/mambaforge/envs/charmm/bin/../x86_64-conda-linux-gnu/sysroot/lib/../lib/:/home/stanislc/software/mambaforge/envs/charmm/bin/../x86_64-conda-linux-gnu/sysroot/usr/lib/../lib/:/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0/../../../../x86_64-conda-linux-gnu/lib/:/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0/../../../:/home/stanislc/software/mambaforge/envs/charmm/bin/../x86_64-conda-linux-gnu/sysroot/lib/:/home/stanislc/software/mambaforge/envs/charmm/bin/../x86_64-conda-linux-gnu/sysroot/usr/lib/]
+        ignore line: [COLLECT_GCC_OPTIONS='-v' '-rdynamic' '-o' 'cmTC_0abed' '-shared-libgcc' '-mtune=generic' '-march=x86-64' '-dumpdir' 'cmTC_0abed.']
+        link line: [ /home/stanislc/software/mambaforge/envs/charmm/bin/../libexec/gcc/x86_64-conda-linux-gnu/12.1.0/collect2 -plugin /home/stanislc/software/mambaforge/envs/charmm/bin/../libexec/gcc/x86_64-conda-linux-gnu/12.1.0/liblto_plugin.so -plugin-opt=/home/stanislc/software/mambaforge/envs/charmm/bin/../libexec/gcc/x86_64-conda-linux-gnu/12.1.0/lto-wrapper -plugin-opt=-fresolution=/tmp/cc7OtOCx.res -plugin-opt=-pass-through=-lgcc_s -plugin-opt=-pass-through=-lgcc -plugin-opt=-pass-through=-lc -plugin-opt=-pass-through=-lgcc_s -plugin-opt=-pass-through=-lgcc --sysroot=/home/stanislc/software/mambaforge/envs/charmm/bin/../x86_64-conda-linux-gnu/sysroot --eh-frame-hdr -m elf_x86_64 -export-dynamic -dynamic-linker /lib64/ld-linux-x86-64.so.2 -pie -o cmTC_0abed /home/stanislc/software/mambaforge/envs/charmm/bin/../x86_64-conda-linux-gnu/sysroot/usr/lib/../lib/Scrt1.o /home/stanislc/software/mambaforge/envs/charmm/bin/../x86_64-conda-linux-gnu/sysroot/usr/lib/../lib/crti.o /home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0/crtbeginS.o -L/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0 -L/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc -L/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0/../../../../x86_64-conda-linux-gnu/lib/../lib -L/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0/../../../../lib -L/home/stanislc/software/mambaforge/envs/charmm/bin/../x86_64-conda-linux-gnu/sysroot/lib/../lib -L/home/stanislc/software/mambaforge/envs/charmm/bin/../x86_64-conda-linux-gnu/sysroot/usr/lib/../lib -L/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0/../../../../x86_64-conda-linux-gnu/lib -L/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0/../../.. -L/home/stanislc/software/mambaforge/envs/charmm/bin/../x86_64-conda-linux-gnu/sysroot/lib -L/home/stanislc/software/mambaforge/envs/charmm/bin/../x86_64-conda-linux-gnu/sysroot/usr/lib CMakeFiles/cmTC_0abed.dir/CMakeCXXCompilerABI.cpp.o -lstdc++ -lm -lgcc_s -lgcc -lc -lgcc_s -lgcc /home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0/crtendS.o /home/stanislc/software/mambaforge/envs/charmm/bin/../x86_64-conda-linux-gnu/sysroot/usr/lib/../lib/crtn.o -rpath /home/stanislc/software/mambaforge/envs/charmm/lib]
+          arg [/home/stanislc/software/mambaforge/envs/charmm/bin/../libexec/gcc/x86_64-conda-linux-gnu/12.1.0/collect2] ==> ignore
+          arg [-plugin] ==> ignore
+          arg [/home/stanislc/software/mambaforge/envs/charmm/bin/../libexec/gcc/x86_64-conda-linux-gnu/12.1.0/liblto_plugin.so] ==> ignore
+          arg [-plugin-opt=/home/stanislc/software/mambaforge/envs/charmm/bin/../libexec/gcc/x86_64-conda-linux-gnu/12.1.0/lto-wrapper] ==> ignore
+          arg [-plugin-opt=-fresolution=/tmp/cc7OtOCx.res] ==> ignore
+          arg [-plugin-opt=-pass-through=-lgcc_s] ==> ignore
+          arg [-plugin-opt=-pass-through=-lgcc] ==> ignore
+          arg [-plugin-opt=-pass-through=-lc] ==> ignore
+          arg [-plugin-opt=-pass-through=-lgcc_s] ==> ignore
+          arg [-plugin-opt=-pass-through=-lgcc] ==> ignore
+          arg [--sysroot=/home/stanislc/software/mambaforge/envs/charmm/bin/../x86_64-conda-linux-gnu/sysroot] ==> ignore
+          arg [--eh-frame-hdr] ==> ignore
+          arg [-m] ==> ignore
+          arg [elf_x86_64] ==> ignore
+          arg [-export-dynamic] ==> ignore
+          arg [-dynamic-linker] ==> ignore
+          arg [/lib64/ld-linux-x86-64.so.2] ==> ignore
+          arg [-pie] ==> ignore
+          arg [-o] ==> ignore
+          arg [cmTC_0abed] ==> ignore
+          arg [/home/stanislc/software/mambaforge/envs/charmm/bin/../x86_64-conda-linux-gnu/sysroot/usr/lib/../lib/Scrt1.o] ==> obj [/home/stanislc/software/mambaforge/envs/charmm/bin/../x86_64-conda-linux-gnu/sysroot/usr/lib/../lib/Scrt1.o]
+          arg [/home/stanislc/software/mambaforge/envs/charmm/bin/../x86_64-conda-linux-gnu/sysroot/usr/lib/../lib/crti.o] ==> obj [/home/stanislc/software/mambaforge/envs/charmm/bin/../x86_64-conda-linux-gnu/sysroot/usr/lib/../lib/crti.o]
+          arg [/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0/crtbeginS.o] ==> obj [/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0/crtbeginS.o]
+          arg [-L/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0] ==> dir [/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0]
+          arg [-L/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc] ==> dir [/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc]
+          arg [-L/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0/../../../../x86_64-conda-linux-gnu/lib/../lib] ==> dir [/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0/../../../../x86_64-conda-linux-gnu/lib/../lib]
+          arg [-L/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0/../../../../lib] ==> dir [/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0/../../../../lib]
+          arg [-L/home/stanislc/software/mambaforge/envs/charmm/bin/../x86_64-conda-linux-gnu/sysroot/lib/../lib] ==> dir [/home/stanislc/software/mambaforge/envs/charmm/bin/../x86_64-conda-linux-gnu/sysroot/lib/../lib]
+          arg [-L/home/stanislc/software/mambaforge/envs/charmm/bin/../x86_64-conda-linux-gnu/sysroot/usr/lib/../lib] ==> dir [/home/stanislc/software/mambaforge/envs/charmm/bin/../x86_64-conda-linux-gnu/sysroot/usr/lib/../lib]
+          arg [-L/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0/../../../../x86_64-conda-linux-gnu/lib] ==> dir [/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0/../../../../x86_64-conda-linux-gnu/lib]
+          arg [-L/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0/../../..] ==> dir [/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0/../../..]
+          arg [-L/home/stanislc/software/mambaforge/envs/charmm/bin/../x86_64-conda-linux-gnu/sysroot/lib] ==> dir [/home/stanislc/software/mambaforge/envs/charmm/bin/../x86_64-conda-linux-gnu/sysroot/lib]
+          arg [-L/home/stanislc/software/mambaforge/envs/charmm/bin/../x86_64-conda-linux-gnu/sysroot/usr/lib] ==> dir [/home/stanislc/software/mambaforge/envs/charmm/bin/../x86_64-conda-linux-gnu/sysroot/usr/lib]
+          arg [CMakeFiles/cmTC_0abed.dir/CMakeCXXCompilerABI.cpp.o] ==> ignore
+          arg [-lstdc++] ==> lib [stdc++]
+          arg [-lm] ==> lib [m]
+          arg [-lgcc_s] ==> lib [gcc_s]
+          arg [-lgcc] ==> lib [gcc]
+          arg [-lc] ==> lib [c]
+          arg [-lgcc_s] ==> lib [gcc_s]
+          arg [-lgcc] ==> lib [gcc]
+          arg [/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0/crtendS.o] ==> obj [/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0/crtendS.o]
+          arg [/home/stanislc/software/mambaforge/envs/charmm/bin/../x86_64-conda-linux-gnu/sysroot/usr/lib/../lib/crtn.o] ==> obj [/home/stanislc/software/mambaforge/envs/charmm/bin/../x86_64-conda-linux-gnu/sysroot/usr/lib/../lib/crtn.o]
+          arg [-rpath] ==> ignore
+          arg [/home/stanislc/software/mambaforge/envs/charmm/lib] ==> ignore
+        collapse obj [/home/stanislc/software/mambaforge/envs/charmm/bin/../x86_64-conda-linux-gnu/sysroot/usr/lib/../lib/Scrt1.o] ==> [/home/stanislc/software/mambaforge/envs/charmm/x86_64-conda-linux-gnu/sysroot/usr/lib/Scrt1.o]
+        collapse obj [/home/stanislc/software/mambaforge/envs/charmm/bin/../x86_64-conda-linux-gnu/sysroot/usr/lib/../lib/crti.o] ==> [/home/stanislc/software/mambaforge/envs/charmm/x86_64-conda-linux-gnu/sysroot/usr/lib/crti.o]
+        collapse obj [/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0/crtbeginS.o] ==> [/home/stanislc/software/mambaforge/envs/charmm/lib/gcc/x86_64-conda-linux-gnu/12.1.0/crtbeginS.o]
+        collapse obj [/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0/crtendS.o] ==> [/home/stanislc/software/mambaforge/envs/charmm/lib/gcc/x86_64-conda-linux-gnu/12.1.0/crtendS.o]
+        collapse obj [/home/stanislc/software/mambaforge/envs/charmm/bin/../x86_64-conda-linux-gnu/sysroot/usr/lib/../lib/crtn.o] ==> [/home/stanislc/software/mambaforge/envs/charmm/x86_64-conda-linux-gnu/sysroot/usr/lib/crtn.o]
+        collapse library dir [/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0] ==> [/home/stanislc/software/mambaforge/envs/charmm/lib/gcc/x86_64-conda-linux-gnu/12.1.0]
+        collapse library dir [/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc] ==> [/home/stanislc/software/mambaforge/envs/charmm/lib/gcc]
+        collapse library dir [/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0/../../../../x86_64-conda-linux-gnu/lib/../lib] ==> [/home/stanislc/software/mambaforge/envs/charmm/x86_64-conda-linux-gnu/lib]
+        collapse library dir [/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0/../../../../lib] ==> [/home/stanislc/software/mambaforge/envs/charmm/lib]
+        collapse library dir [/home/stanislc/software/mambaforge/envs/charmm/bin/../x86_64-conda-linux-gnu/sysroot/lib/../lib] ==> [/home/stanislc/software/mambaforge/envs/charmm/x86_64-conda-linux-gnu/sysroot/lib]
+        collapse library dir [/home/stanislc/software/mambaforge/envs/charmm/bin/../x86_64-conda-linux-gnu/sysroot/usr/lib/../lib] ==> [/home/stanislc/software/mambaforge/envs/charmm/x86_64-conda-linux-gnu/sysroot/usr/lib]
+        collapse library dir [/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0/../../../../x86_64-conda-linux-gnu/lib] ==> [/home/stanislc/software/mambaforge/envs/charmm/x86_64-conda-linux-gnu/lib]
+        collapse library dir [/home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0/../../..] ==> [/home/stanislc/software/mambaforge/envs/charmm/lib]
+        collapse library dir [/home/stanislc/software/mambaforge/envs/charmm/bin/../x86_64-conda-linux-gnu/sysroot/lib] ==> [/home/stanislc/software/mambaforge/envs/charmm/x86_64-conda-linux-gnu/sysroot/lib]
+        collapse library dir [/home/stanislc/software/mambaforge/envs/charmm/bin/../x86_64-conda-linux-gnu/sysroot/usr/lib] ==> [/home/stanislc/software/mambaforge/envs/charmm/x86_64-conda-linux-gnu/sysroot/usr/lib]
+        implicit libs: [stdc++;m;gcc_s;gcc;c;gcc_s;gcc]
+        implicit objs: [/home/stanislc/software/mambaforge/envs/charmm/x86_64-conda-linux-gnu/sysroot/usr/lib/Scrt1.o;/home/stanislc/software/mambaforge/envs/charmm/x86_64-conda-linux-gnu/sysroot/usr/lib/crti.o;/home/stanislc/software/mambaforge/envs/charmm/lib/gcc/x86_64-conda-linux-gnu/12.1.0/crtbeginS.o;/home/stanislc/software/mambaforge/envs/charmm/lib/gcc/x86_64-conda-linux-gnu/12.1.0/crtendS.o;/home/stanislc/software/mambaforge/envs/charmm/x86_64-conda-linux-gnu/sysroot/usr/lib/crtn.o]
+        implicit dirs: [/home/stanislc/software/mambaforge/envs/charmm/lib/gcc/x86_64-conda-linux-gnu/12.1.0;/home/stanislc/software/mambaforge/envs/charmm/lib/gcc;/home/stanislc/software/mambaforge/envs/charmm/x86_64-conda-linux-gnu/lib;/home/stanislc/software/mambaforge/envs/charmm/lib;/home/stanislc/software/mambaforge/envs/charmm/x86_64-conda-linux-gnu/sysroot/lib;/home/stanislc/software/mambaforge/envs/charmm/x86_64-conda-linux-gnu/sysroot/usr/lib]
+        implicit fwks: []
+      
+      
+  -
+    kind: "try_compile-v1"
+    backtrace:
+      - "/home/stanislc/software/mambaforge/envs/charmm/share/cmake-3.26/Modules/Internal/CheckSourceCompiles.cmake:101 (try_compile)"
+      - "/home/stanislc/software/mambaforge/envs/charmm/share/cmake-3.26/Modules/CheckCXXSourceCompiles.cmake:76 (cmake_check_source_compiles)"
+      - "/home/stanislc/software/mambaforge/envs/charmm/share/cmake-3.26/Modules/FindThreads.cmake:99 (CHECK_CXX_SOURCE_COMPILES)"
+      - "/home/stanislc/software/mambaforge/envs/charmm/share/cmake-3.26/Modules/FindThreads.cmake:163 (_threads_check_libc)"
+      - "/home/stanislc/software/mambaforge/envs/charmm/share/cmake-3.26/Modules/FindCUDA.cmake:1049 (find_package)"
+      - "CMakeLists.txt:6 (find_package)"
+    checks:
+      - "Performing Test CMAKE_HAVE_LIBC_PTHREAD"
+    directories:
+      source: "/home/stanislc/software/ALF/alf/wham/CMakeFiles/CMakeScratch/TryCompile-rj0jEx"
+      binary: "/home/stanislc/software/ALF/alf/wham/CMakeFiles/CMakeScratch/TryCompile-rj0jEx"
+    cmakeVariables:
+      CMAKE_CXX_FLAGS: ""
+    buildResult:
+      variable: "CMAKE_HAVE_LIBC_PTHREAD"
+      cached: true
+      stdout: |
+        Change Dir: /home/stanislc/software/ALF/alf/wham/CMakeFiles/CMakeScratch/TryCompile-rj0jEx
+        
+        Run Build Command(s):/home/stanislc/software/mambaforge/envs/charmm/bin/cmake -E env VERBOSE=1 /usr/bin/gmake -f Makefile cmTC_04bad/fast && /usr/bin/gmake  -f CMakeFiles/cmTC_04bad.dir/build.make CMakeFiles/cmTC_04bad.dir/build
+        gmake[1]: Entering directory `/home/stanislc/software/ALF/alf/wham/CMakeFiles/CMakeScratch/TryCompile-rj0jEx'
+        Building CXX object CMakeFiles/cmTC_04bad.dir/src.cxx.o
+        /home/stanislc/software/mambaforge/envs/charmm/bin/c++ -DCMAKE_HAVE_LIBC_PTHREAD   -o CMakeFiles/cmTC_04bad.dir/src.cxx.o -c /home/stanislc/software/ALF/alf/wham/CMakeFiles/CMakeScratch/TryCompile-rj0jEx/src.cxx
+        Linking CXX executable cmTC_04bad
+        /home/stanislc/software/mambaforge/envs/charmm/bin/cmake -E cmake_link_script CMakeFiles/cmTC_04bad.dir/link.txt --verbose=1
+        /home/stanislc/software/mambaforge/envs/charmm/bin/c++ -rdynamic CMakeFiles/cmTC_04bad.dir/src.cxx.o -o cmTC_04bad 
+        /home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0/../../../../x86_64-conda-linux-gnu/bin/ld: CMakeFiles/cmTC_04bad.dir/src.cxx.o: in function `main':
+        src.cxx:(.text+0x2f): undefined reference to `pthread_create'
+        /home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0/../../../../x86_64-conda-linux-gnu/bin/ld: src.cxx:(.text+0x3b): undefined reference to `pthread_detach'
+        /home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0/../../../../x86_64-conda-linux-gnu/bin/ld: src.cxx:(.text+0x47): undefined reference to `pthread_cancel'
+        /home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0/../../../../x86_64-conda-linux-gnu/bin/ld: src.cxx:(.text+0x58): undefined reference to `pthread_join'
+        /home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0/../../../../x86_64-conda-linux-gnu/bin/ld: src.cxx:(.text+0x6c): undefined reference to `pthread_atfork'
+        collect2: error: ld returned 1 exit status
+        gmake[1]: *** [cmTC_04bad] Error 1
+        gmake[1]: Leaving directory `/home/stanislc/software/ALF/alf/wham/CMakeFiles/CMakeScratch/TryCompile-rj0jEx'
+        gmake: *** [cmTC_04bad/fast] Error 2
+        
+      exitCode: 2
+  -
+    kind: "try_compile-v1"
+    backtrace:
+      - "/home/stanislc/software/mambaforge/envs/charmm/share/cmake-3.26/Modules/CheckLibraryExists.cmake:71 (try_compile)"
+      - "/home/stanislc/software/mambaforge/envs/charmm/share/cmake-3.26/Modules/FindThreads.cmake:112 (CHECK_LIBRARY_EXISTS)"
+      - "/home/stanislc/software/mambaforge/envs/charmm/share/cmake-3.26/Modules/FindThreads.cmake:175 (_threads_check_lib)"
+      - "/home/stanislc/software/mambaforge/envs/charmm/share/cmake-3.26/Modules/FindCUDA.cmake:1049 (find_package)"
+      - "CMakeLists.txt:6 (find_package)"
+    checks:
+      - "Looking for pthread_create in pthreads"
+    directories:
+      source: "/home/stanislc/software/ALF/alf/wham/CMakeFiles/CMakeScratch/TryCompile-lIqVpI"
+      binary: "/home/stanislc/software/ALF/alf/wham/CMakeFiles/CMakeScratch/TryCompile-lIqVpI"
+    cmakeVariables:
+      CMAKE_CXX_FLAGS: ""
+    buildResult:
+      variable: "CMAKE_HAVE_PTHREADS_CREATE"
+      cached: true
+      stdout: |
+        Change Dir: /home/stanislc/software/ALF/alf/wham/CMakeFiles/CMakeScratch/TryCompile-lIqVpI
+        
+        Run Build Command(s):/home/stanislc/software/mambaforge/envs/charmm/bin/cmake -E env VERBOSE=1 /usr/bin/gmake -f Makefile cmTC_121e4/fast && /usr/bin/gmake  -f CMakeFiles/cmTC_121e4.dir/build.make CMakeFiles/cmTC_121e4.dir/build
+        gmake[1]: Entering directory `/home/stanislc/software/ALF/alf/wham/CMakeFiles/CMakeScratch/TryCompile-lIqVpI'
+        Building CXX object CMakeFiles/cmTC_121e4.dir/CheckFunctionExists.cxx.o
+        /home/stanislc/software/mambaforge/envs/charmm/bin/c++   -DCHECK_FUNCTION_EXISTS=pthread_create -o CMakeFiles/cmTC_121e4.dir/CheckFunctionExists.cxx.o -c /home/stanislc/software/ALF/alf/wham/CMakeFiles/CMakeScratch/TryCompile-lIqVpI/CheckFunctionExists.cxx
+        Linking CXX executable cmTC_121e4
+        /home/stanislc/software/mambaforge/envs/charmm/bin/cmake -E cmake_link_script CMakeFiles/cmTC_121e4.dir/link.txt --verbose=1
+        /home/stanislc/software/mambaforge/envs/charmm/bin/c++  -DCHECK_FUNCTION_EXISTS=pthread_create -rdynamic CMakeFiles/cmTC_121e4.dir/CheckFunctionExists.cxx.o -o cmTC_121e4  -lpthreads 
+        /home/stanislc/software/mambaforge/envs/charmm/bin/../lib/gcc/x86_64-conda-linux-gnu/12.1.0/../../../../x86_64-conda-linux-gnu/bin/ld: cannot find -lpthreads: No such file or directory
+        collect2: error: ld returned 1 exit status
+        gmake[1]: *** [cmTC_121e4] Error 1
+        gmake[1]: Leaving directory `/home/stanislc/software/ALF/alf/wham/CMakeFiles/CMakeScratch/TryCompile-lIqVpI'
+        gmake: *** [cmTC_121e4/fast] Error 2
+        
+      exitCode: 2
+  -
+    kind: "try_compile-v1"
+    backtrace:
+      - "/home/stanislc/software/mambaforge/envs/charmm/share/cmake-3.26/Modules/CheckLibraryExists.cmake:71 (try_compile)"
+      - "/home/stanislc/software/mambaforge/envs/charmm/share/cmake-3.26/Modules/FindThreads.cmake:112 (CHECK_LIBRARY_EXISTS)"
+      - "/home/stanislc/software/mambaforge/envs/charmm/share/cmake-3.26/Modules/FindThreads.cmake:176 (_threads_check_lib)"
+      - "/home/stanislc/software/mambaforge/envs/charmm/share/cmake-3.26/Modules/FindCUDA.cmake:1049 (find_package)"
+      - "CMakeLists.txt:6 (find_package)"
+    checks:
+      - "Looking for pthread_create in pthread"
+    directories:
+      source: "/home/stanislc/software/ALF/alf/wham/CMakeFiles/CMakeScratch/TryCompile-Ny5zAT"
+      binary: "/home/stanislc/software/ALF/alf/wham/CMakeFiles/CMakeScratch/TryCompile-Ny5zAT"
+    cmakeVariables:
+      CMAKE_CXX_FLAGS: ""
+    buildResult:
+      variable: "CMAKE_HAVE_PTHREAD_CREATE"
+      cached: true
+      stdout: |
+        Change Dir: /home/stanislc/software/ALF/alf/wham/CMakeFiles/CMakeScratch/TryCompile-Ny5zAT
+        
+        Run Build Command(s):/home/stanislc/software/mambaforge/envs/charmm/bin/cmake -E env VERBOSE=1 /usr/bin/gmake -f Makefile cmTC_02d75/fast && /usr/bin/gmake  -f CMakeFiles/cmTC_02d75.dir/build.make CMakeFiles/cmTC_02d75.dir/build
+        gmake[1]: Entering directory `/home/stanislc/software/ALF/alf/wham/CMakeFiles/CMakeScratch/TryCompile-Ny5zAT'
+        Building CXX object CMakeFiles/cmTC_02d75.dir/CheckFunctionExists.cxx.o
+        /home/stanislc/software/mambaforge/envs/charmm/bin/c++   -DCHECK_FUNCTION_EXISTS=pthread_create -o CMakeFiles/cmTC_02d75.dir/CheckFunctionExists.cxx.o -c /home/stanislc/software/ALF/alf/wham/CMakeFiles/CMakeScratch/TryCompile-Ny5zAT/CheckFunctionExists.cxx
+        Linking CXX executable cmTC_02d75
+        /home/stanislc/software/mambaforge/envs/charmm/bin/cmake -E cmake_link_script CMakeFiles/cmTC_02d75.dir/link.txt --verbose=1
+        /home/stanislc/software/mambaforge/envs/charmm/bin/c++  -DCHECK_FUNCTION_EXISTS=pthread_create -rdynamic CMakeFiles/cmTC_02d75.dir/CheckFunctionExists.cxx.o -o cmTC_02d75  -lpthread 
+        gmake[1]: Leaving directory `/home/stanislc/software/ALF/alf/wham/CMakeFiles/CMakeScratch/TryCompile-Ny5zAT'
+        
+      exitCode: 0
+...

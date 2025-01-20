@@ -1,0 +1,22 @@
+-- The CXX compiler identification is GNU 7.3.0
+-- Detecting CXX compiler ABI info
+-- Detecting CXX compiler ABI info - done
+-- Check for working CXX compiler: /export/apps/CentOS7/gcc/7.3.0/bin/g++ - skipped
+-- Detecting CXX compile features
+-- Detecting CXX compile features - done
+-- Looking for C++ include pthread.h
+-- Looking for C++ include pthread.h - found
+-- Performing Test CMAKE_HAVE_LIBC_PTHREAD
+-- Performing Test CMAKE_HAVE_LIBC_PTHREAD - Failed
+-- Looking for pthread_create in pthreads
+-- Looking for pthread_create in pthreads - not found
+-- Looking for pthread_create in pthread
+-- Looking for pthread_create in pthread - found
+-- Found Threads: TRUE  
+-- Found CUDA: /export/apps/CentOS7/cuda/11.4.0 (found suitable version "11.4", minimum required is "9.0") 
+-- Configuring done
+-- Generating done
+-- Build files have been written to: /home/stanislc/software/ALF/alf/wham
+[ 50%] Building NVCC (Device) object CMakeFiles/wham.dir/src/wham_generated_wham.cu.o
+[100%] Linking CXX shared library libwham.so
+[100%] Built target wham

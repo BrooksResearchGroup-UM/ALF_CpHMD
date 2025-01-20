@@ -1,0 +1,918 @@
+i = 0, val = 0
+#!/bin/bash
+# SLURM parameters
+#SBATCH --job-name=setup_0
+#SBATCH -A brooks
+#SBATCH -p gpu
+#SBATCH --cpus-per-task=1
+#SBATCH --gres=gpu:1
+#SBATCH --output=setup_0.out
+#SBATCH --error=setup_0.err
+#SBATCH --array=0-50
+#SBATCH --time=24:00:00
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --mem=4G
+
+setup=0
+drxn=0
+i = 1, val = 1
+#!/bin/bash
+# SLURM parameters
+#SBATCH --job-name=setup_1
+#SBATCH -A brooks
+#SBATCH -p gpu
+#SBATCH --cpus-per-task=1
+#SBATCH --gres=gpu:1
+#SBATCH --output=setup_1.out
+#SBATCH --error=setup_1.err
+#SBATCH --array=0-50
+#SBATCH --time=24:00:00
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --mem=4G
+
+setup=1
+drxn=1
+i = 2, val = 2
+#!/bin/bash
+# SLURM parameters
+#SBATCH --job-name=setup_2
+#SBATCH -A brooks
+#SBATCH -p gpu
+#SBATCH --cpus-per-task=1
+#SBATCH --gres=gpu:1
+#SBATCH --output=setup_2.out
+#SBATCH --error=setup_2.err
+#SBATCH --array=0-50
+#SBATCH --time=24:00:00
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --mem=4G
+
+setup=2
+drxn=2
+i = 3, val = 3
+#!/bin/bash
+# SLURM parameters
+#SBATCH --job-name=setup_3
+#SBATCH -A brooks
+#SBATCH -p gpu
+#SBATCH --cpus-per-task=1
+#SBATCH --gres=gpu:1
+#SBATCH --output=setup_3.out
+#SBATCH --error=setup_3.err
+#SBATCH --array=0-50
+#SBATCH --time=24:00:00
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --mem=4G
+
+setup=3
+drxn=3
+i = 4, val = 4
+#!/bin/bash
+# SLURM parameters
+#SBATCH --job-name=setup_4
+#SBATCH -A brooks
+#SBATCH -p gpu
+#SBATCH --cpus-per-task=1
+#SBATCH --gres=gpu:1
+#SBATCH --output=setup_4.out
+#SBATCH --error=setup_4.err
+#SBATCH --array=0-50
+#SBATCH --time=24:00:00
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --mem=4G
+
+setup=4
+drxn=4
+i = 5, val = 5
+#!/bin/bash
+# SLURM parameters
+#SBATCH --job-name=setup_5
+#SBATCH -A brooks
+#SBATCH -p gpu
+#SBATCH --cpus-per-task=1
+#SBATCH --gres=gpu:1
+#SBATCH --output=setup_5.out
+#SBATCH --error=setup_5.err
+#SBATCH --array=0-50
+#SBATCH --time=24:00:00
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --mem=4G
+
+setup=5
+drxn=5
+i = 6, val = 6
+#!/bin/bash
+# SLURM parameters
+#SBATCH --job-name=setup_6
+#SBATCH -A brooks
+#SBATCH -p gpu
+#SBATCH --cpus-per-task=1
+#SBATCH --gres=gpu:1
+#SBATCH --output=setup_6.out
+#SBATCH --error=setup_6.err
+#SBATCH --array=0-50
+#SBATCH --time=24:00:00
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --mem=4G
+
+setup=6
+drxn=6
+i = 7, val = 7
+#!/bin/bash
+# SLURM parameters
+#SBATCH --job-name=setup_7
+#SBATCH -A brooks
+#SBATCH -p gpu
+#SBATCH --cpus-per-task=1
+#SBATCH --gres=gpu:1
+#SBATCH --output=setup_7.out
+#SBATCH --error=setup_7.err
+#SBATCH --array=0-50
+#SBATCH --time=24:00:00
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --mem=4G
+
+setup=7
+drxn=7
+i = 8, val = 8
+#!/bin/bash
+# SLURM parameters
+#SBATCH --job-name=setup_8
+#SBATCH -A brooks
+#SBATCH -p gpu
+#SBATCH --cpus-per-task=1
+#SBATCH --gres=gpu:1
+#SBATCH --output=setup_8.out
+#SBATCH --error=setup_8.err
+#SBATCH --array=0-50
+#SBATCH --time=24:00:00
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --mem=4G
+
+setup=8
+drxn=8
+i = 9, val = 9
+#!/bin/bash
+# SLURM parameters
+#SBATCH --job-name=setup_9
+#SBATCH -A brooks
+#SBATCH -p gpu
+#SBATCH --cpus-per-task=1
+#SBATCH --gres=gpu:1
+#SBATCH --output=setup_9.out
+#SBATCH --error=setup_9.err
+#SBATCH --array=0-50
+#SBATCH --time=24:00:00
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --mem=4G
+
+setup=9
+drxn=9
+i = 10, val = 10
+#!/bin/bash
+# SLURM parameters
+#SBATCH --job-name=setup_10
+#SBATCH -A brooks
+#SBATCH -p gpu
+#SBATCH --cpus-per-task=1
+#SBATCH --gres=gpu:1
+#SBATCH --output=setup_10.out
+#SBATCH --error=setup_10.err
+#SBATCH --array=0-50
+#SBATCH --time=24:00:00
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --mem=4G
+
+setup=10
+drxn=10
+i = 11, val = 11
+#!/bin/bash
+# SLURM parameters
+#SBATCH --job-name=setup_11
+#SBATCH -A brooks
+#SBATCH -p gpu
+#SBATCH --cpus-per-task=1
+#SBATCH --gres=gpu:1
+#SBATCH --output=setup_11.out
+#SBATCH --error=setup_11.err
+#SBATCH --array=0-50
+#SBATCH --time=24:00:00
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --mem=4G
+
+setup=11
+drxn=11
+i = 12, val = 12
+#!/bin/bash
+# SLURM parameters
+#SBATCH --job-name=setup_12
+#SBATCH -A brooks
+#SBATCH -p gpu
+#SBATCH --cpus-per-task=1
+#SBATCH --gres=gpu:1
+#SBATCH --output=setup_12.out
+#SBATCH --error=setup_12.err
+#SBATCH --array=0-50
+#SBATCH --time=24:00:00
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --mem=4G
+
+setup=12
+drxn=12
+i = 13, val = 13
+#!/bin/bash
+# SLURM parameters
+#SBATCH --job-name=setup_13
+#SBATCH -A brooks
+#SBATCH -p gpu
+#SBATCH --cpus-per-task=1
+#SBATCH --gres=gpu:1
+#SBATCH --output=setup_13.out
+#SBATCH --error=setup_13.err
+#SBATCH --array=0-50
+#SBATCH --time=24:00:00
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --mem=4G
+
+setup=13
+drxn=13
+i = 14, val = 14
+#!/bin/bash
+# SLURM parameters
+#SBATCH --job-name=setup_14
+#SBATCH -A brooks
+#SBATCH -p gpu
+#SBATCH --cpus-per-task=1
+#SBATCH --gres=gpu:1
+#SBATCH --output=setup_14.out
+#SBATCH --error=setup_14.err
+#SBATCH --array=0-50
+#SBATCH --time=24:00:00
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --mem=4G
+
+setup=14
+drxn=14
+i = 15, val = 15
+#!/bin/bash
+# SLURM parameters
+#SBATCH --job-name=setup_15
+#SBATCH -A brooks
+#SBATCH -p gpu
+#SBATCH --cpus-per-task=1
+#SBATCH --gres=gpu:1
+#SBATCH --output=setup_15.out
+#SBATCH --error=setup_15.err
+#SBATCH --array=0-50
+#SBATCH --time=24:00:00
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --mem=4G
+
+setup=15
+drxn=15
+i = 16, val = 16
+#!/bin/bash
+# SLURM parameters
+#SBATCH --job-name=setup_16
+#SBATCH -A brooks
+#SBATCH -p gpu
+#SBATCH --cpus-per-task=1
+#SBATCH --gres=gpu:1
+#SBATCH --output=setup_16.out
+#SBATCH --error=setup_16.err
+#SBATCH --array=0-50
+#SBATCH --time=24:00:00
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --mem=4G
+
+setup=16
+drxn=16
+i = 17, val = 17
+#!/bin/bash
+# SLURM parameters
+#SBATCH --job-name=setup_17
+#SBATCH -A brooks
+#SBATCH -p gpu
+#SBATCH --cpus-per-task=1
+#SBATCH --gres=gpu:1
+#SBATCH --output=setup_17.out
+#SBATCH --error=setup_17.err
+#SBATCH --array=0-50
+#SBATCH --time=24:00:00
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --mem=4G
+
+setup=17
+drxn=17
+i = 18, val = 18
+#!/bin/bash
+# SLURM parameters
+#SBATCH --job-name=setup_18
+#SBATCH -A brooks
+#SBATCH -p gpu
+#SBATCH --cpus-per-task=1
+#SBATCH --gres=gpu:1
+#SBATCH --output=setup_18.out
+#SBATCH --error=setup_18.err
+#SBATCH --array=0-50
+#SBATCH --time=24:00:00
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --mem=4G
+
+setup=18
+drxn=18
+i = 19, val = 19
+#!/bin/bash
+# SLURM parameters
+#SBATCH --job-name=setup_19
+#SBATCH -A brooks
+#SBATCH -p gpu
+#SBATCH --cpus-per-task=1
+#SBATCH --gres=gpu:1
+#SBATCH --output=setup_19.out
+#SBATCH --error=setup_19.err
+#SBATCH --array=0-50
+#SBATCH --time=24:00:00
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --mem=4G
+
+setup=19
+drxn=19
+i = 20, val = 20
+#!/bin/bash
+# SLURM parameters
+#SBATCH --job-name=setup_20
+#SBATCH -A brooks
+#SBATCH -p gpu
+#SBATCH --cpus-per-task=1
+#SBATCH --gres=gpu:1
+#SBATCH --output=setup_20.out
+#SBATCH --error=setup_20.err
+#SBATCH --array=0-50
+#SBATCH --time=24:00:00
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --mem=4G
+
+setup=20
+drxn=20
+i = 21, val = 21
+#!/bin/bash
+# SLURM parameters
+#SBATCH --job-name=setup_21
+#SBATCH -A brooks
+#SBATCH -p gpu
+#SBATCH --cpus-per-task=1
+#SBATCH --gres=gpu:1
+#SBATCH --output=setup_21.out
+#SBATCH --error=setup_21.err
+#SBATCH --array=0-50
+#SBATCH --time=24:00:00
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --mem=4G
+
+setup=21
+drxn=21
+i = 22, val = 22
+#!/bin/bash
+# SLURM parameters
+#SBATCH --job-name=setup_22
+#SBATCH -A brooks
+#SBATCH -p gpu
+#SBATCH --cpus-per-task=1
+#SBATCH --gres=gpu:1
+#SBATCH --output=setup_22.out
+#SBATCH --error=setup_22.err
+#SBATCH --array=0-50
+#SBATCH --time=24:00:00
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --mem=4G
+
+setup=22
+drxn=22
+i = 23, val = 23
+#!/bin/bash
+# SLURM parameters
+#SBATCH --job-name=setup_23
+#SBATCH -A brooks
+#SBATCH -p gpu
+#SBATCH --cpus-per-task=1
+#SBATCH --gres=gpu:1
+#SBATCH --output=setup_23.out
+#SBATCH --error=setup_23.err
+#SBATCH --array=0-50
+#SBATCH --time=24:00:00
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --mem=4G
+
+setup=23
+drxn=23
+i = 24, val = 24
+#!/bin/bash
+# SLURM parameters
+#SBATCH --job-name=setup_24
+#SBATCH -A brooks
+#SBATCH -p gpu
+#SBATCH --cpus-per-task=1
+#SBATCH --gres=gpu:1
+#SBATCH --output=setup_24.out
+#SBATCH --error=setup_24.err
+#SBATCH --array=0-50
+#SBATCH --time=24:00:00
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --mem=4G
+
+setup=24
+drxn=24
+i = 25, val = 25
+#!/bin/bash
+# SLURM parameters
+#SBATCH --job-name=setup_25
+#SBATCH -A brooks
+#SBATCH -p gpu
+#SBATCH --cpus-per-task=1
+#SBATCH --gres=gpu:1
+#SBATCH --output=setup_25.out
+#SBATCH --error=setup_25.err
+#SBATCH --array=0-50
+#SBATCH --time=24:00:00
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --mem=4G
+
+setup=25
+drxn=25
+i = 26, val = -25
+#!/bin/bash
+# SLURM parameters
+#SBATCH --job-name=setup_26
+#SBATCH -A brooks
+#SBATCH -p gpu
+#SBATCH --cpus-per-task=1
+#SBATCH --gres=gpu:1
+#SBATCH --output=setup_26.out
+#SBATCH --error=setup_26.err
+#SBATCH --array=0-50
+#SBATCH --time=24:00:00
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --mem=4G
+
+setup=26
+drxn=-25
+i = 27, val = -24
+#!/bin/bash
+# SLURM parameters
+#SBATCH --job-name=setup_27
+#SBATCH -A brooks
+#SBATCH -p gpu
+#SBATCH --cpus-per-task=1
+#SBATCH --gres=gpu:1
+#SBATCH --output=setup_27.out
+#SBATCH --error=setup_27.err
+#SBATCH --array=0-50
+#SBATCH --time=24:00:00
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --mem=4G
+
+setup=27
+drxn=-24
+i = 28, val = -23
+#!/bin/bash
+# SLURM parameters
+#SBATCH --job-name=setup_28
+#SBATCH -A brooks
+#SBATCH -p gpu
+#SBATCH --cpus-per-task=1
+#SBATCH --gres=gpu:1
+#SBATCH --output=setup_28.out
+#SBATCH --error=setup_28.err
+#SBATCH --array=0-50
+#SBATCH --time=24:00:00
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --mem=4G
+
+setup=28
+drxn=-23
+i = 29, val = -22
+#!/bin/bash
+# SLURM parameters
+#SBATCH --job-name=setup_29
+#SBATCH -A brooks
+#SBATCH -p gpu
+#SBATCH --cpus-per-task=1
+#SBATCH --gres=gpu:1
+#SBATCH --output=setup_29.out
+#SBATCH --error=setup_29.err
+#SBATCH --array=0-50
+#SBATCH --time=24:00:00
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --mem=4G
+
+setup=29
+drxn=-22
+i = 30, val = -21
+#!/bin/bash
+# SLURM parameters
+#SBATCH --job-name=setup_30
+#SBATCH -A brooks
+#SBATCH -p gpu
+#SBATCH --cpus-per-task=1
+#SBATCH --gres=gpu:1
+#SBATCH --output=setup_30.out
+#SBATCH --error=setup_30.err
+#SBATCH --array=0-50
+#SBATCH --time=24:00:00
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --mem=4G
+
+setup=30
+drxn=-21
+i = 31, val = -20
+#!/bin/bash
+# SLURM parameters
+#SBATCH --job-name=setup_31
+#SBATCH -A brooks
+#SBATCH -p gpu
+#SBATCH --cpus-per-task=1
+#SBATCH --gres=gpu:1
+#SBATCH --output=setup_31.out
+#SBATCH --error=setup_31.err
+#SBATCH --array=0-50
+#SBATCH --time=24:00:00
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --mem=4G
+
+setup=31
+drxn=-20
+i = 32, val = -19
+#!/bin/bash
+# SLURM parameters
+#SBATCH --job-name=setup_32
+#SBATCH -A brooks
+#SBATCH -p gpu
+#SBATCH --cpus-per-task=1
+#SBATCH --gres=gpu:1
+#SBATCH --output=setup_32.out
+#SBATCH --error=setup_32.err
+#SBATCH --array=0-50
+#SBATCH --time=24:00:00
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --mem=4G
+
+setup=32
+drxn=-19
+i = 33, val = -18
+#!/bin/bash
+# SLURM parameters
+#SBATCH --job-name=setup_33
+#SBATCH -A brooks
+#SBATCH -p gpu
+#SBATCH --cpus-per-task=1
+#SBATCH --gres=gpu:1
+#SBATCH --output=setup_33.out
+#SBATCH --error=setup_33.err
+#SBATCH --array=0-50
+#SBATCH --time=24:00:00
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --mem=4G
+
+setup=33
+drxn=-18
+i = 34, val = -17
+#!/bin/bash
+# SLURM parameters
+#SBATCH --job-name=setup_34
+#SBATCH -A brooks
+#SBATCH -p gpu
+#SBATCH --cpus-per-task=1
+#SBATCH --gres=gpu:1
+#SBATCH --output=setup_34.out
+#SBATCH --error=setup_34.err
+#SBATCH --array=0-50
+#SBATCH --time=24:00:00
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --mem=4G
+
+setup=34
+drxn=-17
+i = 35, val = -16
+#!/bin/bash
+# SLURM parameters
+#SBATCH --job-name=setup_35
+#SBATCH -A brooks
+#SBATCH -p gpu
+#SBATCH --cpus-per-task=1
+#SBATCH --gres=gpu:1
+#SBATCH --output=setup_35.out
+#SBATCH --error=setup_35.err
+#SBATCH --array=0-50
+#SBATCH --time=24:00:00
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --mem=4G
+
+setup=35
+drxn=-16
+i = 36, val = -15
+#!/bin/bash
+# SLURM parameters
+#SBATCH --job-name=setup_36
+#SBATCH -A brooks
+#SBATCH -p gpu
+#SBATCH --cpus-per-task=1
+#SBATCH --gres=gpu:1
+#SBATCH --output=setup_36.out
+#SBATCH --error=setup_36.err
+#SBATCH --array=0-50
+#SBATCH --time=24:00:00
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --mem=4G
+
+setup=36
+drxn=-15
+i = 37, val = -14
+#!/bin/bash
+# SLURM parameters
+#SBATCH --job-name=setup_37
+#SBATCH -A brooks
+#SBATCH -p gpu
+#SBATCH --cpus-per-task=1
+#SBATCH --gres=gpu:1
+#SBATCH --output=setup_37.out
+#SBATCH --error=setup_37.err
+#SBATCH --array=0-50
+#SBATCH --time=24:00:00
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --mem=4G
+
+setup=37
+drxn=-14
+i = 38, val = -13
+#!/bin/bash
+# SLURM parameters
+#SBATCH --job-name=setup_38
+#SBATCH -A brooks
+#SBATCH -p gpu
+#SBATCH --cpus-per-task=1
+#SBATCH --gres=gpu:1
+#SBATCH --output=setup_38.out
+#SBATCH --error=setup_38.err
+#SBATCH --array=0-50
+#SBATCH --time=24:00:00
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --mem=4G
+
+setup=38
+drxn=-13
+i = 39, val = -12
+#!/bin/bash
+# SLURM parameters
+#SBATCH --job-name=setup_39
+#SBATCH -A brooks
+#SBATCH -p gpu
+#SBATCH --cpus-per-task=1
+#SBATCH --gres=gpu:1
+#SBATCH --output=setup_39.out
+#SBATCH --error=setup_39.err
+#SBATCH --array=0-50
+#SBATCH --time=24:00:00
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --mem=4G
+
+setup=39
+drxn=-12
+i = 40, val = -11
+#!/bin/bash
+# SLURM parameters
+#SBATCH --job-name=setup_40
+#SBATCH -A brooks
+#SBATCH -p gpu
+#SBATCH --cpus-per-task=1
+#SBATCH --gres=gpu:1
+#SBATCH --output=setup_40.out
+#SBATCH --error=setup_40.err
+#SBATCH --array=0-50
+#SBATCH --time=24:00:00
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --mem=4G
+
+setup=40
+drxn=-11
+i = 41, val = -10
+#!/bin/bash
+# SLURM parameters
+#SBATCH --job-name=setup_41
+#SBATCH -A brooks
+#SBATCH -p gpu
+#SBATCH --cpus-per-task=1
+#SBATCH --gres=gpu:1
+#SBATCH --output=setup_41.out
+#SBATCH --error=setup_41.err
+#SBATCH --array=0-50
+#SBATCH --time=24:00:00
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --mem=4G
+
+setup=41
+drxn=-10
+i = 42, val = -9
+#!/bin/bash
+# SLURM parameters
+#SBATCH --job-name=setup_42
+#SBATCH -A brooks
+#SBATCH -p gpu
+#SBATCH --cpus-per-task=1
+#SBATCH --gres=gpu:1
+#SBATCH --output=setup_42.out
+#SBATCH --error=setup_42.err
+#SBATCH --array=0-50
+#SBATCH --time=24:00:00
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --mem=4G
+
+setup=42
+drxn=-9
+i = 43, val = -8
+#!/bin/bash
+# SLURM parameters
+#SBATCH --job-name=setup_43
+#SBATCH -A brooks
+#SBATCH -p gpu
+#SBATCH --cpus-per-task=1
+#SBATCH --gres=gpu:1
+#SBATCH --output=setup_43.out
+#SBATCH --error=setup_43.err
+#SBATCH --array=0-50
+#SBATCH --time=24:00:00
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --mem=4G
+
+setup=43
+drxn=-8
+i = 44, val = -7
+#!/bin/bash
+# SLURM parameters
+#SBATCH --job-name=setup_44
+#SBATCH -A brooks
+#SBATCH -p gpu
+#SBATCH --cpus-per-task=1
+#SBATCH --gres=gpu:1
+#SBATCH --output=setup_44.out
+#SBATCH --error=setup_44.err
+#SBATCH --array=0-50
+#SBATCH --time=24:00:00
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --mem=4G
+
+setup=44
+drxn=-7
+i = 45, val = -6
+#!/bin/bash
+# SLURM parameters
+#SBATCH --job-name=setup_45
+#SBATCH -A brooks
+#SBATCH -p gpu
+#SBATCH --cpus-per-task=1
+#SBATCH --gres=gpu:1
+#SBATCH --output=setup_45.out
+#SBATCH --error=setup_45.err
+#SBATCH --array=0-50
+#SBATCH --time=24:00:00
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --mem=4G
+
+setup=45
+drxn=-6
+i = 46, val = -5
+#!/bin/bash
+# SLURM parameters
+#SBATCH --job-name=setup_46
+#SBATCH -A brooks
+#SBATCH -p gpu
+#SBATCH --cpus-per-task=1
+#SBATCH --gres=gpu:1
+#SBATCH --output=setup_46.out
+#SBATCH --error=setup_46.err
+#SBATCH --array=0-50
+#SBATCH --time=24:00:00
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --mem=4G
+
+setup=46
+drxn=-5
+i = 47, val = -4
+#!/bin/bash
+# SLURM parameters
+#SBATCH --job-name=setup_47
+#SBATCH -A brooks
+#SBATCH -p gpu
+#SBATCH --cpus-per-task=1
+#SBATCH --gres=gpu:1
+#SBATCH --output=setup_47.out
+#SBATCH --error=setup_47.err
+#SBATCH --array=0-50
+#SBATCH --time=24:00:00
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --mem=4G
+
+setup=47
+drxn=-4
+i = 48, val = -3
+#!/bin/bash
+# SLURM parameters
+#SBATCH --job-name=setup_48
+#SBATCH -A brooks
+#SBATCH -p gpu
+#SBATCH --cpus-per-task=1
+#SBATCH --gres=gpu:1
+#SBATCH --output=setup_48.out
+#SBATCH --error=setup_48.err
+#SBATCH --array=0-50
+#SBATCH --time=24:00:00
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --mem=4G
+
+setup=48
+drxn=-3
+i = 49, val = -2
+#!/bin/bash
+# SLURM parameters
+#SBATCH --job-name=setup_49
+#SBATCH -A brooks
+#SBATCH -p gpu
+#SBATCH --cpus-per-task=1
+#SBATCH --gres=gpu:1
+#SBATCH --output=setup_49.out
+#SBATCH --error=setup_49.err
+#SBATCH --array=0-50
+#SBATCH --time=24:00:00
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --mem=4G
+
+setup=49
+drxn=-2
+i = 50, val = -1
+#!/bin/bash
+# SLURM parameters
+#SBATCH --job-name=setup_50
+#SBATCH -A brooks
+#SBATCH -p gpu
+#SBATCH --cpus-per-task=1
+#SBATCH --gres=gpu:1
+#SBATCH --output=setup_50.out
+#SBATCH --error=setup_50.err
+#SBATCH --array=0-50
+#SBATCH --time=24:00:00
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --mem=4G
+
+setup=50
+drxn=-1
