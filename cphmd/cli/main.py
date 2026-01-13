@@ -49,33 +49,81 @@ def main(
 @setup_app.command("create-aa")
 def create_aa(
     output: str = typer.Option("pdb", "-o", "--output", help="Output directory"),
+    mol_type: str = typer.Option(
+        "both", "-t", "--type", help="Molecule type: amino, nucleic, or both"
+    ),
+    overwrite: bool = typer.Option(False, "--overwrite", help="Overwrite existing files"),
 ):
     """Create amino acid/nucleic acid template structures."""
-    console.print("[yellow]create-aa not yet implemented[/yellow]")
-    # TODO: Import and call cphmd.setup.create_aa
+    from cphmd.setup import create_all_templates
+
+    console.print(f"[cyan]Creating {mol_type} acid templates in {output}/[/cyan]")
+    results = create_all_templates(
+        output_dir=output,
+        molecule_type=mol_type,  # type: ignore
+        overwrite=overwrite,
+    )
+    total = len(results["amino"]) + len(results["nucleic"])
+    console.print(f"[green]Created {total} template structures[/green]")
 
 
 @setup_app.command("solvate")
 def solvate(
-    input_file: str = typer.Option(..., "-i", "--input", help="Input PDB file"),
+    input_file: str = typer.Option(..., "-i", "--input", help="Input structure (without extension)"),
     output: str = typer.Option("solvated", "-o", "--output", help="Output folder"),
     padding: float = typer.Option(10.0, "--pad", help="Padding around molecule (Angstroms)"),
-    salt: float = typer.Option(0.15, "-s", "--salt", help="Salt concentration (M)"),
+    salt: float = typer.Option(0.10, "-s", "--salt", help="Salt concentration (M)"),
+    crystal_type: str = typer.Option("OCTAHEDRAL", "--crystal", help="Crystal type"),
+    temperature: float = typer.Option(298.15, "-t", "--temp", help="Temperature (K)"),
+    no_ions: bool = typer.Option(False, "--no-ions", help="Skip ion placement"),
+    ion_method: str = typer.Option("SLTCAP", "--ion-method", help="Ion method: AN or SLTCAP"),
 ):
     """Solvate a molecular system in a water box."""
-    console.print("[yellow]solvate not yet implemented[/yellow]")
-    # TODO: Import and call cphmd.setup.solvate
+    from cphmd.setup import SolvationConfig, solvate_system
+
+    console.print(f"[cyan]Solvating {input_file} → {output}/[/cyan]")
+    console.print(f"[dim]Crystal: {crystal_type}, Pad: {padding}Å, Salt: {salt}M[/dim]")
+
+    config = SolvationConfig(
+        input_file=input_file,
+        output_dir=output,
+        crystal_type=crystal_type,  # type: ignore
+        padding=padding,
+        salt_concentration=salt,
+        temperature=temperature,
+        skip_ions=no_ions,
+        ion_method=ion_method,  # type: ignore
+    )
+
+    result_dir = solvate_system(config)
+    console.print(f"[green]Solvation complete: {result_dir}/solvated.pdb[/green]")
 
 
 # Run commands
 @run_app.command("patch")
 def patch(
     input_folder: str = typer.Option(..., "-i", "--input", help="Input folder"),
+    structure: str = typer.Option("solvated", "-f", "--file", help="Structure file name"),
     hmr: bool = typer.Option(True, "--hmr/--no-hmr", help="Enable hydrogen mass repartitioning"),
+    hmr_waters: bool = typer.Option(False, "--hmr-waters/--no-hmr-waters", help="Apply HMR to waters"),
+    residues: list[str] = typer.Option(None, "-s", "--select", help="Residues to patch (e.g., ASP GLU PROA:15)"),
 ):
     """Apply CpHMD patches to titratable residues."""
-    console.print("[yellow]patch not yet implemented[/yellow]")
-    # TODO: Import and call cphmd.core.patching
+    from cphmd.core import PatchConfig, patch_system
+
+    console.print(f"[cyan]Patching titratable residues in {input_folder}/[/cyan]")
+    console.print(f"[dim]HMR: {hmr}, HMR waters: {hmr_waters}[/dim]")
+
+    config = PatchConfig(
+        input_folder=input_folder,
+        structure_file=structure,
+        hmr=hmr,
+        hmr_waters=hmr_waters,
+        selected_residues=residues or [],
+    )
+
+    result_dir = patch_system(config)
+    console.print(f"[green]Patching complete: {result_dir}/prep/system.pdb[/green]")
 
 
 @run_app.command("alf")
