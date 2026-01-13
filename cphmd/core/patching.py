@@ -388,27 +388,30 @@ def _fft_number(n: float) -> int:
     """Find the smallest FFT-friendly number >= n.
 
     FFT-friendly numbers are products of 2, 3, and 5 only,
-    and must be even.
+    and must be even (for CHARMM FFT requirements).
     """
-    fft_numbers = [1]
-    i2 = i3 = i5 = 0
+    n = int(n)
+    if n <= 2:
+        return 2
 
-    while fft_numbers[-1] < n:
-        next_fft = min(fft_numbers[i2] * 2, fft_numbers[i3] * 3, fft_numbers[i5] * 5)
-        if next_fft % 2 == 0:
-            fft_numbers.append(next_fft)
+    # Generate all smooth numbers (only factors 2, 3, 5) up to 2*n
+    smooth_numbers = []
+    limit = max(n * 2, 256)
 
-        if next_fft == fft_numbers[i2] * 2:
-            i2 += 1
-        if next_fft == fft_numbers[i3] * 3:
-            i3 += 1
-        if next_fft == fft_numbers[i5] * 5:
-            i5 += 1
+    for i in range(2, limit + 1):
+        temp = i
+        for factor in [2, 3, 5]:
+            while temp % factor == 0:
+                temp //= factor
+        if temp == 1 and i % 2 == 0:  # Must be smooth and even
+            smooth_numbers.append(i)
 
-    for num in fft_numbers:
+    # Return the smallest one >= n
+    for num in smooth_numbers:
         if num >= n:
             return num
-    return int(n)
+
+    return n  # Fallback
 
 
 def patch_system(config: PatchConfig) -> Path:

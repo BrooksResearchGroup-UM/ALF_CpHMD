@@ -128,12 +128,40 @@ def patch(
 
 @run_app.command("alf")
 def alf(
-    config: str = typer.Option(None, "-c", "--config", help="Configuration YAML file"),
-    replicas: int = typer.Option(8, "-n", "--replicas", help="Number of replicas"),
+    input_folder: str = typer.Option(..., "-i", "--input", help="Input folder with prep/ directory"),
+    temperature: float = typer.Option(298.15, "-t", "--temp", help="Temperature (K)"),
+    pH: float = typer.Option(None, "-pH", "--pH", help="Target pH for CpHMD (None for standard ALF)"),
+    hmr: bool = typer.Option(False, "--hmr/--no-hmr", help="Use hydrogen mass repartitioning"),
+    start: int = typer.Option(1, "-s", "--start", help="Start run number"),
+    end: int = typer.Option(20, "-e", "--end", help="End run number"),
+    phase: int = typer.Option(1, "-p", "--phase", help="Initial phase (1, 2, or 3)"),
+    nreps: int = typer.Option(None, "-n", "--nreps", help="Number of replicas (default: MPI size)"),
+    restrains: str = typer.Option("SCAT", "-r", "--restrains", help="Restraint type: SCAT or NOE"),
 ):
-    """Run ALF simulation."""
-    console.print("[yellow]alf not yet implemented[/yellow]")
-    # TODO: Import and call cphmd.core.alf_runner
+    """Run ALF simulation with optional CpHMD.
+
+    This command requires MPI execution:
+        mpirun -np <nprocs> cphmd run alf -i <folder> [options]
+    """
+    from cphmd.core import ALFConfig, run_alf_simulation
+
+    console.print(f"[cyan]Starting ALF simulation for {input_folder}/[/cyan]")
+    console.print(f"[dim]Temp: {temperature}K, pH: {pH}, Phase: {phase}, Runs: {start}-{end}[/dim]")
+
+    config = ALFConfig(
+        input_folder=input_folder,
+        temperature=temperature,
+        pH=pH,
+        hmr=hmr,
+        start=start,
+        end=end,
+        phase=phase,  # type: ignore
+        nreps=nreps,
+        restrains=restrains,  # type: ignore
+    )
+
+    run_alf_simulation(config)
+    console.print(f"[green]ALF simulation complete[/green]")
 
 
 @run_app.command("bias-search")

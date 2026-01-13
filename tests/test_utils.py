@@ -77,18 +77,23 @@ class TestPatchingUtils:
         """Test FFT number calculation for small values."""
         from cphmd.core.patching import _fft_number
 
+        # 60 = 2^2 * 3 * 5 is already a valid FFT number
+        assert _fft_number(60) == 60
         # 64 = 2^6 is a valid FFT number
-        assert _fft_number(60) == 64
         assert _fft_number(64) == 64
+        # 65 -> next valid is 72 = 2^3 * 3^2
+        assert _fft_number(65) == 72
 
     def test_fft_number_medium(self):
         """Test FFT number calculation for medium values."""
         from cphmd.core.patching import _fft_number
 
-        # 96 = 2^5 * 3 is a valid FFT number
-        assert _fft_number(90) == 96
-        # 128 = 2^7 is a valid FFT number
-        assert _fft_number(100) == 108  # 108 = 2^2 * 3^3
+        # 90 = 2 * 3^2 * 5 is already a valid FFT number
+        assert _fft_number(90) == 90
+        # 100 = 2^2 * 5^2 is already a valid FFT number
+        assert _fft_number(100) == 100
+        # 101 -> next valid is 108 = 2^2 * 3^3
+        assert _fft_number(101) == 108
 
     def test_fft_number_large(self):
         """Test FFT number calculation for larger values."""
