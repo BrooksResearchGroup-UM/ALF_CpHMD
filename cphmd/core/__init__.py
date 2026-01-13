@@ -19,6 +19,18 @@ from .restraints import (
     generate_noe_restraints,
     write_restraint_file,
 )
+from .charmm_utils import (
+    BoxParameters,
+    FFTParameters,
+    NonBondedConfig,
+    CHARMMSession,
+    read_topology_files,
+    read_structure,
+    setup_crystal,
+    setup_nonbonded,
+    define_selections,
+    execute_block_command,
+)
 
 __all__ = [
     # Patching
@@ -43,4 +55,15 @@ __all__ = [
     "generate_scat_restraints",
     "generate_noe_restraints",
     "write_restraint_file",
+    # CHARMM Utilities
+    "BoxParameters",
+    "FFTParameters",
+    "NonBondedConfig",
+    "CHARMMSession",
+    "read_topology_files",
+    "read_structure",
+    "setup_crystal",
+    "setup_nonbonded",
+    "define_selections",
+    "execute_block_command",
 ]
