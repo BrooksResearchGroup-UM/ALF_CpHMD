@@ -22,18 +22,26 @@ import pycharmm.select as select
 import operator
 import argparse
 
+# check if i have gpu
+import torch
+if torch.cuda.is_available():
+    gpu_available = True
+else:
+    gpu_available = False
+
 #######
 filename = 'preparation/pdb/lys'
 output = 'lys'
 XTLtype = 'OCTAhedral'
 pad = 10.0
-salt_concentration = 0.10 # (mM)
+salt_concentration = 0.10 # (M)
 pos_ion = 'POT'
 neg_ion = 'CLA'
 skip_ions = False
 T = 298.15 #(K)
 min_ion_distance = 5  #(A) Minimum distance between ions, adjust as needed
-topology_path = '/home/stanislc/toppar'
+ion_method = 'SLTCAP'   # default ion placement algorithm
+topology_path = 'toppar'
 topology_files = [
     'top_all36_prot.rtf',
     'par_all36m_prot.prm',
@@ -58,12 +66,15 @@ def parse_terminal_arguments():
     parser.add_argument('--neg_ion', type=str, default='CLA', help='Negative ion type')
     parser.add_argument('-t', '--temperature', type=float, default=303, help='Temperature in Kelvin')
     parser.add_argument('--no-ions', default=False, action='store_true', help='Skip ionization step')
+    parser.add_argument('--ion-method', type=str, default='SLTCAP',
+                        choices=['AN', 'SLTCAP'],
+                        help='Ion placement algorithm: AN (Add‑then‑Neutralize) or SLTCAP')
 
     # Parse the arguments
     args = parser.parse_args()
 
     # Assign global variables
-    global filename, output, XTLtype, pad, salt_concentration, pos_ion, neg_ion, temperature, skip_ions
+    global filename, output, XTLtype, pad, salt_concentration, pos_ion, neg_ion, temperature, skip_ions, ion_method
     filename = args.filename
     output = args.output
     XTLtype = args.XTLtype
@@ -73,6 +84,7 @@ def parse_terminal_arguments():
     neg_ion = args.neg_ion
     temperature = args.temperature
     skip_ions = args.no_ions
+    ion_method = args.ion_method.upper()
 
 # Execute the parsing function only when the script is run as the main module
 if __name__ == "__main__":
@@ -188,30 +200,30 @@ def get_box_parameters(XTLtype, stats, pad):
     return A, B, C, Alpha, Beta, Gamma, BoxSizeX, BoxSizeY, BoxSizeZ
 
 
-def universe() -> pd.DataFrame:
-    try:
-        select_all = pycharmm.SelectAtoms().all_atoms()
-    except Exception as e:
-        raise ValueError('No atoms in system') from e
-    
-    crds = coor.get_positions()
-    charges = psf.get_charges()
-    
-    universe = pd.DataFrame({
-            'index': select_all._atom_indexes,
-            'atom_type': select_all._atom_types,
-            'res_name': select_all._res_names,
-            'res_id': select_all._res_ids,
-            'seg_id': select_all._seg_ids,
-            'chem_type': select_all._chem_types,
-            'x': crds['x'].values,
-            'y': crds['y'].values,
-            'z': crds['z'].values,
-            'charge': charges
-        })
-    
-    universe.set_index('index', inplace=True)
-    return universe
+# def universe() -> pd.DataFrame:
+#     try:
+#         select_all = pycharmm.SelectAtoms().all_atoms()
+#     except Exception as e:
+#         raise ValueError('No atoms in system') from e
+#     
+#     crds = coor.get_positions()
+#     charges = psf.get_charges()
+#     
+#     universe = pd.DataFrame({
+#             'index': select_all._atom_indexes,
+#             'atom_type': select_all._atom_types,
+#             'res_name': select_all._res_names,
+#             'res_id': select_all._res_ids,
+#             'seg_id': select_all._seg_ids,
+#             'chem_type': select_all._chem_types,
+#             'x': crds['x'].values,
+#             'y': crds['y'].values,
+#             'z': crds['z'].values,
+#             'charge': charges
+#         })
+#     
+#     universe.set_index('index', inplace=True)
+#     return universe
 
 
 def read_topology_files(verbose=True):
@@ -249,6 +261,8 @@ if not os.path.exists(output):
 read_topology_files()
 lingo.charmm_script('IOFOrmat EXTEnded')
 
+if gpu_available:
+    lingo.charmm_script('blade on')
 
 # Reading the structure
 read.psf_card(f'{filename}.psf')
@@ -257,7 +271,6 @@ if os.path.exists(f'{filename}.crd'):
 else:
     read.pdb(f'{filename}.pdb', resid = True)
     write.coor_card(f'{filename}.crd')
-
 # Calculate the molecule charge
 charge = sum(psf.get_charges())
 
@@ -381,7 +394,7 @@ image.setup_residue(0,0,0,'TIP3')
 
 # nbonds.configure(cutnb=3, ctonnb=2, ctofnb=3, cutim=3)
 
-lingo.charmm_script(f'nbonds ctonnb 2.0 ctofnb 3.0 cutnb 3.0 cutim 3.0 wmin 0.01')
+lingo.charmm_script(f'nbonds ctonnb 2.0 ctofnb 3.0 cutnb 3.0 cutim 3.0 wmin 0.01 fswitch vswitch')
 
 lingo.charmm_script('crystal free')
 
@@ -436,18 +449,26 @@ if not skip_ions:
     crystal.build(pad)
 
 
-
     # Calculate ions
-    M_water = 18.01528 # g/mol
-    Rho_water = water_density(T) # g/cm^3
+    M_water = 18.01528  # g/mol
+    Rho_water = water_density(T)  # g cm‑3
     print(f'Water density: {Rho_water} g/cm^3')
-    N_0 = (N_water * M_water * salt_concentration) / (Rho_water)
 
-    N_pos = round(N_0 * (1+(charge/(2 * N_0)))**(1/2) - charge/2)
-    N_neg = round(N_0 * (1+(charge/(2 * N_0)))**(1/2) + charge/2)
+    # Number of ion pairs that would be present at bulk concentration
+    N_0 = (N_water * M_water * salt_concentration) / Rho_water
+
+    if ion_method == 'AN':          # Add‑then‑Neutralize
+        N_pos = round(N_0)
+        N_neg = round(N_0 + charge)
+    elif ion_method == 'SLTCAP':    # Screening Layer Tally by Container Average Potential
+        factor = (1 + (charge / (2 * N_0))) ** 0.5
+        N_pos = round(N_0 * factor - charge / 2)
+        N_neg = round(N_0 * factor + charge / 2)
+    else:
+        raise ValueError(f'Unknown ion_method: {ion_method}')
+
     N_ion = N_pos + N_neg
-    print(f'Number of positive ions: {N_pos}')
-    print(f'Number of negative ions: {N_neg}')
+    print(f'Ion placement algorithm: {ion_method}')
 
     # Generate co-ions
     if N_ion > 0:
@@ -458,42 +479,131 @@ if not skip_ions:
     for i in range(1, N_ion + 1):
         search = True
         while search:
-            system = universe()  # Assuming this function returns the system DataFrame
-
-            water_resids = system.loc[(system['res_name'] == 'TIP3') & (system['atom_type'] == 'OH2'), 'res_id'].unique()
-            molecule_coords = system.loc[~system['res_name'].isin(['TIP3', pos_ion, neg_ion]), ['x', 'y', 'z']]
-            ion_coords = system.loc[system['seg_id'] == 'IONS', ['x', 'y', 'z']]
-
-            index = random.choice(water_resids)
-            water_coords = system.loc[(system['res_id'] == index) & (system['seg_id'] == 'SOLV'), ['x', 'y', 'z']]
-
-            # Check distance from molecule_coords
-            distances = np.linalg.norm(molecule_coords[['x', 'y', 'z']].values - water_coords[['x', 'y', 'z']].values[:, None, :], axis=-1)
-            ion_distances = np.linalg.norm(ion_coords[['x', 'y', 'z']].values - water_coords[['x', 'y', 'z']].values[:, None, :], axis=-1)
-            if np.any(distances <= 2.6) or np.any(ion_distances < min_ion_distance):
-                continue
-
-            # Check distance from existing ion positions
+            # Get current system state directly instead of using universe()
+            all_crds_df = coor.get_positions() # Returns DF with 1-based 'atom_index', 'x', 'y', 'z'
             
-            if np.any(ion_distances < min_ion_distance):
+            sel_all_for_psf = pycharmm.SelectAtoms().all_atoms()
+            if not sel_all_for_psf._atom_indexes:
+                print("Warning: No atoms found in PSF for ion placement. Stopping ion placement.")
+                search = False # Stop trying to place this ion
+                N_ion = i -1 # Adjust N_ion to ions successfully placed so far
+                break # Break from while search loop
+
+            current_psf_df = pd.DataFrame({
+                'atom_index': sel_all_for_psf._atom_indexes, # 1-based
+                'res_name': sel_all_for_psf._res_names,
+                'res_id': sel_all_for_psf._res_ids,
+                'atom_type': sel_all_for_psf._atom_types,
+                'seg_id': sel_all_for_psf._seg_ids
+            })
+            
+            # Merge PSF info with coordinates. all_crds_df.index is 1-based 'atom_index'
+            system_df = pd.merge(current_psf_df, all_crds_df, left_on='atom_index', right_index=True)
+
+            water_oh2_for_resids = system_df[
+                (system_df['seg_id'] == 'SOLV') &
+                (system_df['res_name'] == 'TIP3') &
+                (system_df['atom_type'] == 'OH2')
+            ]
+            if water_oh2_for_resids.empty:
+                print("Warning: No TIP3 OH2 atoms found in SOLV segment for ion placement. Stopping ion placement for this ion.")
+                search = False # Stop trying for this ion
+                N_ion = i-1
+                break # Break from while search
+
+            water_resids = water_oh2_for_resids['res_id'].unique()
+            if not water_resids.size:
+                 print("Warning: No water residues available to replace with ions. Stopping ion placement for this ion.")
+                 search = False # Stop trying for this ion
+                 N_ion = i-1
+                 break # from while search
+
+            # Molecule coordinates (any segment not SOLV or IONS)
+            # Assuming ions generated so far are in 'IONS' seg_id
+            molecule_seg_ids = [sid for sid in system_df['seg_id'].unique() if sid not in ['SOLV', 'IONS']]
+            if molecule_seg_ids:
+                molecule_sel_df = system_df[system_df['seg_id'].isin(molecule_seg_ids)]
+                molecule_coords_np = molecule_sel_df[['x', 'y', 'z']].values
+            else:
+                molecule_coords_np = np.empty((0,3))
+
+            # Existing ion coordinates
+            ion_sel_df = system_df[system_df['seg_id'] == 'IONS']
+            if not ion_sel_df.empty:
+                # Exclude the current ion being placed if it has placeholder coords already
+                # Assuming resid 'i' in 'IONS' is the current ion being placed.
+                # Its coords might be 0,0,0 or from a previous failed attempt.
+                # For distance check, we only care about *other* already placed ions.
+                other_ions_sel_df = ion_sel_df[ion_sel_df['res_id'] != i] # i is the current ion's residue ID
+                if not other_ions_sel_df.empty:
+                    ion_coords_np = other_ions_sel_df[['x', 'y', 'z']].values
+                else:
+                    ion_coords_np = np.empty((0,3))
+            else:
+                ion_coords_np = np.empty((0,3))
+
+
+            random_water_res_id = random.choice(water_resids)
+            # Get all atoms of the chosen water residue
+            chosen_water_atoms_df = system_df[
+                (system_df['seg_id'] == 'SOLV') & 
+                (system_df['res_id'] == random_water_res_id)
+            ]
+            
+            if chosen_water_atoms_df.empty: # Should not happen if random_water_res_id is valid
                 continue
-            x, y, z = water_coords[['x', 'y', 'z']].mean()
-            lingo.charmm_script(f'coor set xdir {x} ydir {y} zdir {z} sele segid IONS .and. resid {i} end')
-            lingo.charmm_script(f'dele atom sele resid {index} .and. segid SOLV end')
-            search = False
+
+            # Use the geometric center of the chosen water molecule as the target position for the ion
+            target_ion_pos_xyz = chosen_water_atoms_df[['x', 'y', 'z']].mean().values
+
+            # Check distance from molecule atoms to the target ion position
+            if molecule_coords_np.shape[0] > 0:
+                distances_to_mol = np.linalg.norm(molecule_coords_np - target_ion_pos_xyz, axis=1)
+                if np.any(distances_to_mol <= 2.6): # Original distance threshold
+                    continue # Too close to molecule, try another water
+
+            # Check distance from existing *other* ions to the target ion position
+            if ion_coords_np.shape[0] > 0:
+                distances_to_ions = np.linalg.norm(ion_coords_np - target_ion_pos_xyz, axis=1)
+                if np.any(distances_to_ions < min_ion_distance):
+                    continue # Too close to another already placed ion, try another water
+            
+            # If all checks pass:
+            x_place, y_place, z_place = target_ion_pos_xyz
+            # Place the current ion (residue 'i' in segment 'IONS')
+            lingo.charmm_script(f'coor set xdir {x_place:.4f} ydir {y_place:.4f} zdir {z_place:.4f} sele segid IONS .and. resid {i} end')
+            
+            # Delete the chosen water molecule
+            # Ensure res_id is treated as a string for SelectAtoms if necessary, CHARMM command is more direct
+            lingo.charmm_script(f'dele atom sele resid {random_water_res_id} .and. segid SOLV end')
+            # sel_water_to_delete = pycharmm.SelectAtoms(res_id=str(random_water_res_id), seg_id="SOLV")
+            # pycharmm.psf.delete_atoms(sel_water_to_delete) # This is also a good option
+
+            search = False # Successfully placed this ion
+        
+        if search : # This means the while loop broke due to no waters/PSF, and 'search' is still true
+            print(f"Could not place ion {i}. Stopping further ion placement.")
+            break # Break from the main for loop over ions
+
 
     lingo.charmm_script('JOIN SOLV RENUmber')
     # nbonds.configure(ctonnb=10, ctofnb=12, cutnb=14, cutim=14)
-    lingo.charmm_script('nbonds ctonnb 10 ctofnb 12 cutnb 14 cutim 14 wmin 1.0')
-    lingo.charmm_script(' define MOL sele .not. (segid SOLV .and. segid IONS) end')
-
+    lingo.charmm_script('nbonds ctonnb 10 ctofnb 12 cutnb 14 cutim 14 wmin 1.0 fswitch vswitch')
+    lingo.charmm_script(' define MOL sele .not. (segid SOLV .or. segid IONS) end')
+energy.show()
+energy_ = energy.get_total()
 for force in [100,50,25,5]:
     pycharmm.charmm_script(f'cons harm force {force} sele MOL .and. (.not. hydrogen) end')
     minimize.run_sd(nstep=50)
     minimize.run_abnr(nstep=100)
     lingo.charmm_script('cons harm clear')
-minimize.run_sd(nstep=100)
-minimize.run_abnr(nstep=100)
+minimize.run_sd(nstep=1000)
+new_energy = energy.get_total()
+delta_energy = energy_ - new_energy
+print(f'Energy before minimization: {energy_} kcal/mol')
+print(f'Energy after minimization: {new_energy} kcal/mol')
+print(f'Energy change after minimization: {delta_energy} kcal/mol')
+# minimize.run_abnr(nstep=1000)
 
 write.coor_card(f'{output}/solvated.crd')
 write.psf_card(f'{output}/solvated.psf')

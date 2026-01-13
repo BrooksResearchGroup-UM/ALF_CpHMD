@@ -1,147 +1,191 @@
-import itertools
 import os
-import re
 import sys
-import time
-
+import itertools
 import pandas as pd
+import argparse
 
+# ----------------------------------------
+# Command-line argument parsing
+# ----------------------------------------
+parser = argparse.ArgumentParser(
+    description="Generate MSLD block and restraint files from patches.œdat"
+)
+parser.add_argument(
+    '-i', '--input',
+    required=True,
+    help="Path to your input folder (must contain prep/patches.dat)"
+)
+parser.add_argument(
+    '--restrain-type',
+    choices=['SCAT', 'NOE'],
+    default='NOE',
+    help="Type of restraint to build (default: NOE)"
+)
+parser.add_argument(
+    '-H', '--hydrogens',
+    action='store_true',
+    help="Include hydrogens in the restraint definitions"
+)
+parser.add_argument('-e', '--electrostatics', default='pmeex', 
+                    choices=['pmeon', 'pmenn', 'pmeex', 'fshift', 'fswitch', 'pme_on', 'pme_nn', 'pme_ex'],
+                    help="Electrostatics method (default: pme)")
 
+args = parser.parse_args()
 
-# Process the input arguments
-import sys
-
-input_dir = sys.argv[1]
-
-
-restrain_type = 'SCAT'
-restrain_hydrogens = False
-
-
-# Set pandas data frame for the PDB file
-pdb_df = pd.DataFrame()
-colspecs = [(0, 6), (6, 11), (12, 16), (17, 21), (22, 27),
-            (30, 38), (38, 46), (46, 54), (54, 60), (60, 66), (70, 76)]  # define the columns to read
-names = ['ATOM', 'index', 'name', 'resname', 'resid',
-        'x', 'y', 'z', 'occupancy', 'charge', 'segment']  # column names
-
-# Read the PDB
-pdb_df = pd.read_fwf(input_dir+'/'+'prep/'+'system.pdb', colspecs=colspecs, names=names)
-# clean text unrelated to atoms
-pdb_df = pdb_df.loc[pdb_df['ATOM'] == 'ATOM']  
-pdb_df.drop(['ATOM', 'occupancy', 'charge', 'x', 'y', 'z'], axis=1, inplace=True)
-# pdb_df['resid'] = pdb_df['resid'].astype(int)  # convert residue number to int
-pdb_df['index'] = pdb_df['index'].astype(int)  # convert index to int
-pdb_df.set_index('index', inplace=True)  # set index according to PDB index
-
-#Prepare BLOCK function
-BLOCK = {'block': 1, 'call': '', 'excl': '', 'ldin': '',
-            'msld': 'msld 0', 'ldbi': '', 'ldbv': ''} # create empty dictionary for BLOCK
-BLOCK['excl'] = '!---------------------------------------------------------------\n! l-exclusions\n!---------------------------------------------------------------\n\n'
-
-pka = {'ASP': 3.67,
-       'GLU': 4.25,
-       'HSP': [7.08, 6.69],
-       'LYS': 10.40,
-       'TYR': 9.84,
-       'ARG': 12.5}
-
-pka = {'ASH1': 3.37, 'ASH2': 3.37,
-       'GLH1': 3.95, 'GLH2': 3.95,
-       'HSPD': 7.08, 'HSPE': 6.69, 
-       'LYSU': 10.4, 'TYRU': 9.84, 
-       'ARU1': 12.8,'ARU2': 12.8,
-       'CYSD': 8.55, 'SERD': 12.8} 
-
+input_folder = args.input
+restrain_type = args.restrain_type
+restrain_hydrogens = args.hydrogens
 temperature = 298.15
-counter = 0
 
-# Find all resnames which are different but have the same resid
-# e.g. resid 8 has resname ARG and ARGO later in the PDB and provide a list of them
-grouped = pdb_df.groupby(['resid', 'segment'])['resname'].apply(list).reset_index()
-resname_resid_dict = {}
-for _, row in grouped.iterrows():
-    resid, segment, resname_list = row['resid'], row['segment'], row['resname']
-    if len(set(resname_list)) > 1:
-        unique_resnames = list(dict.fromkeys(resname_list))
-        resname = ' '.join(unique_resnames)
-        key = f"{resname} {segment}"
-        if key not in resname_resid_dict:
-            resname_resid_dict[key] = []
-        resname_resid_dict[key].append(resid)
+# Load patches.dat from the prep folder.
+patches_file = os.path.join(input_folder, 'prep', 'patches.dat')
+if not os.path.isfile(patches_file):
+    print("Error: patches.dat not found in prep folder!")
+    sys.exit(1)
+patch_info = pd.read_csv(patches_file, sep=',')
 
 
+# Optionally extract site information from the SELECT string (e.g. s1s2)
+patch_info[['site', 'sub']] = patch_info['SELECT'].str.extract(r's(\d+)s(\d+)')
+
+# Initialize BLOCK components
+BLOCK = {
+    'block': 1,
+    'call': '',
+    'excl': '',
+    'ldin': '',
+    'msld': 'msld 0',
+    'ldbi': '',
+    'ldbv': ''
+}
+BLOCK['excl'] = '!---------------------------------------------------------------\n! l-exclusions\n!---------------------------------------------------------------\n\n'
+# Initial LDIN line (common to all)
 BLOCK['ldin'] += 'LDIN {:<6} {:<6} {:<6} {:<7} {:>8} {:>7} {:>12}\n'.format(1, 1, 0.0, 12.0, 0.0, 5.0, 'NONE')
-for group in resname_resid_dict.keys():
-    parts = group.split()
-    resname = parts[0]
-    patches = parts[1:-1]  # Everything except the first and last elements
-    segment = parts[-1]
-    resids = resname_resid_dict[group]
-    print(f'Processing {segment} {resname} {resids}')
-    if os.path.isfile('variables/var-'+ resname.lower() +'.txt'):
-        # print('found .txt')
-        # var_df = pd.DataFrame(columns=['variable', 'value'])
-        var_df = pd.read_csv('variables/var-'+ resname.lower() +'.txt', sep=',', header=None, names=['variable', 'value']).apply(lambda x: x.str.strip()).set_index('variable')
-    elif os.path.isfile('variables/var-'+ resname.lower() +'.inp'):
-        # print('found .inp')
-        var_df = pd.DataFrame([line.split('=') for line in open('variables/var-'+ resname.lower() +'.inp') if line.strip().startswith('set')], columns=['variable', 'value']).apply(lambda x: x.str.strip()).assign(variable=lambda x: x['variable'].str.split().str[-1]).set_index('variable')
+
+
+
+counter = 0
+for site, group in patch_info.groupby('site', sort=False):
+    resname = group['PATCH'].iloc[0][0:3]
+    resname_lower = resname.lower()
+    segid = group['SEGID'].iloc[0]
+    resid = group['RESID'].iloc[0]
+    # Load the variables file for this resname
+    var_file_txt = os.path.join('variables', f'var-{resname_lower}.txt')
+    var_file_inp = os.path.join('variables', f'var-{resname_lower}.inp')
+    if os.path.isfile(var_file_txt):
+        var_df = pd.read_csv(var_file_txt, sep=',', header=None,
+                             names=['variable', 'value']).apply(lambda x: x.str.strip()).set_index('variable')
+    elif os.path.isfile(var_file_inp):
+        var_df = pd.DataFrame([line.split('=') for line in open(var_file_inp)
+                               if line.strip().startswith('set')],
+                              columns=['variable', 'value']).apply(lambda x: x.str.strip()).assign(
+                                  variable=lambda x: x['variable'].str.split().str[-1]).set_index('variable')
     else:
         print('No variable file found for %s' % resname)
-        sys.exit()  
+        sys.exit(1)
     
-    if resname == 'ASP' or resname == 'GLU':
-        utag = 'UNEG'
-    else: 
-        utag = 'UPOS'
+    BLOCK['ldin'] += (
+        '!---------------------------------------------------------------\n'
+        f'! Lambda Initialization for {segid} {resid} {resname} | SITE {site}\n'
+        '!---------------------------------------------------------------\n'
+    )
+    BLOCK['ldbv'] += (
+        '!---------------------------------------------------------------\n'
+        f'! Biasing Potential for {segid} {resid} {resname} | SITE {site}\n'
+        '!---------------------------------------------------------------\n'
+    )
+    BLOCK['call'] += (
+        '!---------------------------------------------------------------\n'
+        f'! CALL selection for {segid} {resid} {resname} | SITE {site}\n'
+        '!---------------------------------------------------------------\n'
+    )
     
-    for resid in resids:
-        counter += 1
-        BLOCK['call'] += f'!---------------------------------------------------------------\n! CALL selections for {segment} {resname} {resid}, GROUP {counter}\n!---------------------------------------------------------------\n'
-        BLOCK['ldin'] += f'!---------------------------------------------------------------\n! Initialize Fixed Bias dG for {segment} {resname} {resid}, GROUP {counter}\n!---------------------------------------------------------------\n\n'
-        BLOCK['excl'] += f'!---------------------------------------------------------------\n! l-exclusions for {segment} {resname} {resid}, GROUP {counter}\n!---------------------------------------------------------------\n'
-        BLOCK['ldbv'] += f'!---------------------------------------------------------------\n! Bias Potentials for {segment} {resname} {resid}, GROUP {counter}\n!---------------------------------------------------------------\n'
-       
-        for patch in patches:
-            BLOCK['block'] += 1
-            # BLOCK['call'] += f"CALL {BLOCK['block']} SELEct resid {resid} .and. resname '{patch}' end\n"
-            BLOCK['call'] += "CALL {:>4} SELEct segid {:>4} .and. resid {:>4} .and. resname {:>4} end\n".format(BLOCK['block'], segment, resid, patch)
-            BLOCK['msld'] += f' {counter}'
-            patch_index = patches.index(patch) + 1
-            if patch_index == 1:
-                BLOCK['ldin'] += "LDIN {:<6} {:<6} {:<6} {:<7} {:>8} {:>7} {:>12}\n".format(BLOCK['block'], str(round(1/len(patches),2)), 0.0, 12.0, str(var_df.loc[f'lams1s{patch_index}','value']), 5.0, 'NONE')
-            else:
-                BLOCK['ldin'] += "LDIN {:<6} {:<6} {:<6} {:<7} {:>8} {:>7} {:>12}\n".format(BLOCK['block'], str(round(1/len(patches),2)), 0.0, 12.0, str(var_df.loc[f'lams1s{patch_index}','value']), 5.0, f'{utag} {pka[patch]}')
-        BLOCK['ldbv'] 
+    # Process each patch in this group.
+    # (We assume each row in the group is one patch to be handled.)
+    # The number of patches in the group will determine weights (1/len(group))
+    counter += 1
+    num_patches = len(group)
+    # It is important to use the group order so that variable keys like lams1s1, lams1s2, etc. work.
+    for idx, row in group.iterrows():
+        patch = row['PATCH']
+        utag = patch_info.at[idx, 'TAG']
+        # For this example we use the "site" value from the patches file as the segment identifier.
+        # Increase the block counter and add a CALL statement using the SELECT field.
+        BLOCK['block'] += 1
         
-        inner_group = list(itertools.combinations(range(BLOCK['block']-len(patches)+1, BLOCK['block']+1), 2))
-        for sub_group in inner_group:
-            BLOCK['excl'] += 'adexcl ' + (' '.join(str(x) for x in sub_group)) + '\n'
-            # Quadratic bias
-            BLOCK['ldbv'] += 'LDBV {:<3} {:>4} {:>4} {:>4} {:>8} {:>10} {:>5}\n'.format(str(BLOCK['ldbv'].count('LDBV')+1), str(sub_group[0]), str(sub_group[1]), 6, 0.0,var_df.loc['cs1s%ss1s%s' % (str(sub_group[0]-BLOCK['block']+len(patches)), str(sub_group[1]-BLOCK['block']+len(patches))), 'value'], 0)
-        BLOCK['ldbv'] += '\n'
-        for sub_group in inner_group:
-            #End-Point Potential
-            BLOCK['ldbv'] += 'LDBV {:<3} {:>4} {:>4} {:>4} {:>8} {:>10} {:>5}\n'.format(str(BLOCK['ldbv'].count('LDBV')+1), str(sub_group[0]), str(sub_group[1]), 8, 0.017,var_df.loc['ss1s%ss1s%s' % (str(sub_group[0]-BLOCK['block']+len(patches)), str(sub_group[1]-BLOCK['block']+len(patches))), 'value'], 0)
-            BLOCK['ldbv'] += 'LDBV {:<3} {:>4} {:>4} {:>4} {:>8} {:>10} {:>5}\n'.format(str(BLOCK['ldbv'].count('LDBV')+1), str(sub_group[1]), str(sub_group[0]), 8, 0.017,var_df.loc['ss1s%ss1s%s' % (str(sub_group[1]-BLOCK['block']+len(patches)), str(sub_group[0]-BLOCK['block']+len(patches))), 'value'], 0)
-        BLOCK['ldbv'] += '\n'
-        for sub_group in inner_group:
-            # Skew Potential
-            BLOCK['ldbv'] += 'LDBV {:<3} {:>4} {:>4} {:>4} {:>8} {:>10} {:>5}\n'.format(str(BLOCK['ldbv'].count('LDBV')+1), str(sub_group[0]), str(sub_group[1]), 10, -5.56,var_df.loc['xs1s%ss1s%s' % (str(sub_group[0]-BLOCK['block']+len(patches)), str(sub_group[1]-BLOCK['block']+len(patches))), 'value'], 0)
-            BLOCK['ldbv'] += 'LDBV {:<3} {:>4} {:>4} {:>4} {:>8} {:>10} {:>5}\n'.format(str(BLOCK['ldbv'].count('LDBV')+1), str(sub_group[1]), str(sub_group[0]), 10, -5.56,var_df.loc['xs1s%ss1s%s' % (str(sub_group[1]-BLOCK['block']+len(patches)), str(sub_group[0]-BLOCK['block']+len(patches))), 'value'], 0)
-
-        # BLOCK['call'] += '\n'
-        # BLOCK['ldin'] += '\n'
-        # BLOCK['excl'] += '\n'
-        BLOCK['msld'] += ' -\n'
-    
-BLOCK['ldbi'] = 'LDBI '+ str(BLOCK['ldbv'].count('LDBV')) + '\n'  
+        # BLOCK['call'] += "CALL {:>4} SELECT {} END\n".format(BLOCK['block'], row["SELECT"])
+        BLOCK['call'] += "CALL {:>4} SELEct segid {:>4} .and. resid {:>4} .and. resname {:>4} end\n".format(BLOCK['block'], segid, resid, patch)
+        BLOCK['msld'] += f' {counter}'
         
+        # Determine the patch index within this group (starting at 1)
+        group_indices = list(group.index)
+        patch_index = group_indices.index(idx) + 1
+        
+        
+        # Add an LDIN line. For the first patch, no additional tag is needed.
+        if patch_index == 1:
+            BLOCK['ldin'] += "LDIN {:<6} {:<6} {:<6} {:<7} {:>8} {:>7} {:>12}\n".format(
+                BLOCK['block'], str(round(1/num_patches, 2)), 0.0, 12.0,
+                var_df.loc[f'lams1s{patch_index}', 'value'], 5.0, 'NONE')
+        else:
+            # For subsequent patches, include the utag and a pka value (or similar) from the variable file.
+            # (Adjust the key for pka if needed; here we assume the variable file contains a key named exactly as the patch index.)
+            BLOCK['ldin'] += "LDIN {:<6} {:<6} {:<6} {:<7} {:>8} {:>7} {:>12}\n".format(
+                BLOCK['block'], str(round(1/num_patches, 2)), 0.0, 12.0,
+                var_df.loc[f'lams1s{patch_index}', 'value'], 5.0, f'{utag}' )
+    
+    BLOCK['msld'] += ' -\n'
+    # Generate exclusions and bias potential lines (the following loops use combinations of block indices in this group)
+    # Note: The exact formatting for keys such as 'cs1s...', 'ss1s...', and 'xs1s...' must match what is in your variable files.
+    inner_group = list(itertools.combinations(range(BLOCK['block'] - num_patches + 1, BLOCK['block'] + 1), 2))
+    for sub_group in inner_group:
+        BLOCK['excl'] += 'adexcl ' + (' '.join(str(x) for x in sub_group)) + '\n'
+        # Quadratic bias
+        key = 'cs1s%ss1s%s' % (str(sub_group[0] - (BLOCK['block'] - num_patches)), str(sub_group[1] - (BLOCK['block'] - num_patches)))
+        BLOCK['ldbv'] += 'LDBV {:<3} {:>4} {:>4} {:>4} {:>8} {:>10} {:>5}\n'.format(
+            str(BLOCK['ldbv'].count('LDBV') + 1),
+            str(sub_group[0]),
+            str(sub_group[1]),
+            6,
+            0.0,
+            var_df.loc[key, 'value'],
+            0)
+    BLOCK['ldbv'] += '\n'
+    inner_group = list(itertools.permutations(range(BLOCK['block'] - num_patches + 1, BLOCK['block'] + 1), 2))
+    for sub_group in inner_group:
+        # End-Point Potential
+        key = 'ss1s%ss1s%s' % (str(sub_group[0] - (BLOCK['block'] - num_patches)), str(sub_group[1] - (BLOCK['block'] - num_patches)))
+        BLOCK['ldbv'] += 'LDBV {:<3} {:>4} {:>4} {:>4} {:>8} {:>10} {:>5}\n'.format(
+            str(BLOCK['ldbv'].count('LDBV') + 1),
+            str(sub_group[0]),
+            str(sub_group[1]),
+            8,
+            0.017,
+            var_df.loc[key, 'value'],
+            0)
+    BLOCK['ldbv'] += '\n'
+    for sub_group in inner_group:
+        # Skew Potential
+        key = 'xs1s%ss1s%s' % (str(sub_group[0] - (BLOCK['block'] - num_patches)), str(sub_group[1] - (BLOCK['block'] - num_patches)))
+        BLOCK['ldbv'] += 'LDBV {:<3} {:>4} {:>4} {:>4} {:>8} {:>10} {:>5}\n'.format(
+            str(BLOCK['ldbv'].count('LDBV') + 1),
+            str(sub_group[0]),
+            str(sub_group[1]),
+            10,
+            -5.56,
+            var_df.loc[key, 'value'],
+            0)
+    BLOCK['ldbv'] += '\n'
 
+# Set LDBI based on the total number of LDBV lines
+BLOCK['ldbi'] = 'LDBI ' + str(BLOCK['ldbv'].count('LDBV')) + '\n'
+
+# Assemble the full block string
 BLOCK_str = '!---------------------------------------------------------------\n'
 BLOCK_str += '! Set up l-dynamics by setting BLOCK parameters\n'
 BLOCK_str += '!---------------------------------------------------------------\n\n'
-BLOCK_str += 'BLOCK ' + str(BLOCK['block']) + ' NREP @nrep \n' 
+BLOCK_str += 'BLOCK ' + str(BLOCK['block']) + ' NREP @nrep \n'
 BLOCK_str += BLOCK['call'] + '\n' + BLOCK['excl'] + '\n\n'
 BLOCK_str += '!------------------------------------------\n'
 BLOCK_str += '!QLDM turns on lambda-dynamics option\n'
@@ -179,7 +223,12 @@ BLOCK_str += 'msma\n\n'
 BLOCK_str += '!------------------------------------------\n'
 BLOCK_str += '! PME electrostatics\n'
 BLOCK_str += '!------------------------------------------\n\n'
-BLOCK_str += 'pmel ex ! ADDED\n'
+if args.electrostatics == 'pmeon' or args.electrostatics == 'pme_on':
+    BLOCK_str += 'pmel on\n\n'
+elif  args.electrostatics == 'pmenn' or args.electrostatics == 'pme_nn':
+    BLOCK_str += 'pmel nn\n\n'
+elif  args.electrostatics == 'pmeex' or args.electrostatics == 'pme_ex':
+    BLOCK_str += 'pmel ex\n\n'
 BLOCK_str += '!------------------------------------------\n'
 BLOCK_str += '! Enables bias potential on lambda variables\n'
 BLOCK_str += '! INDEX, I,J(Bias between I & J)), CLASS, REF, CFORCE, NPOWER, Identity flag\n'
@@ -187,75 +236,78 @@ BLOCK_str += '! CLASS: Functional Form of bias, REF: Cut off for physical lambda
 BLOCK_str += '! NPOWER: Power of functional form, CFORCE: kbias on Fvar, residue specific value\n'
 BLOCK_str += '!------------------------------------------\n\n'
 BLOCK_str += BLOCK['ldbi']
-BLOCK_str += BLOCK ['ldbv'] 
+BLOCK_str += BLOCK['ldbv']
 BLOCK_str += 'END'
 
-file = open(f'{input_dir}/prep/block.str', 'w')
-file.write(BLOCK_str)
-file.close()
+# Write the block command to the output file
+with open(os.path.join(input_folder, 'prep', 'block.str'), 'w') as f:
+    f.write(BLOCK_str)
 
-
+# Build restraint commands using SCAT logic.
 restrains = ''
-if restrain_type == 'NOE':
-    restrains += 'cons fix resname TIP3 .or. resname POT .or. resname CLA end \n'
-    restrains += 'mini sd nstep 100 nprint 100 step 0.005 \n'
-elif restrain_type == 'SCAT':
+if restrain_type == 'SCAT':
     restrains += 'BLOCK\n'
     restrains += 'scat on \n'
     restrains += f'scat k {temperature}\n'
-index = 1
-for group in resname_resid_dict.keys():
-    resname = group.split()[0]
-    patches = group.split()[1:]
-    resids = resname_resid_dict[group]
-    for resid in resids:
-        if restrain_type == 'NOE':
-            restrains += 'NOE\n'
-        # find segments which starts with resid in pdb_df
-        sub_df = pdb_df[pdb_df['resid'] == resid]
-        sub_df = sub_df[sub_df['resname'] != resname]
-        restrains += f'!---------------------------------------------------------------\n! Restrains for {segment} {resname} {resid}, GROUP {index}\n!---------------------------------------------------------------\n'
-        index += 1
-        # find names which repeat more than once
-        repeats = sub_df['name'].value_counts()[sub_df['name'].value_counts() > 1].index.tolist()
-        if restrain_hydrogens is False:
-            repeats = list(filter(lambda x: not x.startswith('H'), repeats))
-        for repeat_atom in repeats:
-            select = sub_df[sub_df['name'] == repeat_atom]
-            if restrain_type == 'NOE':
-                for i1, i2 in itertools.combinations(select.index, 2):
-                    restrains += 'assign sele {:>4} .and. resid {:>4} .and. resn {:>4} .and. type {:>4} end sele {:>4} .and. resid {:>4} .and. resn {:>4} .and. type {:>4} end -\nkmin 100.0 rmin 0.0 kmax 100.0 rmax 0.0 fmax 2.0 rswitch 99999 sexp 1.0\n'.format(i1, select.loc[i1, "resid"], select.loc[i1, "resname"], select.loc[i1, "name"], i2, select.loc[i2, "resid"], select.loc[i2, "resname"], select.loc[i2, "name"])
-                    # restrains += f'assign sele segid {select.loc[i1, "segment"]} .and. resid {select.loc[i1, "resid"]} .and. resn {select.loc[i1, "resname"]} .and. type {select.loc[i1, "name"]} end sele segid {select.loc[i1, "segment"]} .and. resid {select.loc[i2, "resid"]} .and. resn {select.loc[i2, "resname"]} .and. type {select.loc[i2, "name"]} end -\nkmin 100.0 rmin 0.0 kmax 100.0 rmax 0.0 fmax 2.0 rswitch 99999 sexp 1.0\n'
-            elif restrain_type == 'SCAT':
-                restrains += f'cats sele ('
-                for segment in select['segment'].unique():
-                    restrains += 'segid {:>4} '.format(segment)
-                    # restrains += f'segid {segment} '
-                    #if segment is not the last one
-                    if segment != select['segment'].unique()[-1]:
-                        restrains += '.or. '
-                    else: restrains += '.and. ' 
-                restrains += 'resid {:>4} .and. '.format(resid)
-                # restrains+= f'resid {resid} .and. '    
+    # For each patch group, build restraints using the ATOMS field if available.
+    for site in patch_info['site'].unique():
+            atoms = patch_info.loc[patch_info['site'] == site]['ATOMS']
+            # get all unique atoms in the site
+            atoms = set([atom for atom in atoms.str.split().sum()])
+            h_atoms = [atom for atom in atoms if atom.startswith('H')]
+            atoms = [atom for atom in atoms if atom.startswith('H') == False]
+            for atom in atoms:
+                restrains += f'cats SELE type {atom} .and. ({" .or. ".join(map(str, patch_info.loc[patch_info["site"] == site]["SELECT"]))}) END\n'
+            if restrain_hydrogens:
+                for atom in h_atoms:
+                    restrains += f'cats SELE type {atom} .and. ({" .or. ".join(map(str, patch_info.loc[patch_info["site"] == site]["SELECT"]))}) END\n'
                 
-                # for patch in patches:
-                #     restrains += f'resname {patch}'
-                #     if patch != patches[-1]:
-                #         restrains += ' .or. '
-                #     else:
-                #         restrains += ' .and. '
-                        
-                # restrains += f'type {repeat_atom}) end\n'
-                restrains += 'type {:>4}) end\n'.format(repeat_atom)
-        if restrain_type == 'NOE':
-            restrains += 'END\n'
-
-if restrain_type == 'SCAT':
-    restrains += 'END'
-
-if restrain_type == 'NOE':
+    restrains += 'END\n'
+elif restrain_type == 'NOE':
+    restrains += '! Small minimization in case of atoms at same position\n'
+    # all unique patches
+    restrains += 'cons fix sele .not. (resn %%%%) .or. resn TIP3 end \n'
+    restrains += 'mini sd nstep 2 step 0.005 \n'
+    restrains += '! NOE restrains\n'
+    restrains += 'NOE\n'
+    index = 1
+    # Group by site (from patches.dat) and process each site
+    for site, group in patch_info.groupby('site', sort=False):
+        segid = group['SEGID'].iloc[0]
+        resid = group['RESID'].iloc[0]
+        resname = group['PATCH'].iloc[0][0:3]  # Assuming first 3 chars of PATCH is resname
+        patches = group['PATCH'].tolist()
+        
+        # Get atom names from the ATOMS column for this site
+        atoms = group['ATOMS'].str.split().explode().dropna().unique()
+        
+        # Filter atoms based on restrain_hydrogens
+        if not restrain_hydrogens:
+            atoms = [atom for atom in atoms if not atom.startswith('H')]
+        
+        # Count occurrences of each atom name to find repeats
+        atom_counts = group['ATOMS'].str.split().explode().value_counts()
+        repeats = atom_counts[atom_counts > 1].index.tolist()
+        
+        if repeats:  # Only proceed if there are repeated atom names
+            restrains += f'!---------------------------------------------------------------\n! Restrains for {segid} {resname} {resid}, SITE {site}, GROUP {index}\n!---------------------------------------------------------------\n'
+            index += 1
+            for repeat_atom in repeats:
+                # Get all patches containing this atom
+                atom_patches = group[group['ATOMS'].str.contains(repeat_atom, na=False)]
+                if not restrain_hydrogens and repeat_atom.startswith('H'):
+                    atom_patches = atom_patches.iloc[0:0]
+                if len(atom_patches) > 1:  # Ensure more than one occurrence for restraint
+                    for i1, i2 in itertools.combinations(atom_patches.index, 2):
+                        patch1 = atom_patches.loc[i1, 'PATCH']
+                        patch2 = atom_patches.loc[i2, 'PATCH']
+                        restrains += (
+                            f'assign sele segid {segid} .and. resid {resid} .and. resn {patch1} .and. type {repeat_atom} end '
+                            f'sele segid {segid} .and. resid {resid} .and. resn {patch2} .and. type {repeat_atom} end -\n'
+                            'kmin 100.0 rmin 0.0 kmax 100.0 rmax 0.0 fmax 2.0 rswitch 99999 sexp 1.0\n'
+                        )
+    restrains += 'END\n'
     restrains += 'cons fix sele none end \n'
-    
-file = open(f'{input_dir}/prep/restrains.str', 'w')
-file.write(restrains)
-file.close()
+
+with open(os.path.join(input_folder, 'prep', 'restrains.str'), 'w') as f:
+    f.write(restrains)
