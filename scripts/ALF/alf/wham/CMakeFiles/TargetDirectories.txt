@@ -1,3 +1,0 @@
-/home/stanislc/software/ALF/alf/wham/CMakeFiles/wham.dir
-/home/stanislc/software/ALF/alf/wham/CMakeFiles/edit_cache.dir
-/home/stanislc/software/ALF/alf/wham/CMakeFiles/rebuild_cache.dir

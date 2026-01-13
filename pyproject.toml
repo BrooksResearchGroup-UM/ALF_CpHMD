@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cphmd"
+version = "0.1.0"
+description = "ALF-based Constant pH Molecular Dynamics simulation package"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.9"
+dependencies = [
+    "numpy>=1.20",
+    "pandas>=1.3",
+    "scipy>=1.7",
+    "matplotlib>=3.4",
+    "pyyaml>=6.0",
+    "typer>=0.9",
+    "rich>=12.0",
+]
+
+[project.optional-dependencies]
+mpi = ["mpi4py>=3.1"]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov",
+    "black",
+    "ruff",
+    "mypy",
+]
+analysis = [
+    "plotly>=5.0",
+    "pyarrow>=10.0",
+]
+
+[project.scripts]
+cphmd = "cphmd.cli.main:app"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["cphmd*"]
+
+[tool.setuptools.package-data]
+"cphmd.config" = ["*.yaml"]
+
+[tool.black]
+line-length = 100
+target-version = ["py39"]
+
+[tool.ruff]
+line-length = 100
+select = ["E", "F", "I", "N", "W"]
