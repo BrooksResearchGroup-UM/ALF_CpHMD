@@ -216,12 +216,41 @@ def bias_search(
 
 # Analysis commands
 @analyze_app.command("energy")
-def energy_profiles(
-    input_folder: str = typer.Option(..., "-i", "--input", help="Analysis folder"),
+def energy_profiles_cmd(
+    input_folder: str = typer.Option(..., "-i", "--input", help="Folder with analysis directories"),
+    output_dir: str = typer.Option("plots", "-o", "--output", help="Output directory for plots"),
+    num_points: int = typer.Option(100, "-n", "--num-points", help="Grid points per dimension"),
+    plot_format: str = typer.Option("png", "-f", "--format", help="Plot format: png, pdf, svg"),
+    animation: bool = typer.Option(False, "--animation", help="Create animation (3D only)"),
 ):
-    """Analyze and visualize energy profiles."""
-    console.print("[yellow]energy analysis not yet implemented[/yellow]")
-    # TODO: Import and call cphmd.analysis.energy_profiles
+    """Analyze and visualize ALF energy profiles across iterations.
+
+    Computes bias energy landscapes on simplex grid and tracks
+    RMSD convergence between iterations. Supports 2-state and 3-state systems.
+    """
+    from cphmd.analysis import EnergyProfileConfig, analyze_energy_profiles
+
+    console.print(f"[cyan]Analyzing energy profiles in {input_folder}/[/cyan]")
+    console.print(f"[dim]Grid: {num_points} points, Format: {plot_format}[/dim]")
+
+    try:
+        config = EnergyProfileConfig(
+            input_folder=input_folder,
+            num_points=num_points,
+            output_dir=output_dir,
+            create_animation=animation,
+            plot_format=plot_format,
+        )
+
+        result = analyze_energy_profiles(config)
+        console.print(f"[green]Analyzed {len(result.iterations)} iterations ({result.n_states} states)[/green]")
+        console.print(f"[green]Final RMSD: {result.rmsd_values[-1]:.4f} kcal/mol[/green]")
+        console.print(f"[green]RMSD plot: {result.rmsd_plot}[/green]")
+        if result.profile_plot:
+            console.print(f"[green]Profile plot: {result.profile_plot}[/green]")
+    except Exception as e:
+        console.print(f"[red]Error: {e}[/red]")
+        raise typer.Exit(1)
 
 
 @analyze_app.command("block")
@@ -261,12 +290,42 @@ def block(
 
 
 @analyze_app.command("volume")
-def volume(
-    input_folder: str = typer.Option(..., "-i", "--input", help="Input folder"),
+def volume_cmd(
+    input_folder: str = typer.Option(..., "-i", "--input", help="System folder"),
+    structure: str = typer.Option("solvated", "-f", "--file", help="Structure file name"),
+    selection: str = typer.Option("sele segid PROA end", "-s", "--selection", help="CHARMM selection"),
+    probe_radius: float = typer.Option(1.6, "-r", "--radius", help="Probe radius (Angstroms)"),
 ):
-    """Calculate system volume properties."""
-    console.print("[yellow]volume analysis not yet implemented[/yellow]")
-    # TODO: Import and call cphmd.analysis.volume
+    """Calculate molecular volume using pyCHARMM.
+
+    Computes total and cavity volumes for a molecular selection
+    using CHARMM's COOR VOLU command. Requires pyCHARMM environment.
+    """
+    from cphmd.analysis import VolumeConfig, calculate_volume
+
+    console.print(f"[cyan]Analyzing volumes in {input_folder}/[/cyan]")
+    console.print(f"[dim]Selection: {selection}, Probe: {probe_radius} Å[/dim]")
+
+    try:
+        config = VolumeConfig(
+            input_folder=input_folder,
+            structure_file=structure,
+            selection=selection,
+            probe_radius=probe_radius,
+        )
+
+        result = calculate_volume(config)
+        console.print(f"[green]Total volume: {result.total_volume}[/green]")
+        console.print(f"[green]Cavity volume: {result.cavity_volume}[/green]")
+        if result.surface_area:
+            console.print(f"[green]Surface area: {result.surface_area}[/green]")
+    except ImportError as e:
+        console.print(f"[yellow]Note: {e}[/yellow]")
+        console.print("[yellow]Volume analysis requires pyCHARMM environment.[/yellow]")
+        raise typer.Exit(1)
+    except Exception as e:
+        console.print(f"[red]Error: {e}[/red]")
+        raise typer.Exit(1)
 
 
 if __name__ == "__main__":

@@ -57,8 +57,8 @@ docs/_build/
 *.out
 slurm-*.out
 
-# Analysis outputs
-analysis*/
+# Analysis outputs (simulation output dirs, not cphmd/analysis/)
+/analysis*/
 prep/
 plots/
 *.parquet
