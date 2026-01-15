@@ -17,4 +17,4 @@ PROJECT_ROOT = PACKAGE_DIR.parent
 # Default paths
 TOPPAR_DIR = PROJECT_ROOT / "toppar"
 VARIABLES_DIR = PROJECT_ROOT / "variables"
-ALF_LIB_DIR = PROJECT_ROOT / "lib" / "alf"
+ALF_LIB_DIR = Path.home() / "software" / "ALF"

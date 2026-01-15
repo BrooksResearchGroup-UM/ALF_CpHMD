@@ -31,6 +31,16 @@ from .charmm_utils import (
     define_selections,
     execute_block_command,
 )
+from .bias_search import (
+    BiasSearchConfig,
+    BiasSearchResult,
+    run_bias_search,
+)
+from .generate_block import (
+    BlockGeneratorConfig,
+    BlockGeneratorResult,
+    generate_block_files,
+)
 
 __all__ = [
     # Patching
@@ -66,4 +76,12 @@ __all__ = [
     "setup_nonbonded",
     "define_selections",
     "execute_block_command",
+    # Bias Search
+    "BiasSearchConfig",
+    "BiasSearchResult",
+    "run_bias_search",
+    # Block Generator
+    "BlockGeneratorConfig",
+    "BlockGeneratorResult",
+    "generate_block_files",
 ]

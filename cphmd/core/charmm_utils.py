@@ -80,6 +80,11 @@ class FFTParameters:
         )
 
 
+# Type aliases for electrostatics and VDW methods
+ElecType = Literal["pmeex", "pmeon", "pmenn", "fshift", "fswitch"]
+VdwType = Literal["vswitch", "vfswitch"]
+
+
 @dataclass
 class NonBondedConfig:
     """Non-bonded interaction configuration.
@@ -89,22 +94,38 @@ class NonBondedConfig:
         cutim: Image cutoff distance
         ctofnb: Outer switching cutoff
         ctonnb: Inner switching cutoff
-        use_pme: Enable PME electrostatics
-        use_vswitch: Use vswitch for VDW
+        elec_type: Electrostatics method (pmeex, pmeon, pmenn, fshift, fswitch)
+        vdw_type: VDW method (vswitch, vfswitch)
         kappa: Ewald screening parameter
         order: PME interpolation order
+
+    Electrostatics methods (performance relative to pmeex):
+        - pmeex: PME with exclusions - baseline, best accuracy
+        - pmeon: PME on - +0.5%, excellent
+        - pmenn: PME no exclusions - +7%, good
+        - fshift: Force shift - +20%, fair (no long-range)
+        - fswitch: Force switch - +40%, poor (no long-range)
+
+    VDW methods:
+        - vswitch: Potential switch - baseline
+        - vfswitch: Force switch - +4%
     """
     cutnb: float = 14.0
     cutim: float = 14.0
     ctofnb: float = 12.0
     ctonnb: float = 10.0
-    use_pme: bool = True
-    use_vswitch: bool = True
+    elec_type: ElecType = "pmeex"
+    vdw_type: VdwType = "vswitch"
     kappa: float = 0.320
     order: int = 6
     fftx: int | None = None
     ffty: int | None = None
     fftz: int | None = None
+
+    # Legacy compatibility
+    @property
+    def use_pme(self) -> bool:
+        return self.elec_type in ("pmeex", "pmeon", "pmenn")
 
     def to_dict(self) -> dict:
         """Convert to dictionary for NonBondedScript."""
@@ -122,10 +143,17 @@ class NonBondedConfig:
             "nbxmod": 5,
         }
 
-        if self.use_pme:
+        # VDW switching
+        if self.vdw_type == "vswitch":
+            params["vswitch"] = True
+        else:  # vfswitch
+            params["vfswitch"] = True
+
+        # Electrostatics method
+        if self.elec_type in ("pmeex", "pmeon", "pmenn"):
+            # PME methods
             params.update({
                 "switch": True,
-                "vswitch": self.use_vswitch,
                 "ewald": True,
                 "pmewald": True,
                 "kappa": self.kappa,
@@ -135,6 +163,13 @@ class NonBondedConfig:
                 params["fftx"] = self.fftx
                 params["ffty"] = self.ffty
                 params["fftz"] = self.fftz
+        elif self.elec_type == "fshift":
+            # Force shift (no PME)
+            params["fshift"] = True
+        else:  # fswitch
+            # Force switch (no PME)
+            params["fswitch"] = True
+            params["switch"] = True
 
         return params
 
