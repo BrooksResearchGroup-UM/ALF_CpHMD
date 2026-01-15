@@ -28,9 +28,17 @@ import shutil
 import numpy as np
 import pandas as pd
 
+# Add ALF library to path if not already installed
+from cphmd import ALF_LIB_DIR
+
+if str(ALF_LIB_DIR) not in sys.path:
+    sys.path.insert(0, str(ALF_LIB_DIR))
+
 # Type aliases
 PhaseType = Literal[1, 2, 3]
 RestrainType = Literal["SCAT", "NOE"]
+ElecType = Literal["pmeex", "pmeon", "pmenn", "fshift", "fswitch"]
+VdwType = Literal["vswitch", "vfswitch"]
 
 
 @dataclass
@@ -48,9 +56,12 @@ class ALFConfig:
         phase: Initial simulation phase (1, 2, or 3)
         nreps: Number of replicas to run
         restrains: Restraint method for titratable atoms ("SCAT" or "NOE")
+        restrain_hydrogens: Include hydrogens in restraints (default False)
         no_x_bias: Disable skew bias updates
         no_s_bias: Disable endpoint bias updates
         cent_ncres: Number of residues for recentering (False to disable)
+        elec_type: Electrostatics method (pmeex, pmeon, pmenn, fshift, fswitch)
+        vdw_type: VDW method (vswitch, vfswitch)
     """
     input_folder: str | Path
     toppar_dir: str | Path = "toppar"
@@ -62,6 +73,7 @@ class ALFConfig:
     phase: PhaseType = 1
     nreps: int | None = None  # Defaults to MPI size
     restrains: RestrainType = "SCAT"
+    restrain_hydrogens: bool = False
     no_x_bias: bool = False
     no_s_bias: bool = False
     cent_ncres: int | bool = False
@@ -70,7 +82,8 @@ class ALFConfig:
     cutnb: float = 14.0
     ctofnb: float = 12.0
     ctonnb: float = 10.0
-    use_pme: bool = True
+    elec_type: ElecType = "pmeex"
+    vdw_type: VdwType = "vswitch"
 
     # Topology files (relative to toppar_dir)
     topology_files: list[str] = field(default_factory=lambda: [
@@ -247,6 +260,7 @@ class ALFSimulation:
             "nnodes": 1,
             "temp": self.config.temperature,
             "engine": "charmm",
+            "ntersite": [1, 1],  # Enable intersite biases [ms, msprof]
         }
 
         # Count blocks and subsites per site
@@ -391,6 +405,11 @@ class ALFSimulation:
                 self._setup_crystal(run_idx, letter, k, replica_idx)
                 self._build_block_commands(run_idx, letter, k, replica_idx)
                 self._apply_restraints(run_idx)
+
+                # Run minimization on first runs if needed
+                if run_idx <= 5:
+                    self._run_minimization(run_idx, replica_idx)
+
                 self._run_dynamics(run_idx, letter, k, replica_idx)
 
             self._comm.Barrier()
@@ -515,7 +534,8 @@ class ALFSimulation:
             cutim=self.config.cutnb,
             ctofnb=self.config.ctofnb,
             ctonnb=self.config.ctonnb,
-            use_pme=self.config.use_pme,
+            elec_type=self.config.elec_type,
+            vdw_type=self.config.vdw_type,
             fftx=fft_params.fftx,
             ffty=fft_params.ffty,
             fftz=fft_params.fftz,
@@ -595,7 +615,7 @@ class ALFSimulation:
             raise ValueError("patch_info not loaded")
 
         # Generate appropriate restraint command
-        include_hydrogen = False  # Can be made configurable
+        include_hydrogen = self.config.restrain_hydrogens
 
         if self.config.restrains == "NOE":
             restraint_cmd = generate_noe_restraints(
@@ -613,31 +633,246 @@ class ALFSimulation:
         # Execute restraint command
         lingo.charmm_script(restraint_cmd)
 
+    def _run_minimization(self, run_idx: int, replica_idx: int):
+        """Run energy minimization before dynamics.
+
+        Only runs if no minimized coordinates exist. Uses steepest descent
+        followed by ABNR minimization with BLADE GPU acceleration.
+        """
+        import pycharmm
+        import pycharmm.minimize as minimize
+        import pycharmm.shake as shake
+        import pycharmm.write as write
+        import pycharmm.lingo as lingo
+        import pycharmm.energy as energy
+
+        min_crd = self.config.input_folder / "prep" / "system_min.crd"
+        if min_crd.exists():
+            return  # Already minimized
+
+        print(f"Running minimization for run {run_idx}...")
+
+        # Enable SHAKE for minimization
+        shake.on(fast=True, bonh=True, param=True, tol=1e-7)
+
+        # Steepest descent (CPU)
+        minimize.run_sd(nstep=100)
+
+        # Enable FASTER and BLADE
+        lingo.charmm_script("faster on")
+        gpuid = replica_idx % 8
+        lingo.charmm_script(f"blade on gpuid {gpuid}")
+
+        # ABNR minimization (GPU)
+        minimize.run_abnr(nstep=1000, tolenr=1e-3, tolgrd=1e-3)
+
+        # Save minimized coordinates
+        write.coor_card(str(min_crd))
+        print(f"Minimized coordinates saved to {min_crd}")
+
+        # Show energy
+        energy.show()
+        lingo.charmm_script("energy blade")
+
     def _run_dynamics(self, run_idx: int, letter: str, k: int, replica_idx: int):
         """Execute molecular dynamics with BLADE GPU acceleration.
 
-        This method requires GPU hardware and is intended for production use.
-        For testing, use mock/stub implementations.
+        This method runs equilibration and production dynamics using pyCHARMM
+        with BLADE GPU acceleration. Lambda dynamics files are written for
+        subsequent ALF analysis.
+
+        Args:
+            run_idx: Current run number
+            letter: Run letter suffix (for replica identification)
+            k: Repeat index within run
+            replica_idx: MPI replica index
         """
+        import pycharmm
+        import pycharmm.psf as psf
+        import pycharmm.lingo as lingo
+        import pycharmm.settings as settings
+
+        # File units
+        dcd_unit = 51
+        rst_unit = 52
+        lmd_unit = 53
+        rpr_unit = 54
+
         # Dynamics parameters vary by phase
         if self.state.phase == 1:
             nsteps_eq = 10000    # 20 ps
             nsteps_prod = 40000  # 80 ps
+            nsavc = 1000         # Save coords every 2 ps
+            nsavl = 1            # Save lambda every 2 fs
         elif self.state.phase == 2:
-            nsteps_eq = 50000   # 100 ps
-            nsteps_prod = 450000  # 900 ps
-        else:
-            nsteps_eq = 0       # No equilibration in phase 3
-            nsteps_prod = 500000  # 1 ns
+            nsteps_eq = 50000    # 100 ps
+            nsteps_prod = 450000 # 900 ps
+            nsavc = 10000        # Save coords every 20 ps
+            nsavl = 1            # Save lambda every 2 fs
+        else:  # Phase 3
+            nsteps_eq = 0        # No equilibration
+            nsteps_prod = 500000 # 1 ns
+            nsavc = 10000        # Save coords every 20 ps
+            nsavl = 1            # Save lambda every 2 fs
 
-        # HMR allows 4fs timestep, so halve steps
+        # HMR allows 4fs timestep
+        timestep = 0.002
         if self.config.hmr:
             nsteps_eq //= 2
             nsteps_prod //= 2
+            nsavc //= 2
+            nsavl = max(nsavl, 1)
+            timestep = 0.004
 
-        # NOTE: Actual dynamics requires BLADE GPU acceleration
-        # Implementation deferred to production environment
-        print(f"Dynamics: phase={self.state.phase}, eq={nsteps_eq}, prod={nsteps_prod}")
+        # Initialize dynamics: SHAKE, FASTER, BLADE
+        import pycharmm.shake as shake
+        import pycharmm.dynamics as dyn
+
+        # SHAKE for hydrogen constraints
+        shake.on(fast=True, bonh=True, param=True, tol=1e-7)
+
+        # Enable FASTER algorithm
+        lingo.charmm_script("faster on")
+
+        # Enable BLADE GPU
+        gpuid = replica_idx % 8  # Assume max 8 GPUs
+        lingo.charmm_script(f"blade on gpuid {gpuid}")
+
+        # Set friction coefficients for Langevin dynamics
+        gscale = 10.0
+        dyn.set_fbetas(np.full(psf.get_natom(), gscale, dtype=float))
+
+        # Base dynamics parameters
+        dyn_param = {
+            "start": True,
+            "restart": False,
+            "blade": True,
+            "prmc": True,
+            "iprs": 100,
+            "prdv": 100,
+            "cpt": True,  # Constant pressure
+            "timestep": timestep,
+            "firstt": self.config.temperature,
+            "finalt": self.config.temperature,
+            "tstruc": self.config.temperature,
+            "tbath": self.config.temperature,
+            "ichecw": 0,  # Don't scale velocities
+            "ihtfrq": 0,  # No heating
+            "ieqfrq": 0,  # No velocity scaling
+            "iasors": 1,  # Assign velocities during heating
+            "iasvel": 1,  # Gaussian velocity distribution
+            "iscvel": 0,
+            "inbfrq": 0,  # BLADE handles neighbor lists
+            "ilbfrq": 0,
+            "imgfrq": 0,  # BLADE handles images
+            "ntrfrq": 0,
+            "echeck": -1,  # Disable energy check
+            "iunldm": lmd_unit,
+            "iunwri": rst_unit,
+            "iuncrd": dcd_unit,
+            "nsavc": nsavc,
+            "nsavl": nsavl,
+            "nprint": nsavc,
+            "iprfrq": nsavc,
+            "isvfrq": nsavc,
+        }
+
+        # NPT ensemble settings
+        dyn_param.update({
+            "pconstant": True,
+            "pmass": psf.get_natom() * 0.12,
+            "pref": 1.0,
+            "pgamma": 20.0,
+            "hoover": True,
+            "reft": self.config.temperature,
+            "tmass": 1000,
+        })
+
+        name = self.config.input_folder.name
+        run_dir = self.config.input_folder / f"run{run_idx}"
+        dcd_dir = run_dir / "dcd"
+        res_dir = run_dir / "res"
+
+        # === Equilibration Run ===
+        if nsteps_eq > 0:
+            dcd_fn = str(dcd_dir / f"{name}_eq.{k}.{replica_idx}.dcd")
+            rst_fn = str(res_dir / f"{name}_eq.{k}.{replica_idx}.rst")
+            lmd_fn = str(res_dir / f"{name}_eq.{k}.{replica_idx}.lmd")
+
+            dcd = pycharmm.CharmmFile(file_name=dcd_fn, file_unit=dcd_unit,
+                                      read_only=False, formatted=False)
+            rst = pycharmm.CharmmFile(file_name=rst_fn, file_unit=rst_unit,
+                                      read_only=False, formatted=True)
+            lmd = pycharmm.CharmmFile(file_name=lmd_fn, file_unit=lmd_unit,
+                                      read_only=False, formatted=False)
+
+            dyn_param.update({"nstep": nsteps_eq})
+            pycharmm.DynamicsScript(**dyn_param).run()
+
+            dcd.close()
+            rst.close()
+            lmd.close()
+
+        lingo.charmm_script("energy blade")
+
+        # === Production Run ===
+        if nsteps_prod > 0:
+            sim_type = "flat" if self.state.phase in (1, 2) else "prod"
+
+            dcd_fn = str(dcd_dir / f"{name}_{sim_type}.{k}.{replica_idx}.dcd")
+            rst_fn = str(res_dir / f"{name}_{sim_type}.{k}.{replica_idx}.rst")
+            lmd_fn = str(res_dir / f"{name}_{sim_type}.{k}.{replica_idx}.lmd")
+
+            # Update for restart from equilibration
+            dyn_param.update({"start": False, "restart": True, "iunrea": rpr_unit})
+
+            # Find restart file
+            rpr_fn = None
+            if sim_type == "flat":
+                candidates = [
+                    res_dir / f"{name}_eq.{k}.{replica_idx}.rst",
+                    res_dir / f"{name}_eq.rst",
+                ]
+            else:
+                restart_run = run_idx - 1
+                candidates = [
+                    self.config.input_folder / f"run{restart_run}" / "res" / f"{name}_prod.{k}.{replica_idx}.rst",
+                    self.config.input_folder / f"run{restart_run}" / "res" / f"{name}_flat.{k}.{replica_idx}.rst",
+                ]
+
+            for candidate in candidates:
+                if candidate.exists():
+                    rpr_fn = str(candidate)
+                    break
+
+            if rpr_fn is None and sim_type == "flat":
+                # No restart file - start fresh
+                dyn_param.update({"start": True, "restart": False})
+                dyn_param.pop("iunrea", None)
+                rpr = None
+            elif rpr_fn is None:
+                raise RuntimeError(f"No restart file found for production run {run_idx}")
+            else:
+                rpr = pycharmm.CharmmFile(file_name=rpr_fn, file_unit=rpr_unit,
+                                          read_only=True, formatted=True)
+
+            dcd = pycharmm.CharmmFile(file_name=dcd_fn, file_unit=dcd_unit,
+                                      read_only=False, formatted=False)
+            rst = pycharmm.CharmmFile(file_name=rst_fn, file_unit=rst_unit,
+                                      read_only=False, formatted=True)
+            lmd = pycharmm.CharmmFile(file_name=lmd_fn, file_unit=lmd_unit,
+                                      read_only=False, formatted=False)
+
+            dyn_param.update({"nstep": nsteps_prod})
+            pycharmm.DynamicsScript(**dyn_param).run()
+
+            dcd.close()
+            rst.close()
+            lmd.close()
+            if rpr is not None:
+                rpr.close()
+
+        lingo.charmm_script("blade off")
 
     def _alf_analysis(self, run_idx: int, repeats: int):
         """Perform ALF analysis and update biases.
@@ -681,6 +916,12 @@ class ALFSimulation:
                 if g_imp_src.exists():
                     os.symlink(g_imp_src.resolve(), g_imp_target)
 
+            # Create ALF symlink for WHAM library compatibility
+            # WHAM expects ../ALF/G_imp/ path structure
+            alf_link = self.config.input_folder / "ALF"
+            if not alf_link.exists():
+                os.symlink(self.config.input_folder.resolve(), alf_link)
+
             # Process lambda files
             os.chdir(analysis_dir)
             self.state.alf_info["nreps"] = self.config.nreps
@@ -702,6 +943,45 @@ class ALFSimulation:
 
             # Run energy calculation
             alf.GetEnergy(self.state.alf_info, im5, run_idx)
+
+            # Write nsubs and nblocks files for WHAM library
+            nsubs = self.state.alf_info["nsubs"]
+            nblocks = self.state.alf_info["nblocks"]
+            np.savetxt("nsubs", np.array(nsubs).reshape((1, -1)), fmt=" %d")
+            np.savetxt("nblocks", np.array([nblocks]), fmt=" %d")
+
+            # Run free energy analysis
+            # For early runs, skip WHAM and create minimal bias files
+            ntersite = self.state.alf_info.get("ntersite", [1, 1])
+            N = run_idx - im5 + 1  # Number of cycles
+
+            # Create minimal bias update files for first few runs
+            # (WHAM requires more data to be meaningful)
+            if run_idx <= 3:
+                # Create zero-change bias files
+                np.savetxt("b.dat", np.zeros((1, nblocks)), fmt=" %7.2f")
+                np.savetxt("c.dat", np.zeros((nblocks, nblocks)), fmt=" %7.2f")
+                np.savetxt("x.dat", np.zeros((nblocks, nblocks)), fmt=" %7.2f")
+                np.savetxt("s.dat", np.zeros((nblocks, nblocks)), fmt=" %7.2f")
+            else:
+                # After enough data, run full WHAM analysis
+                # Import function directly to avoid namespace collision with alf's star imports
+                from alf.GetFreeEnergy5 import GetFreeEnergy5
+                from alf.wham.RunWham import RunWham
+
+                # Try WHAM, fall back to zero updates on failure
+                try:
+                    nf = N * self.config.nreps
+                    RunWham(nf, self.config.temperature, ntersite[0], ntersite[1])
+                    GetFreeEnergy5(
+                        self.state.alf_info, ntersite[0], ntersite[1]
+                    )
+                except Exception as e:
+                    print(f"WHAM analysis failed: {e}, using zero bias updates")
+                    np.savetxt("b.dat", np.zeros((1, nblocks)), fmt=" %7.2f")
+                    np.savetxt("c.dat", np.zeros((nblocks, nblocks)), fmt=" %7.2f")
+                    np.savetxt("x.dat", np.zeros((nblocks, nblocks)), fmt=" %7.2f")
+                    np.savetxt("s.dat", np.zeros((nblocks, nblocks)), fmt=" %7.2f")
 
             # Update variables for next run
             alf.SetVars(self.state.alf_info, run_idx + 1)

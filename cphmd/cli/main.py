@@ -137,6 +137,9 @@ def alf(
     phase: int = typer.Option(1, "-p", "--phase", help="Initial phase (1, 2, or 3)"),
     nreps: int = typer.Option(None, "-n", "--nreps", help="Number of replicas (default: MPI size)"),
     restrains: str = typer.Option("SCAT", "-r", "--restrains", help="Restraint type: SCAT or NOE"),
+    restrain_hydrogens: bool = typer.Option(False, "-H", "--hydrogens", help="Include hydrogens in restraints"),
+    elec_type: str = typer.Option("pmeex", "--elec", help="Electrostatics: pmeex, pmeon, pmenn, fshift, fswitch"),
+    vdw_type: str = typer.Option("vswitch", "--vdw", help="VDW method: vswitch or vfswitch"),
 ):
     """Run ALF simulation with optional CpHMD.
 
@@ -147,6 +150,8 @@ def alf(
 
     console.print(f"[cyan]Starting ALF simulation for {input_folder}/[/cyan]")
     console.print(f"[dim]Temp: {temperature}K, pH: {pH}, Phase: {phase}, Runs: {start}-{end}[/dim]")
+    console.print(f"[dim]Restraints: {restrains}, Hydrogens: {restrain_hydrogens}[/dim]")
+    console.print(f"[dim]Electrostatics: {elec_type}, VDW: {vdw_type}[/dim]")
 
     config = ALFConfig(
         input_folder=input_folder,
@@ -158,6 +163,9 @@ def alf(
         phase=phase,  # type: ignore
         nreps=nreps,
         restrains=restrains,  # type: ignore
+        restrain_hydrogens=restrain_hydrogens,
+        elec_type=elec_type,  # type: ignore
+        vdw_type=vdw_type,  # type: ignore
     )
 
     run_alf_simulation(config)
@@ -166,12 +174,44 @@ def alf(
 
 @run_app.command("bias-search")
 def bias_search(
-    input_folder: str = typer.Option(..., "-i", "--input", help="Analysis folder"),
-    cutoff: float = typer.Option(0.985, "-c", "--cutoff", help="Physical state cutoff"),
+    input_folder: str = typer.Option(..., "-i", "--input", help="Input folder with analysis directories"),
+    cutoff: float = typer.Option(0.985, "-c", "--cutoff", help="Lambda cutoff for population counting"),
+    adjustment: str = typer.Option("0", "-a", "--adjust", help="Bias adjustment: + (positive), - (negative), 0 (none)"),
+    temperature: float = typer.Option(298.15, "-t", "--temp", help="Temperature (K)"),
+    alpha: float = typer.Option(10.0, "--alpha", help="Imbalance penalty factor"),
+    output_dir: str = typer.Option("variables", "-o", "--output", help="Output directory for variables file"),
+    verbose: bool = typer.Option(False, "-v", "--verbose", help="Print detailed output"),
+    no_plot: bool = typer.Option(False, "--no-plot", help="Skip plot generation"),
 ):
-    """Search for optimal bias parameters."""
-    console.print("[yellow]bias-search not yet implemented[/yellow]")
-    # TODO: Import and call cphmd.core.bias_search
+    """Search for optimal bias parameters from ALF simulation results.
+
+    Analyzes Lambda files from analysis directories to find runs with
+    the best population balance across substituents.
+    """
+    from cphmd.core import BiasSearchConfig, run_bias_search
+
+    console.print(f"[cyan]Running bias search for {input_folder}/[/cyan]")
+    console.print(f"[dim]Cutoff: {cutoff}, Alpha: {alpha}, Adjustment: {adjustment}[/dim]")
+
+    try:
+        config = BiasSearchConfig(
+            input_folder=input_folder,
+            cutoff=cutoff,
+            adjustment=adjustment,
+            temperature=temperature,
+            alpha=alpha,
+            verbose=verbose,
+            plot=not no_plot,
+            output_dir=output_dir,
+        )
+
+        result = run_bias_search(config)
+        console.print(f"[green]Best run: {result.best_iteration} (score: {result.best_score:.4f})[/green]")
+        if result.variables_file:
+            console.print(f"[green]Variables saved to: {result.variables_file}[/green]")
+    except Exception as e:
+        console.print(f"[red]Error: {e}[/red]")
+        raise typer.Exit(1)
 
 
 # Analysis commands
@@ -186,12 +226,38 @@ def energy_profiles(
 
 @analyze_app.command("block")
 def block(
-    input_folder: str = typer.Option(..., "-i", "--input", help="Input folder"),
+    input_folder: str = typer.Option(..., "-i", "--input", help="Input folder with prep/patches.dat"),
     restrain_type: str = typer.Option("SCAT", "--restrain-type", help="SCAT or NOE"),
+    hydrogens: bool = typer.Option(False, "-H", "--hydrogens", help="Include hydrogens in restraints"),
+    electrostatics: str = typer.Option("pmeex", "-e", "--elec", help="PME method: pmeex, pmeon, pmenn"),
+    variables_dir: str = typer.Option("variables", "-v", "--var-dir", help="Variables directory"),
 ):
-    """Generate MSLD block and restraint files."""
-    console.print("[yellow]block generation not yet implemented[/yellow]")
-    # TODO: Import and call cphmd.analysis.block_generator
+    """Generate MSLD block and restraint files for CpHMD production runs.
+
+    Reads patches.dat and generates block.str (MSLD setup) and restrains.str
+    (SCAT or NOE restraints) needed for production CpHMD simulations.
+    """
+    from cphmd.core import BlockGeneratorConfig, generate_block_files
+
+    console.print(f"[cyan]Generating block files for {input_folder}/[/cyan]")
+    console.print(f"[dim]Restraint: {restrain_type}, Hydrogens: {hydrogens}[/dim]")
+
+    try:
+        config = BlockGeneratorConfig(
+            input_folder=input_folder,
+            restrain_type=restrain_type,
+            include_hydrogens=hydrogens,
+            electrostatics=electrostatics,
+            variables_dir=variables_dir,
+        )
+
+        result = generate_block_files(config)
+        console.print(f"[green]Generated {result.n_blocks} blocks for {result.n_sites} sites[/green]")
+        console.print(f"[green]Block file: {result.block_file}[/green]")
+        console.print(f"[green]Restraint file: {result.restraint_file}[/green]")
+    except Exception as e:
+        console.print(f"[red]Error: {e}[/red]")
+        raise typer.Exit(1)
 
 
 @analyze_app.command("volume")
