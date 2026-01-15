@@ -29,10 +29,12 @@ console = Console()
 setup_app = typer.Typer(help="System setup commands")
 run_app = typer.Typer(help="Simulation run commands")
 analyze_app = typer.Typer(help="Analysis commands")
+utils_app = typer.Typer(help="Utility commands")
 
 app.add_typer(setup_app, name="setup")
 app.add_typer(run_app, name="run")
 app.add_typer(analyze_app, name="analyze")
+app.add_typer(utils_app, name="utils")
 
 
 @app.callback()
@@ -325,6 +327,78 @@ def volume_cmd(
         raise typer.Exit(1)
     except Exception as e:
         console.print(f"[red]Error: {e}[/red]")
+        raise typer.Exit(1)
+
+
+# Utility commands
+@utils_app.command("lambda-convert")
+def lambda_convert(
+    input_files: list[str] = typer.Argument(..., help="Input lambda files (.lmd)"),
+    output: str = typer.Option(None, "-o", "--output", help="Output directory or file"),
+    compression: str = typer.Option("snappy", "-c", "--compression",
+                                    help="Compression: snappy, gzip, lz4, zstd"),
+    concat: bool = typer.Option(False, "--concat", help="Concatenate all inputs"),
+):
+    """Convert CHARMM binary lambda files to Parquet format.
+
+    Parquet files are ~8x smaller and ~17x faster to read than binary.
+    Use --concat to combine multiple files into one output.
+    """
+    from pathlib import Path
+    from cphmd.utils import convert_lambda_to_parquet, concatenate_lambda_files
+
+    if concat:
+        # Concatenate mode
+        output_path = output or "combined.parquet"
+        combined = concatenate_lambda_files(input_files, output_path)
+        console.print(f"[green]Combined {len(input_files)} files -> {output_path}[/green]")
+        console.print(f"[dim]Total steps: {len(combined)}[/dim]")
+    else:
+        # Individual conversion
+        for input_file in input_files:
+            input_path = Path(input_file)
+            if output:
+                output_dir = Path(output)
+                if output_dir.is_dir():
+                    output_path = output_dir / input_path.with_suffix('.parquet').name
+                else:
+                    output_path = output_dir
+            else:
+                output_path = input_path.with_suffix('.parquet')
+
+            result = convert_lambda_to_parquet(input_path, output_path, compression)
+            console.print(f"[green]Converted: {input_path} -> {result}[/green]")
+
+
+@utils_app.command("lambda-info")
+def lambda_info(
+    filepath: str = typer.Argument(..., help="Lambda file (.lmd or .parquet)"),
+):
+    """Show information about a lambda file."""
+    from pathlib import Path
+    from cphmd.utils import read_lambda_binary, read_lambda_parquet
+
+    path = Path(filepath)
+    console.print(f"[cyan]Lambda file: {path}[/cyan]")
+
+    if path.suffix == '.lmd':
+        data, meta = read_lambda_binary(path)
+        console.print(f"[dim]Format: CHARMM binary[/dim]")
+        console.print(f"  Steps: {meta.nfile}")
+        console.print(f"  Blocks: {meta.nblocks}")
+        console.print(f"  Sites: {meta.nsitemld}")
+        console.print(f"  Time step: {meta.delta_t:.3f} ps")
+        console.print(f"  Save freq: {meta.nsavl}")
+        console.print(f"  Temperature: {meta.temp:.1f} K")
+        console.print(f"  Title: {meta.title}")
+    elif path.suffix == '.parquet':
+        data = read_lambda_parquet(path)
+        console.print(f"[dim]Format: Parquet[/dim]")
+        console.print(f"  Steps: {len(data)}")
+        console.print(f"  Columns: {data.shape[1]}")
+        console.print(f"  Time range: {data[0, 0]:.1f} - {data[-1, 0]:.1f} ps")
+    else:
+        console.print(f"[red]Unknown format: {path.suffix}[/red]")
         raise typer.Exit(1)
 
 
