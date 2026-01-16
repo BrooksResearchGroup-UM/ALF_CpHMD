@@ -19,6 +19,13 @@ from .volume import (
     calculate_volume,
 )
 
+from .dca import (
+    DCAResult,
+    get_model_dca,
+    get_variance_dca,
+    bootstrap_moments_dca,
+)
+
 __all__ = [
     # Energy profiles
     "EnergyProfileConfig",
@@ -30,4 +37,9 @@ __all__ = [
     "VolumeConfig",
     "VolumeResult",
     "calculate_volume",
+    # DCA / Potts Model
+    "DCAResult",
+    "get_model_dca",
+    "get_variance_dca",
+    "bootstrap_moments_dca",
 ]
