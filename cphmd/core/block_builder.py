@@ -65,9 +65,18 @@ def read_variable_file(var_file: Path) -> dict[str, float]:
                 var_value = var_value.strip()
 
                 try:
-                    variables[var_name] = float(var_value)
+                    val = float(var_value)
                 except ValueError:
+                    # String value (like system name)
                     variables[var_name] = var_value
+                else:
+                    # Fail-safe: reject NaN/Inf values that would crash CHARMM
+                    if not np.isfinite(val):
+                        raise ValueError(
+                            f"Variable {var_name} has invalid value: {var_value}. "
+                            "This indicates upstream NaN propagation - check WHAM output."
+                        )
+                    variables[var_name] = val
 
     return variables
 
@@ -252,7 +261,13 @@ def generate_ldin_statements(
     return "\n".join(lines) + "\n\n"
 
 
-def generate_rmla_msld(patch_info: pd.DataFrame) -> str:
+def generate_rmla_msld(
+    patch_info: pd.DataFrame,
+    constraint_type: str = "fnex",
+    fnex: float = 5.5,
+    fpie_width: float = 1.0,
+    fpie_force: float = 100.0,
+) -> str:
     """Generate RMLA and MSLD/MSMA statements.
 
     RMLA removes lambda scaling from bonded terms (prevents unphysical results).
@@ -260,6 +275,10 @@ def generate_rmla_msld(patch_info: pd.DataFrame) -> str:
 
     Args:
         patch_info: DataFrame from patches.dat
+        constraint_type: Implicit constraint type ("fnex" or "fpie")
+        fnex: FNEX parameter value (when constraint_type="fnex")
+        fpie_width: FPIE flat-bottom well width (when constraint_type="fpie")
+        fpie_force: FPIE flat-bottom force constant (when constraint_type="fpie")
 
     Returns:
         CHARMM RMLA/MSLD/MSMA statements
@@ -284,8 +303,14 @@ def generate_rmla_msld(patch_info: pd.DataFrame) -> str:
         else:
             lines.append(f"{site_num} -")
 
+    # Generate constraint specification based on type
+    if constraint_type == "fpie":
+        constraint_str = f"fpie widt {fpie_width} forc {fpie_force}"
+    else:
+        constraint_str = f"fnex {fnex}"
+
     lines.extend([
-        "fnex 5.5 \n",
+        f"{constraint_str} \n",
         "!------------------------------------------",
         "! Constructs the interaction matrix",
         "!------------------------------------------\n",
@@ -408,6 +433,10 @@ def build_block_command(
     patch_info: pd.DataFrame,
     variables: dict[str, float],
     config: BlockConfig,
+    constraint_type: str = "fnex",
+    fnex: float = 5.5,
+    fpie_width: float = 1.0,
+    fpie_force: float = 100.0,
 ) -> str:
     """Build complete BLOCK command string.
 
@@ -415,6 +444,10 @@ def build_block_command(
         patch_info: DataFrame from patches.dat
         variables: Variables from ALF variable file
         config: Block configuration
+        constraint_type: Implicit constraint type ("fnex" or "fpie")
+        fnex: FNEX parameter value (when constraint_type="fnex")
+        fpie_width: FPIE flat-bottom well width (when constraint_type="fpie")
+        fpie_force: FPIE flat-bottom force constant (when constraint_type="fpie")
 
     Returns:
         Complete CHARMM BLOCK command
@@ -427,7 +460,13 @@ def build_block_command(
         generate_exclusions(patch_info),
         generate_dynamics_setup(config),
         generate_ldin_statements(patch_info, variables, config),
-        generate_rmla_msld(patch_info),
+        generate_rmla_msld(
+            patch_info,
+            constraint_type=constraint_type,
+            fnex=fnex,
+            fpie_width=fpie_width,
+            fpie_force=fpie_force,
+        ),
         generate_ldbv_statements(patch_info, variables),
         "END",
     ]
@@ -440,6 +479,10 @@ def write_block_file(
     patch_info: pd.DataFrame,
     variables: dict[str, float],
     config: BlockConfig,
+    constraint_type: str = "fnex",
+    fnex: float = 5.5,
+    fpie_width: float = 1.0,
+    fpie_force: float = 100.0,
 ) -> str:
     """Generate and write BLOCK command to file.
 
@@ -448,11 +491,23 @@ def write_block_file(
         patch_info: DataFrame from patches.dat
         variables: Variables from ALF variable file
         config: Block configuration
+        constraint_type: Implicit constraint type ("fnex" or "fpie")
+        fnex: FNEX parameter value (when constraint_type="fnex")
+        fpie_width: FPIE flat-bottom well width (when constraint_type="fpie")
+        fpie_force: FPIE flat-bottom force constant (when constraint_type="fpie")
 
     Returns:
         The generated BLOCK command string
     """
-    block_cmd = build_block_command(patch_info, variables, config)
+    block_cmd = build_block_command(
+        patch_info,
+        variables,
+        config,
+        constraint_type=constraint_type,
+        fnex=fnex,
+        fpie_width=fpie_width,
+        fpie_force=fpie_force,
+    )
 
     with open(output_path, "w") as f:
         f.write(block_cmd)
