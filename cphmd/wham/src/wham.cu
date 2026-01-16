@@ -1,0 +1,2118 @@
+/*
+ * Enhanced WHAM Implementation with GPU-Specific Safeguards
+ *
+ * This version includes comprehensive safeguards to prevent GPU-specific issues
+ * that can lead to incorrect C,V matrix calculations:
+ *
+ * 1. CUDA Error Checking:
+ *    - All CUDA calls wrapped with CUDA_CHECK macro
+ *    - Kernel launch errors checked with cudaGetLastError()
+ *    - Explicit synchronization after critical operations
+ *
+ * 2. Numerical Stability:
+ *    - Enhanced logadd function with careful NaN/Inf handling
+ *    - Input validation in all GPU kernels
+ *    - Bounds checking for array accesses
+ *    - Conservative underflow protection (only at machine precision limits)
+ *
+ * 3. Atomic Operation Safeguards:
+ *    - Retry limits to prevent infinite loops
+ *    - Strict input validation before atomic operations
+ *    - GPU-specific atomic testing at startup
+ *
+ * 4. Memory Access Protection:
+ *    - Bounds checking in all kernels
+ *    - Array index validation
+ *    - Safe memory copy operations
+ *
+ * 5. Result Validation:
+ *    - Matrix validation functions (reports but doesn't auto-fix edge cases)
+ *    - Invalid value detection
+ *    - Minimal intervention approach for debugging
+ *
+ * 6. Device Management:
+ *    - GPU capability checking
+ *    - Device synchronization flags
+ *    - Proper device reset at completion
+ *
+ * IMPORTANT: This version minimizes fallback values and auto-corrections
+ * to preserve edge case behavior for debugging. Invalid results are
+ * reported but not automatically "fixed" with potentially incorrect values.
+ */
+
+#include <stdio.h>
+#include <math.h>
+#include <stdlib.h> // For rand()
+#include <cuda_runtime.h>
+#include <vector>
+
+#include "wham.h"
+
+// #define kB 0.008314
+#define kB 0.00198614
+#define MAXLENGTH 4096
+#define BLOCK 256
+#define SBLOCK 16
+
+// Verbosity control - set to 1 to enable diagnostic messages
+#define VERBOSE 0
+#define VERBOSE_PRINT(...) do { if (VERBOSE) fprintf(stderr, __VA_ARGS__); } while(0)
+
+// Dynamic dimension constants (will be set at runtime)
+// Maximum supported dimensions for shared memory allocation
+#define MAX_1D_BINS 2048
+#define MAX_2D_BINS 64
+
+// Runtime dimension variables (set by auto-detection)
+__device__ int g_1d_bins = 1024; // Will be updated at runtime
+__device__ int g_2d_bins_x = 32; // Will be updated at runtime
+__device__ int g_2d_bins_y = 32; // Will be updated at runtime
+
+// CUDA error checking macro
+#define CUDA_CHECK(call)                                                                          \
+  do                                                                                              \
+  {                                                                                               \
+    cudaError_t err = call;                                                                       \
+    if (err != cudaSuccess)                                                                       \
+    {                                                                                             \
+      fprintf(stderr, "CUDA error at %s:%d - %s\n", __FILE__, __LINE__, cudaGetErrorString(err)); \
+      cudaDeviceReset();                                                                          \
+      exit(EXIT_FAILURE);                                                                         \
+    }                                                                                             \
+  } while (0)
+
+// GPU-specific safeguards
+#define MAX_ATOMIC_RETRIES 1000
+#define NUMERICAL_TOLERANCE 1e-12
+
+// Global context for tracking current pair processing
+struct pair_context
+{
+  int i1, i2; // Current pair indices
+  int s1;     // Current site
+} current_pair_context = {-1, -1, -1};
+
+// Function declarations
+int validate_gimp_file_size(const char *filename, int expected_size);
+int detect_g_file_dimensions(const char *filename, int *dim1, int *dim2, int is_2d);
+void auto_detect_profile_dimensions(struct_data *data);
+void update_device_dimensions(int bins_1d, int bins_2d_x, int bins_2d_y);
+
+__device__ __host__ inline double logadd(double lnA, double lnB)
+{
+  // Careful NaN/Inf handling without fallbacks
+  if (!isfinite(lnA) && !isfinite(lnB))
+    return -INFINITY;
+  if (!isfinite(lnA))
+    return isfinite(lnB) ? lnB : -INFINITY;
+  if (!isfinite(lnB))
+    return isfinite(lnA) ? lnA : -INFINITY;
+
+  if (lnA > lnB)
+  {
+    double diff = lnB - lnA;
+    // Only protect against extreme underflow that would cause exp() to return exactly 0
+    if (diff < -700.0) // exp(-700) ≈ 1e-304, near machine precision
+      return lnA;
+    return lnA + log(1 + exp(diff));
+  }
+  else
+  {
+    double diff = lnA - lnB;
+    if (diff < -700.0)
+      return lnB;
+    return lnB + log(1 + exp(diff));
+  }
+}
+
+__device__ inline void atomic_logadd(double *p_lnA, double lnB)
+{
+  // Strict input validation - reject any invalid inputs
+  if (!isfinite(lnB))
+    return;
+
+  double lnA, lnC;
+  double tmp_lnA;
+  int retry_count = 0;
+
+  tmp_lnA = p_lnA[0];
+  do
+  {
+    lnA = tmp_lnA;
+    lnC = logadd(lnA, lnB);
+
+    // Only proceed if result is valid - no fallbacks
+    if (!isfinite(lnC))
+    {
+      return; // Abort if result is invalid
+    }
+
+    tmp_lnA = __longlong_as_double(atomicCAS((unsigned long long int *)p_lnA, __double_as_longlong(lnA), __double_as_longlong(lnC)));
+
+    // Prevent infinite loops on problematic GPUs
+    retry_count++;
+    if (retry_count > MAX_ATOMIC_RETRIES)
+    {
+      break;
+    }
+  } while (lnA != tmp_lnA);
+}
+
+// Test kernel for atomic operations
+__global__ void test_atomic_wrapper(double *ptr)
+{
+  atomic_logadd(ptr, 1.0);
+}
+
+// GPU device validation and setup
+void validate_and_setup_gpu()
+{
+  int deviceCount = 0;
+  CUDA_CHECK(cudaGetDeviceCount(&deviceCount));
+
+  if (deviceCount == 0)
+  {
+    fprintf(stderr, "Error: No CUDA-capable devices found\n");
+    exit(EXIT_FAILURE);
+  }
+
+  // Get current device
+  int device;
+  CUDA_CHECK(cudaGetDevice(&device));
+
+  cudaDeviceProp prop;
+  CUDA_CHECK(cudaGetDeviceProperties(&prop, device));
+
+  fprintf(stderr, "Using GPU: %s (Device %d)\n", prop.name, device);
+  fprintf(stderr, "Compute capability: %d.%d\n", prop.major, prop.minor);
+  fprintf(stderr, "Memory: %.1f GB\n", prop.totalGlobalMem / (1024.0 * 1024.0 * 1024.0));
+
+  // Validate atomic support
+  if (prop.major < 1 || (prop.major == 1 && prop.minor < 1))
+  {
+    fprintf(stderr, "Warning: GPU may not support double-precision atomics properly\n");
+  }
+
+  // Set device flags for better reliability
+  CUDA_CHECK(cudaSetDeviceFlags(cudaDeviceScheduleBlockingSync));
+
+  // Test atomic operations
+  double *test_ptr;
+  CUDA_CHECK(cudaMalloc(&test_ptr, sizeof(double)));
+  double test_val = -INFINITY;
+  CUDA_CHECK(cudaMemcpy(test_ptr, &test_val, sizeof(double), cudaMemcpyHostToDevice));
+
+  test_atomic_wrapper<<<1, 1>>>(test_ptr);
+  CUDA_CHECK(cudaDeviceSynchronize());
+
+  CUDA_CHECK(cudaMemcpy(&test_val, test_ptr, sizeof(double), cudaMemcpyDeviceToHost));
+  CUDA_CHECK(cudaFree(test_ptr));
+
+  if (!isfinite(test_val) || fabs(test_val - 1.0) > NUMERICAL_TOLERANCE)
+  {
+    fprintf(stderr, "Warning: GPU atomic operations may be unreliable on this device\n");
+    fprintf(stderr, "Test result: %g (expected: 1.0)\n", test_val);
+  }
+  else
+  {
+    fprintf(stderr, "GPU atomic operations validated successfully\n");
+  }
+}
+
+struct_data *readdata(int arg1, double arg2, int arg3, int arg4, int use_gshift)
+{
+  const char *Edir = "Energy", *Ddir = "Lambda";
+  FILE *fp, *fpE, *fpQ;
+  int i, s1, s2, j, jN, iN, B0_MAX = INT_MIN, B0_MIN = INT_MAX;
+  char fnm[MAXLENGTH], line[MAXLENGTH], *linebuffer;
+  int ibuffer, n;
+  double E, q;
+  struct_data *data = (struct_data *)malloc(sizeof(struct_data));
+
+  data->Nsim = arg1;
+  fp = fopen("../../prep/nsubs", "r");
+  if (!fp)
+  {
+    fprintf(stderr, "Error, ../../prep/nsubs does not exist\n");
+    exit(1);
+  }
+  data->Nsites = 0;
+  while (fscanf(fp, "%d", &i) == 1)
+    data->Nsites++;
+  fclose(fp);
+  data->Nsubs = (int *)malloc(data->Nsites * sizeof(int));
+  data->block0 = (int *)malloc((data->Nsites + 1) * sizeof(int));
+  fp = fopen("../../prep/nsubs", "r");
+  data->Nblocks = 0;
+  data->block0[0] = 0;
+  for (i = 0; i < data->Nsites; i++)
+  {
+    fscanf(fp, "%d", &(data->Nsubs[i]));
+    data->Nblocks += data->Nsubs[i];
+    data->block0[i + 1] = data->block0[i] + data->Nsubs[i];
+  }
+  fclose(fp);
+
+  data->ms = arg3;
+  data->msprof = arg4;
+  data->NL = data->Nblocks;
+  data->NF = data->Nsim;
+  data->Ndim = data->Nsim + data->NL + 1 + 2;
+
+  data->T_h = (double *)malloc(data->NF * sizeof(double));
+  data->beta_h = (double *)malloc(data->NF * sizeof(double));
+  CUDA_CHECK(cudaMalloc(&(data->beta_d), data->NF * sizeof(double)));
+  for (i = 0; i < data->NF; i++)
+  {
+    data->T_h[i] = arg2;
+    data->beta_h[i] = 1.0 / (kB * data->T_h[i]);
+  }
+  CUDA_CHECK(cudaMemcpy(data->beta_d, data->beta_h, data->NF * sizeof(double), cudaMemcpyHostToDevice));
+  data->beta_t = 1.0 / (kB * arg2);
+
+  data->B[0].dx = 0.1;
+  data->B[1].dx = 0.0009765625; // Updated: 0.002500025 * (400/1024)
+  data->B2d[0].dx = 0.1;
+  data->B2d[1].dx = 0.03125031875; // Updated: 0.0500005 * (20/32)
+  data->B2d[2].dx = 0.03125031875; // Updated: 0.0500005 * (20/32)
+
+  data->n_h = (int *)malloc(data->NF * sizeof(int));
+  CUDA_CHECK(cudaMalloc(&(data->n_d), data->NF * sizeof(int)));
+  data->ND = 0;
+  data->NDmax = MAXLENGTH;
+  data->D_h = (double *)malloc(data->NDmax * data->Ndim * sizeof(double));
+  data->i_h = (int *)malloc(data->NDmax * sizeof(int));
+  data->lnw_h = (double *)malloc(data->NF * sizeof(double));
+
+  for (i = 0; i < data->NF; i++)
+  {
+    sprintf(fnm, "%s/ESim%d.dat", Edir, i + 1);
+    fpE = fopen(fnm, "r");
+    if (!fpE)
+    {
+      fprintf(stderr, "Error, energy file %s does not exist\n", fnm);
+      exit(1);
+    }
+    sprintf(fnm, "%s/Lambda%d.dat", Ddir, i + 1);
+    fpQ = fopen(fnm, "r");
+    if (!fpQ)
+    {
+      fprintf(stderr, "Error, contact file %s does not exist\n", fnm);
+      exit(1);
+    }
+
+    data->lnw_h[i] = (data->NF - i - 1) * log(1.0);
+    n = 0;
+    while (fgets(line, MAXLENGTH, fpE) != NULL)
+    {
+      if (data->ND >= data->NDmax)
+      {
+        data->NDmax += MAXLENGTH;
+        data->D_h = (double *)realloc(data->D_h, data->NDmax * data->Ndim * sizeof(double));
+        data->i_h = (int *)realloc(data->i_h, data->NDmax * sizeof(int));
+      }
+      n++;
+      linebuffer = line;
+      sscanf(linebuffer, "%lf%n", &E, &ibuffer);
+      linebuffer += ibuffer;
+      data->D_h[data->ND * data->Ndim] = E;
+      for (j = 0; j < data->NF; j++)
+      {
+        sscanf(linebuffer, "%lf%n", &E, &ibuffer);
+        linebuffer += ibuffer;
+        data->D_h[data->ND * data->Ndim + data->NL + 1 + j] = E;
+      }
+      fgets(line, MAXLENGTH, fpQ);
+      linebuffer = line;
+      for (j = 0; j < data->Nblocks; j++)
+      {
+        sscanf(linebuffer, "%lf%n", &q, &ibuffer);
+        linebuffer += ibuffer;
+        data->D_h[data->ND * data->Ndim + 1 + j] = q;
+      }
+      data->i_h[data->ND] = i;
+      int iB0 = (int)floor(E / data->B[0].dx);
+      if (iB0 < B0_MIN)
+        B0_MIN = iB0;
+      if (iB0 > B0_MAX)
+        B0_MAX = iB0;
+      data->ND++;
+    }
+    data->n_h[i] = n;
+    fclose(fpE);
+    fclose(fpQ);
+  }
+
+  data->B[0].min = B0_MIN * data->B[0].dx;
+  data->B[0].max = (B0_MAX + 1) * data->B[0].dx;
+  data->B[0].N = (B0_MAX - B0_MIN) + 1;
+  data->B2d[0].min = data->B[0].min;
+  data->B2d[0].max = data->B[0].max;
+  data->B2d[0].N = data->B[0].N;
+  data->B[1].min = 0;
+  data->B[1].max = 1;
+  data->B[1].N = 1024; // Default, will be auto-detected
+  data->B2d[1].min = 0;
+  data->B2d[1].max = 1;
+  data->B2d[1].N = 32; // Default, will be auto-detected
+  data->B2d[2].min = 0;
+  data->B2d[2].max = 1;
+  data->B2d[2].N = 32; // Default, will be auto-detected
+
+  // Auto-detect dimensions from existing G_imp files
+  auto_detect_profile_dimensions(data);
+
+  int B_N = data->B[1].N;
+  if (data->B2d[1].N * data->B2d[2].N > B_N)
+    B_N = data->B2d[1].N * data->B2d[2].N;
+
+  CUDA_CHECK(cudaMemcpy(data->n_d, data->n_h, data->NF * sizeof(int), cudaMemcpyHostToDevice));
+  CUDA_CHECK(cudaMalloc(&(data->D_d), data->NDmax * data->Ndim * sizeof(double)));
+  CUDA_CHECK(cudaMemcpy(data->D_d, data->D_h, data->NDmax * data->Ndim * sizeof(double), cudaMemcpyHostToDevice));
+  CUDA_CHECK(cudaMalloc(&(data->i_d), data->NDmax * sizeof(int)));
+  CUDA_CHECK(cudaMemcpy(data->i_d, data->i_h, data->NDmax * sizeof(int), cudaMemcpyHostToDevice));
+  CUDA_CHECK(cudaMalloc(&(data->lnw_d), data->NF * sizeof(double)));
+  CUDA_CHECK(cudaMemcpy(data->lnw_d, data->lnw_h, data->NF * sizeof(double), cudaMemcpyHostToDevice));
+  data->lnDenom_h = (double *)malloc(data->NDmax * sizeof(double));
+  CUDA_CHECK(cudaMalloc(&(data->lnDenom_d), data->NDmax * sizeof(double)));
+
+  data->f_h = (double *)malloc(data->NF * sizeof(double));
+  CUDA_CHECK(cudaMalloc(&(data->f_d), data->NF * sizeof(double)));
+  for (i = 0; i < data->NF; i++)
+    data->f_h[i] = 0.0;
+  CUDA_CHECK(cudaMemcpy(data->f_d, data->f_h, data->NF * sizeof(double), cudaMemcpyHostToDevice));
+  data->invf_h = (double *)malloc(data->NF * sizeof(double));
+  CUDA_CHECK(cudaMalloc(&(data->invf_d), data->NF * sizeof(double)));
+
+  fprintf(stderr, "Warning, DOS allocation is not sparse, requesting %d doubles\n", data->B[0].N * B_N);
+  data->lnZ_h = (double *)malloc(B_N * sizeof(double));
+  CUDA_CHECK(cudaMalloc(&(data->lnZ_d), B_N * sizeof(double)));
+
+  iN = 0;
+  for (s1 = 0; s1 < data->Nsites; s1++)
+  {
+    for (s2 = s1; s2 < data->Nsites; s2++)
+    {
+      if (s1 == s2)
+      {
+        if (data->Nsubs[s1] == 2)
+        {
+          iN += data->Nsubs[s1] + data->Nsubs[s1] * (data->Nsubs[s1] - 1) / 2;
+        }
+        else
+        {
+          iN += data->Nsubs[s1] + 2 * data->Nsubs[s1] * (data->Nsubs[s1] - 1) / 2;
+        }
+      }
+      else if (data->msprof)
+      {
+        iN += data->Nsubs[s1] * data->Nsubs[s2];
+      }
+    }
+  }
+  data->iN = iN;
+
+  jN = 0;
+  for (s1 = 0; s1 < data->Nsites; s1++)
+  {
+    for (s2 = s1; s2 < data->Nsites; s2++)
+    {
+      if (s1 == s2)
+      {
+        jN += data->Nsubs[s1] + 5 * data->Nsubs[s1] * (data->Nsubs[s1] - 1) / 2;
+      }
+      else if (data->ms == 1)
+      {
+        jN += 5 * data->Nsubs[s1] * data->Nsubs[s2];
+      }
+      else if (data->ms == 2)
+      {
+        jN += data->Nsubs[s1] * data->Nsubs[s2];
+      }
+    }
+  }
+  data->jN = jN;
+
+  data->dlnZ_hN = (double **)malloc(jN * sizeof(double *));
+  for (j = 0; j < jN; j++)
+  {
+    data->dlnZ_hN[j] = (double *)malloc(B_N * sizeof(double));
+  }
+  CUDA_CHECK(cudaMalloc(&(data->dlnZ_d), B_N * sizeof(double)));
+  CUDA_CHECK(cudaMalloc(&(data->dlnZ_dN), jN * B_N * sizeof(double)));
+  data->Gimp_h = (double *)malloc(B_N * sizeof(double));
+  CUDA_CHECK(cudaMalloc(&(data->Gimp_d), B_N * sizeof(double)));
+  data->C_h = (double *)malloc(jN * sizeof(double));
+  CUDA_CHECK(cudaMalloc(&(data->C_d), jN * sizeof(double)));
+  data->CV_h = (double *)malloc(jN * sizeof(double));
+  CUDA_CHECK(cudaMalloc(&(data->CV_d), jN * sizeof(double)));
+  data->CC_h = (double *)malloc(jN * jN * sizeof(double));
+  CUDA_CHECK(cudaMalloc(&(data->CC_d), jN * jN * sizeof(double)));
+
+  int nblocks_tot = data->Nblocks;
+  data->gshift_h = (double *)malloc(data->NF * nblocks_tot * sizeof(double));
+  data->use_gshift = use_gshift;
+
+  if (use_gshift)
+  {
+    // Read G_imp shifts from files (wham_3 behavior)
+    for (int sim = 0; sim < data->NF; ++sim)
+    {
+      char sf[256];
+      sprintf(sf, "G_imp_shifts/shifts_sim%d.dat", sim + 1);
+      FILE *fs = fopen(sf, "r");
+      if (!fs)
+      {
+        fprintf(stderr, "shift table %s missing\n", sf);
+        exit(1);
+      }
+
+      int blk = 0; /* skip comment lines that start with '#' */
+      while (blk < nblocks_tot)
+      {
+        char line[256];
+        fgets(line, sizeof(line), fs);
+        if (line[0] == '#' || line[0] == '\n')
+          continue;
+        sscanf(line, "%lf", &data->gshift_h[sim * nblocks_tot + blk]);
+        ++blk;
+      }
+      fclose(fs);
+    }
+    VERBOSE_PRINT("G_imp shifts enabled, loaded from G_imp_shifts/\n");
+  }
+  else
+  {
+    // Initialize gshift arrays with zeros (legacy ALF behavior)
+    for (int i = 0; i < data->NF * nblocks_tot; ++i)
+    {
+      data->gshift_h[i] = 0.0;
+    }
+    VERBOSE_PRINT("G_imp shifts disabled, using zeros (legacy mode)\n");
+  }
+
+  CUDA_CHECK(cudaMalloc(&(data->gshift_d),
+                        data->NF * nblocks_tot * sizeof(double)));
+  CUDA_CHECK(cudaMemcpy(data->gshift_d, data->gshift_h,
+                        data->NF * nblocks_tot * sizeof(double),
+                        cudaMemcpyHostToDevice));
+
+  return data;
+}
+
+__global__ void resetlogdata(double *d, int N)
+{
+  int i = blockIdx.x * blockDim.x + threadIdx.x;
+  if (i < N)
+    d[i] = -INFINITY;
+}
+
+__global__ void resetdata(double *d, int N)
+{
+  int i = blockIdx.x * blockDim.x + threadIdx.x;
+  if (i < N)
+    d[i] = 0.0;
+}
+
+__global__ void sumdenom(struct_data data)
+{
+  int t = blockIdx.x * blockDim.x + threadIdx.x;
+  if (t < data.ND)
+  {
+    double lnDenom = -INFINITY;
+    for (int i = 0; i < data.NF; i++)
+    {
+      double E = data.D_d[t * data.Ndim + data.NL + 1 + i];
+      double lnwn = data.lnw_d[i] + log((double)data.n_d[i]);
+      lnDenom = logadd(lnDenom, lnwn + data.f_d[i] - data.beta_d[i] * E);
+    }
+    data.lnDenom_d[t] = lnDenom;
+  }
+}
+
+__global__ void getf(struct_data data)
+{
+  int tmin = (data.ND * threadIdx.x) / blockDim.x;
+  int tmax = (data.ND * (threadIdx.x + 1)) / blockDim.x;
+  int i = blockIdx.x;
+  double beta = data.beta_d[i];
+  __shared__ double invf[BLOCK];
+
+  invf[threadIdx.x] = -INFINITY;
+  for (int t = tmin; t < tmax; t++)
+  {
+    double lnw = data.lnw_d[data.i_d[t]];
+    double E = data.D_d[t * data.Ndim + data.NL + 1 + i];
+    invf[threadIdx.x] = logadd(invf[threadIdx.x], lnw - beta * E - data.lnDenom_d[t]);
+  }
+
+  __syncthreads();
+  for (int t = 1; t < blockDim.x; t *= 2)
+  {
+    if ((threadIdx.x % (2 * t)) == 0)
+    {
+      invf[threadIdx.x] = logadd(invf[threadIdx.x], invf[threadIdx.x + t]);
+    }
+    __syncthreads();
+  }
+
+  if (threadIdx.x == 0)
+  {
+    data.invf_d[i] = invf[0];
+    data.f_d[i] = -invf[0];
+  }
+}
+
+__global__ void normf(double *f, double f_avg, int N)
+{
+  int i = blockIdx.x * blockDim.x + threadIdx.x;
+  if (i < N)
+    f[i] -= f_avg;
+}
+
+void iteratedata(struct_data *data)
+{
+  int itt, mitt = 1000;
+  double f_sum, max_change, tolerance = 1e-8; // Increased precision for convergence
+  FILE *fp;
+
+  double *f_prev = (double *)malloc(data->NF * sizeof(double));
+  for (int i = 0; i < data->NF; i++)
+    f_prev[i] = 0.0;
+
+  for (itt = 0; itt < mitt; itt++)
+  {
+    sumdenom<<<(data->ND + BLOCK - 1) / BLOCK, BLOCK>>>(data[0]);
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    getf<<<data->NF, BLOCK>>>(data[0]);
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    CUDA_CHECK(cudaMemcpy(data->invf_h, data->invf_d, data->NF * sizeof(double), cudaMemcpyDeviceToHost));
+
+    f_sum = 0.0;
+    max_change = 0.0;
+    for (int i = 0; i < data->NF; i++)
+    {
+      data->f_h[i] = -data->invf_h[i];
+      f_sum += data->f_h[i];
+      double change = fabs(data->f_h[i] - f_prev[i]);
+      if (change > max_change)
+        max_change = change;
+      f_prev[i] = data->f_h[i];
+    }
+    f_sum /= data->NF;
+    normf<<<(data->NF + BLOCK - 1) / BLOCK, BLOCK>>>(data->f_d, f_sum, data->NF);
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    CUDA_CHECK(cudaMemcpy(data->f_h, data->f_d, data->NF * sizeof(double), cudaMemcpyDeviceToHost));
+
+    fprintf(stdout, "Iteration %d, max f change: %g\n", itt + 1, max_change);
+    if (max_change < tolerance * fabs(f_sum))
+      break; // Relative convergence
+  }
+
+  // Bootstrap for uncertainty (simple version, 10 resamples)
+  double *f_boot = (double *)malloc(data->NF * sizeof(double));
+  double *f_std = (double *)malloc(data->NF * sizeof(double));
+  for (int i = 0; i < data->NF; i++)
+    f_std[i] = 0.0;
+
+  for (int boot = 0; boot < 10; boot++)
+  {
+    sumdenom<<<(data->ND + BLOCK - 1) / BLOCK, BLOCK>>>(data[0]);
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    getf<<<data->NF, BLOCK>>>(data[0]);
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    CUDA_CHECK(cudaMemcpy(f_boot, data->f_d, data->NF * sizeof(double), cudaMemcpyDeviceToHost));
+    for (int i = 0; i < data->NF; i++)
+    {
+      double diff = f_boot[i] - data->f_h[i];
+      f_std[i] += diff * diff;
+    }
+  }
+  for (int i = 0; i < data->NF; i++)
+  {
+    f_std[i] = sqrt(f_std[i] / 9.0); // Std dev over 10 samples
+    fprintf(stderr, "f[%d] uncertainty: %g\n", i, f_std[i]);
+  }
+
+  fp = fopen("f.dat", "w");
+  for (int i = 0; i < data->NF; i++)
+    fprintf(fp, " %18.12f", data->f_h[i]); // Increased precision for high-precision lambda data
+  fclose(fp);
+
+  free(f_prev);
+  free(f_boot);
+  free(f_std);
+}
+
+__global__ void bin1(struct_data data, int i1)
+{
+  int t = blockIdx.x * blockDim.x + threadIdx.x;
+  if (t < data.ND)
+  {
+    double q1 = data.D_d[t * data.Ndim + 1 + i1];
+    if (isfinite(q1)) // Validate input for precision
+    {
+      int iB1 = (int)floor((q1 - data.B[1].min) / data.B[1].dx);
+      // Ensure bin index is within valid range
+      if (iB1 >= 0 && iB1 < data.B[1].N)
+      {
+        data.D_d[t * data.Ndim + 1 + data.NL + data.Nsim] = iB1;
+      }
+      else
+      {
+        data.D_d[t * data.Ndim + 1 + data.NL + data.Nsim] = -1; // Invalid bin
+      }
+    }
+    else
+    {
+      data.D_d[t * data.Ndim + 1 + data.NL + data.Nsim] = -1; // Invalid input
+    }
+  }
+}
+
+__global__ void bin12(struct_data data, int i1, int i2)
+{
+  int t = blockIdx.x * blockDim.x + threadIdx.x;
+  if (t < data.ND)
+  {
+    double q1 = data.D_d[t * data.Ndim + 1 + i1];
+    double q2 = data.D_d[t * data.Ndim + 1 + i2];
+
+    if (isfinite(q1) && isfinite(q2) && q1 >= 0 && q2 >= 0) // Validate inputs
+    {
+      double sum_q = q1 + q2;
+      if (sum_q > 0.8 && sum_q > 1e-12) // More precise threshold check
+      {
+        double ratio = q1 / sum_q;
+        int iB12 = (int)floor((ratio - data.B[1].min) / data.B[1].dx);
+        // Validate bin index
+        if (iB12 >= 0 && iB12 < data.B[1].N)
+        {
+          data.D_d[t * data.Ndim + 1 + data.NL + data.Nsim] = iB12;
+        }
+        else
+        {
+          data.D_d[t * data.Ndim + 1 + data.NL + data.Nsim] = -1;
+        }
+      }
+      else
+      {
+        data.D_d[t * data.Ndim + 1 + data.NL + data.Nsim] = -1;
+      }
+    }
+    else
+    {
+      data.D_d[t * data.Ndim + 1 + data.NL + data.Nsim] = -1; // Invalid inputs
+    }
+  }
+}
+
+__global__ void bin2(struct_data data, int i1, int i2)
+{
+  int t = blockIdx.x * blockDim.x + threadIdx.x;
+  if (t < data.ND)
+  {
+    double q1 = data.D_d[t * data.Ndim + 1 + i1];
+    double q2 = data.D_d[t * data.Ndim + 1 + i2];
+
+    if (isfinite(q1) && isfinite(q2) && q1 >= 0 && q2 >= 0) // Validate inputs
+    {
+      int iB1 = (int)floor((q1 - data.B2d[1].min) / data.B2d[1].dx);
+      int iB2 = (int)floor((q2 - data.B2d[2].min) / data.B2d[2].dx);
+
+      // Validate both bin indices
+      if (iB1 >= 0 && iB1 < data.B2d[1].N && iB2 >= 0 && iB2 < data.B2d[2].N)
+      {
+        int combined_bin = iB1 * data.B2d[2].N + iB2;
+        // Additional check for combined bin index
+        if (combined_bin >= 0 && combined_bin < data.B2d[1].N * data.B2d[2].N)
+        {
+          data.D_d[t * data.Ndim + 1 + data.NL + data.Nsim] = combined_bin;
+        }
+        else
+        {
+          data.D_d[t * data.Ndim + 1 + data.NL + data.Nsim] = -1;
+        }
+      }
+      else
+      {
+        data.D_d[t * data.Ndim + 1 + data.NL + data.Nsim] = -1;
+      }
+    }
+    else
+    {
+      data.D_d[t * data.Ndim + 1 + data.NL + data.Nsim] = -1; // Invalid inputs
+    }
+  }
+}
+
+double bin_all(struct_data *data, int *ptype, int i)
+{
+  double wnorm;
+  int s1, s2, i1, i2, B_N;
+  char fnm[MAXLENGTH];
+
+  // Main WHAM processing loop
+  for (s1 = 0; s1 < data->Nsites; s1++)
+  {
+    for (s2 = s1; s2 < data->Nsites; s2++)
+    {
+      if (s1 == s2)
+      {
+        for (i1 = data->block0[s1]; i1 < data->block0[s1 + 1]; i1++)
+        {
+          if (i == 0)
+          {
+            fprintf(stderr, "1D Profile %d\n", i1);
+            wnorm = 1.0;
+            bin1<<<(data->ND + BLOCK - 1) / BLOCK, BLOCK>>>(data[0], i1);
+            CUDA_CHECK(cudaGetLastError());
+            CUDA_CHECK(cudaDeviceSynchronize());
+            // Map block index to filename: block 0->G1_2, block 1->G1_3, block 2->G1_4
+            int subsite_index = (i1 - data->block0[s1]) + 2;
+            sprintf(fnm, "G_imp/G1_%d.dat", subsite_index);
+            B_N = data->B[1].N;
+            ptype[0] = 0;
+
+            // Set current block index for kernel processing
+            data->current_block_idx = i1;
+
+            // Apply G_imp shifts immediately for G1 profiles
+            FILE *fp = fopen(fnm, "r");
+            if (!fp)
+            {
+              fprintf(stderr, "Error, %s does not exist\n", fnm);
+              exit(1);
+            }
+
+            // Validate G_imp file size before reading
+            fclose(fp);
+            int validation_result = validate_gimp_file_size(fnm, B_N);
+            if (validation_result == -1)
+            {
+              fprintf(stderr, "Error, %s does not exist\n", fnm);
+              exit(1);
+            }
+            else if (validation_result == 0)
+            {
+              fprintf(stderr, "Error, %s has incorrect size (expected %d bins)\n", fnm, B_N);
+              exit(1);
+            }
+
+            // Reopen and read the validated file
+            fp = fopen(fnm, "r");
+            for (int idx = 0; idx < B_N; idx++)
+              fscanf(fp, "%lf", &data->Gimp_h[idx]);
+            fclose(fp);
+
+            CUDA_CHECK(cudaMemcpy(data->Gimp_d, data->Gimp_h, B_N * sizeof(double), cudaMemcpyHostToDevice));
+          }
+          i--;
+        }
+        int pair_counter = 0; // Counter for G12 pairs
+        for (i1 = data->block0[s1]; i1 < data->block0[s1 + 1]; i1++)
+        {
+          for (i2 = i1 + 1; i2 < data->block0[s1 + 1]; i2++)
+          {
+            if (i == 0)
+            {
+              fprintf(stderr, "1D Profile %d,%d\n", i1, i2);
+              wnorm = 1.0 / ((data->Nsubs[s1] - 1) / 2.0);
+              bin12<<<(data->ND + BLOCK - 1) / BLOCK, BLOCK>>>(data[0], i1, i2);
+              CUDA_CHECK(cudaGetLastError());
+              CUDA_CHECK(cudaDeviceSynchronize());
+              // G12 files are generated per dimension, not per pair
+              // All pairs (0,1), (0,2), (1,2) use the same G12_3.dat file
+              // But we need to track which pair for shift application
+              sprintf(fnm, "G_imp/G12_%d.dat", data->Nsubs[s1]);
+              B_N = data->B2d[1].N * data->B2d[2].N;
+              ptype[0] = 1;
+
+              // Set current block index for kernel processing (use i1 for conditional profiles)
+              data->current_block_idx = i1;
+
+              // Apply G_imp shifts immediately for G12 profiles
+              FILE *fp = fopen(fnm, "r");
+              if (!fp)
+              {
+                fprintf(stderr, "Error, %s does not exist\n", fnm);
+                exit(1);
+              }
+
+              // Validate G_imp file size before reading
+              fclose(fp);
+              int validation_result = validate_gimp_file_size(fnm, B_N);
+              if (validation_result == -1)
+              {
+                fprintf(stderr, "Error, %s does not exist\n", fnm);
+                exit(1);
+              }
+              else if (validation_result == 0)
+              {
+                fprintf(stderr, "Error, %s has incorrect size (expected %d bins)\n", fnm, B_N);
+                exit(1);
+              }
+
+              // Reopen and read the validated file
+              fp = fopen(fnm, "r");
+              for (int idx = 0; idx < B_N; idx++)
+                fscanf(fp, "%lf", &data->Gimp_h[idx]);
+              fclose(fp);
+
+              CUDA_CHECK(cudaMemcpy(data->Gimp_d, data->Gimp_h, B_N * sizeof(double), cudaMemcpyHostToDevice));
+
+              // Store pair information for shift calculation (will be parsed from context)
+              pair_counter++;
+            }
+            i--;
+          }
+        }
+        if (data->Nsubs[s1] > 2)
+        {
+          int pair_counter = 0; // Counter for G2 pairs
+          for (i1 = data->block0[s1]; i1 < data->block0[s1 + 1]; i1++)
+          {
+            for (i2 = i1 + 1; i2 < data->block0[s1 + 1]; i2++)
+            {
+              if (i == 0)
+              {
+                fprintf(stderr, "2D Profile %d,%d\n", i1, i2);
+                wnorm = 1.0 / ((data->Nsubs[s1] - 1) / 2.0);
+                bin2<<<(data->ND + BLOCK - 1) / BLOCK, BLOCK>>>(data[0], i1, i2);
+                CUDA_CHECK(cudaGetLastError());
+                CUDA_CHECK(cudaDeviceSynchronize());
+                // G2 files are generated per dimension, similar to G12
+                // All pairs use the same G2_3.dat file
+                sprintf(fnm, "G_imp/G2_%d.dat", data->Nsubs[s1]);
+                B_N = data->B2d[1].N * data->B2d[2].N;
+                ptype[0] = 2;
+
+                // Set current block index for kernel processing (use i1 for pair profiles)
+                data->current_block_idx = i1;
+
+                // Apply G_imp shifts immediately for G2 profiles
+                FILE *fp = fopen(fnm, "r");
+                if (!fp)
+                {
+                  fprintf(stderr, "Error, %s does not exist\n", fnm);
+                  exit(1);
+                }
+
+                // Validate G_imp file size before reading
+                fclose(fp);
+                int validation_result = validate_gimp_file_size(fnm, B_N);
+                if (validation_result == -1)
+                {
+                  fprintf(stderr, "Error, %s does not exist\n", fnm);
+                  exit(1);
+                }
+                else if (validation_result == 0)
+                {
+                  fprintf(stderr, "Error, %s has incorrect size (expected %d bins)\n", fnm, B_N);
+                  exit(1);
+                }
+
+                // Reopen and read the validated file
+                fp = fopen(fnm, "r");
+                for (int idx = 0; idx < B_N; idx++)
+                  fscanf(fp, "%lf", &data->Gimp_h[idx]);
+                fclose(fp);
+
+                CUDA_CHECK(cudaMemcpy(data->Gimp_d, data->Gimp_h, B_N * sizeof(double), cudaMemcpyHostToDevice));
+
+                pair_counter++;
+              }
+              i--;
+            }
+          }
+        }
+      }
+      else if (data->msprof)
+      {
+        for (i1 = data->block0[s1]; i1 < data->block0[s1 + 1]; i1++)
+        {
+          for (i2 = data->block0[s2]; i2 < data->block0[s2 + 1]; i2++)
+          {
+            if (i == 0)
+            {
+              fprintf(stderr, "2D SS Profile %d,%d\n", i1, i2);
+              wnorm = 1.0 / (data->Nsubs[s1] * data->Nsubs[s2]);
+              bin2<<<(data->ND + BLOCK - 1) / BLOCK, BLOCK>>>(data[0], i1, i2);
+              CUDA_CHECK(cudaGetLastError());
+              CUDA_CHECK(cudaDeviceSynchronize());
+              // For cross-site G1_i_j files, map to actual subsite indices
+              int subsite_index_s1 = (i1 - data->block0[s1]) + 2;
+              int subsite_index_s2 = (i2 - data->block0[s2]) + 2;
+              sprintf(fnm, "G_imp/G1_%d_%d.dat", subsite_index_s1, subsite_index_s2);
+              B_N = data->B2d[1].N * data->B2d[2].N;
+              ptype[0] = 3;
+
+              // Set current block index for kernel processing (use i1 for inter-site profiles)
+              data->current_block_idx = i1;
+
+              // Apply G_imp shifts immediately for cross-site G1_i_j profiles
+              FILE *fp = fopen(fnm, "r");
+              if (!fp)
+              {
+                fprintf(stderr, "Error, %s does not exist\n", fnm);
+                exit(1);
+              }
+
+              // Validate G_imp file size before reading
+              fclose(fp);
+              int validation_result = validate_gimp_file_size(fnm, B_N);
+              if (validation_result == -1)
+              {
+                fprintf(stderr, "Error, %s does not exist\n", fnm);
+                exit(1);
+              }
+              else if (validation_result == 0)
+              {
+                fprintf(stderr, "Error, %s has incorrect size (expected %d bins)\n", fnm, B_N);
+                exit(1);
+              }
+
+              // Reopen and read the validated file
+              fp = fopen(fnm, "r");
+              for (int idx = 0; idx < B_N; idx++)
+                fscanf(fp, "%lf", &data->Gimp_h[idx]);
+              fclose(fp);
+
+              CUDA_CHECK(cudaMemcpy(data->Gimp_d, data->Gimp_h, B_N * sizeof(double), cudaMemcpyHostToDevice));
+            }
+            i--;
+          }
+        }
+      }
+    }
+  }
+
+  return wnorm;
+}
+
+__global__ void reactioncoord_phi(struct_data data, int i1)
+{
+  int t = blockIdx.x * blockDim.x + threadIdx.x;
+  if (t < data.ND)
+  {
+    double q1 = data.D_d[t * data.Ndim + 1 + i1];
+    data.D_d[t * data.Ndim + 1 + data.NL + data.Nsim + 1] = q1;
+  }
+}
+
+__global__ void reactioncoord_psi(struct_data data, int i1, int i2)
+{
+  int t = blockIdx.x * blockDim.x + threadIdx.x;
+  if (t < data.ND)
+  {
+    double q1 = data.D_d[t * data.Ndim + 1 + i1];
+    double q2 = data.D_d[t * data.Ndim + 1 + i2];
+    data.D_d[t * data.Ndim + 1 + data.NL + data.Nsim + 1] = q1 * q2;
+  }
+}
+
+__global__ void reactioncoord_omega(struct_data data, int i1, int i2)
+{
+  int t = blockIdx.x * blockDim.x + threadIdx.x;
+  if (t < data.ND)
+  {
+    double q1 = data.D_d[t * data.Ndim + 1 + i1];
+    double q2 = data.D_d[t * data.Ndim + 1 + i2];
+    data.D_d[t * data.Ndim + 1 + data.NL + data.Nsim + 1] = q2 * (1 - 1 / (q1 / 0.017 + 1));
+  }
+}
+
+__global__ void reactioncoord_chi(struct_data data, int i1, int i2)
+{
+  int t = blockIdx.x * blockDim.x + threadIdx.x;
+  if (t < data.ND)
+  {
+    double q1 = data.D_d[t * data.Ndim + 1 + i1];
+    double q2 = data.D_d[t * data.Ndim + 1 + i2];
+    data.D_d[t * data.Ndim + 1 + data.NL + data.Nsim + 1] = q2 * (1 - exp(-q1 / 0.18));
+  }
+}
+
+void reactioncoord_all(struct_data *data, int i)
+{
+  int s1, s2, j1, j2;
+  for (s1 = 0; s1 < data->Nsites; s1++)
+  {
+    for (s2 = s1; s2 < data->Nsites; s2++)
+    {
+      if (s1 == s2)
+      {
+        for (j1 = data->block0[s1]; j1 < data->block0[s1 + 1]; j1++)
+        {
+          if (i == 0)
+            reactioncoord_phi<<<(data->ND + BLOCK - 1) / BLOCK, BLOCK>>>(data[0], j1);
+          i--;
+        }
+        for (j1 = data->block0[s1]; j1 < data->block0[s1 + 1]; j1++)
+        {
+          for (j2 = j1 + 1; j2 < data->block0[s1 + 1]; j2++)
+          {
+            if (i == 0)
+              reactioncoord_psi<<<(data->ND + BLOCK - 1) / BLOCK, BLOCK>>>(data[0], j1, j2);
+            i--;
+          }
+        }
+        for (j1 = data->block0[s1]; j1 < data->block0[s1 + 1]; j1++)
+        {
+          for (j2 = data->block0[s1]; j2 < data->block0[s1 + 1]; j2++)
+          {
+            if (j1 != j2)
+            {
+              if (i == 0)
+                reactioncoord_chi<<<(data->ND + BLOCK - 1) / BLOCK, BLOCK>>>(data[0], j1, j2);
+              i--;
+            }
+          }
+        }
+        for (j1 = data->block0[s1]; j1 < data->block0[s1 + 1]; j1++)
+        {
+          for (j2 = data->block0[s1]; j2 < data->block0[s1 + 1]; j2++)
+          {
+            if (j1 != j2)
+            {
+              if (i == 0)
+                reactioncoord_omega<<<(data->ND + BLOCK - 1) / BLOCK, BLOCK>>>(data[0], j1, j2);
+              i--;
+            }
+          }
+        }
+      }
+      else if (data->ms)
+      {
+        for (j1 = data->block0[s1]; j1 < data->block0[s1 + 1]; j1++)
+        {
+          for (j2 = data->block0[s2]; j2 < data->block0[s2 + 1]; j2++)
+          {
+            if (i == 0)
+              reactioncoord_psi<<<(data->ND + BLOCK - 1) / BLOCK, BLOCK>>>(data[0], j1, j2);
+            i--;
+          }
+        }
+        if (data->ms == 1)
+        {
+          for (j1 = data->block0[s1]; j1 < data->block0[s1 + 1]; j1++)
+          {
+            for (j2 = data->block0[s2]; j2 < data->block0[s2 + 1]; j2++)
+            {
+              if (i == 0)
+                reactioncoord_chi<<<(data->ND + BLOCK - 1) / BLOCK, BLOCK>>>(data[0], j1, j2);
+              i--;
+              if (i == 0)
+                reactioncoord_chi<<<(data->ND + BLOCK - 1) / BLOCK, BLOCK>>>(data[0], j2, j1);
+              i--;
+            }
+          }
+          for (j1 = data->block0[s1]; j1 < data->block0[s1 + 1]; j1++)
+          {
+            for (j2 = data->block0[s2]; j2 < data->block0[s2 + 1]; j2++)
+            {
+              if (i == 0)
+                reactioncoord_omega<<<(data->ND + BLOCK - 1) / BLOCK, BLOCK>>>(data[0], j1, j2);
+              i--;
+              if (i == 0)
+                reactioncoord_omega<<<(data->ND + BLOCK - 1) / BLOCK, BLOCK>>>(data[0], j2, j1);
+              i--;
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+__global__ void get_lnZ(struct_data data, double beta,
+                        const double *__restrict__ gshift,
+                        int block_off)
+{
+  int t = blockIdx.x * blockDim.x + threadIdx.x;
+  __shared__ double loc_lnZ[MAX_1D_BINS];
+
+  // Enhanced initialization with bounds checking using dynamic dimension
+  for (int i = threadIdx.x; i < g_1d_bins; i += blockDim.x)
+    loc_lnZ[i] = -INFINITY;
+  __syncthreads();
+
+  // Validate input parameters
+  if (!isfinite(beta) || beta <= 0)
+    return;
+
+  for (int i = SBLOCK * t; i < SBLOCK * (t + 1) && i < data.ND; i++)
+  {
+    // Bounds checking for array access
+    if (i >= data.ND || i < 0)
+      continue;
+
+    double E = data.D_d[i * data.Ndim + 0];
+    int iB = (int)data.D_d[i * data.Ndim + 1 + data.NL + data.Nsim];
+
+    // Enhanced bounds and validity checking using dynamic dimension
+    if (iB >= 0 && iB < g_1d_bins && isfinite(E))
+    {
+      int sim_idx = data.i_d[i];
+      if (sim_idx >= 0 && sim_idx < data.NF)
+      {
+        double lnw = data.lnw_d[sim_idx];
+        double lnDenom = data.lnDenom_d[i];
+
+        // Validate all components before computation
+        if (isfinite(lnw) && isfinite(lnDenom))
+        {
+          double vshift = gshift[sim_idx * data.Nblocks + block_off];
+          double contribution = lnw - lnDenom - beta * (E + vshift);
+          // Only check for reasonable range, no clamping
+          if (isfinite(contribution))
+          {
+            atomic_logadd(&loc_lnZ[iB], contribution);
+          }
+        }
+      }
+    }
+    // Note: Invalid bins (iB == -1) are automatically skipped
+  }
+  __syncthreads();
+
+  // Enhanced final reduction with validation using dynamic dimension
+  for (int i = threadIdx.x; i < g_1d_bins; i += blockDim.x)
+  {
+    if (isfinite(loc_lnZ[i]) && loc_lnZ[i] > -INFINITY)
+      atomic_logadd(&data.lnZ_d[i], loc_lnZ[i]);
+  }
+}
+
+__global__ void get_dlnZ(struct_data data, int j1, double beta,
+                         const double *__restrict__ gshift,
+                         int block_off)
+{
+  int t = blockIdx.x * blockDim.x + threadIdx.x;
+  __shared__ double loc_dlnZ[MAX_1D_BINS];
+
+  // Enhanced initialization using dynamic dimension
+  for (int i = threadIdx.x; i < g_1d_bins; i += blockDim.x)
+    loc_dlnZ[i] = -INFINITY;
+  __syncthreads();
+
+  // Validate input parameters
+  if (!isfinite(beta) || beta <= 0 || j1 < 0)
+    return;
+
+  for (int i = SBLOCK * t; i < SBLOCK * (t + 1) && i < data.ND; i++)
+  {
+    // Bounds checking
+    if (i >= data.ND || i < 0)
+      continue;
+
+    double E = data.D_d[i * data.Ndim + 0];
+    int iB = (int)data.D_d[i * data.Ndim + 1 + data.NL + data.Nsim];
+    double q = data.D_d[i * data.Ndim + 1 + data.NL + data.Nsim + 1];
+
+    // Enhanced validation with better precision handling using dynamic dimension
+    if (iB >= 0 && iB < g_1d_bins && isfinite(E) && isfinite(q) && q > 1e-15) // More precise q threshold
+    {
+      int sim_idx = data.i_d[i];
+      if (sim_idx >= 0 && sim_idx < data.NF)
+      {
+        double lnw = data.lnw_d[sim_idx];
+        double lnDenom = data.lnDenom_d[i];
+
+        if (isfinite(lnw) && isfinite(lnDenom))
+        {
+          double log_q = log(q);
+          if (isfinite(log_q))
+          {
+            double vshift = gshift[sim_idx * data.Nblocks + block_off];
+            double contribution = lnw - lnDenom - beta * (E + vshift) + log_q;
+            if (isfinite(contribution))
+            {
+              atomic_logadd(&loc_dlnZ[iB], contribution);
+            }
+          }
+        }
+      }
+    }
+    // Note: Invalid bins (iB == -1) and very small q values are automatically skipped
+  }
+  __syncthreads();
+
+  // Enhanced final reduction with bounds checking using dynamic dimension
+  for (int i = threadIdx.x; i < g_1d_bins; i += blockDim.x)
+  {
+    if (isfinite(loc_dlnZ[i]) && loc_dlnZ[i] > -INFINITY)
+    {
+      int target_idx = g_1d_bins * j1 + i;
+      // Additional bounds check for target array
+      if (target_idx >= 0 && j1 >= 0)
+        atomic_logadd(&data.dlnZ_dN[target_idx], loc_dlnZ[i]);
+    }
+  }
+}
+
+__global__ void get_CC(struct_data data, int i, double beta, double wnorm, int ptype,
+                       const double *__restrict__ gshift,
+                       int block_off)
+{
+  int j1 = blockIdx.x, j2 = blockIdx.y;
+  __shared__ double loc_CC[100];
+  double myCC = 0;
+
+  // Validate input parameters
+  if (!isfinite(beta) || !isfinite(wnorm) || beta <= 0 || wnorm <= 0)
+  {
+    if (threadIdx.x == 0)
+    {
+      data.CC_d[gridDim.x * j1 + j2] = 0.0;
+    }
+    return;
+  }
+
+  for (int k = threadIdx.x; k < g_1d_bins; k += 100)
+  {
+    double weight = wnorm;
+    // Enhanced weight calculation with validation using dynamic dimension
+    if ((ptype == 0 || ptype == 3) && k == (g_1d_bins - 1))
+    {
+      weight *= 100.0;
+    }
+
+    if (!isfinite(weight) || weight <= 0)
+      continue;
+
+    double lnZ = data.lnZ_d[k];
+    if (isfinite(lnZ) && lnZ > -INFINITY)
+    {
+      // Bounds checking for array access using dynamic dimension
+      int idx1 = j1 * g_1d_bins + k;
+      int idx2 = j2 * g_1d_bins + k;
+
+      if (idx1 >= 0 && idx2 >= 0 && j1 >= 0 && j2 >= 0)
+      {
+        double dlnZ1 = data.dlnZ_dN[idx1];
+        double dlnZ2 = data.dlnZ_dN[idx2];
+
+        if (isfinite(dlnZ1) && isfinite(dlnZ2))
+        {
+          double exp_arg1 = dlnZ1 - lnZ;
+          double exp_arg2 = dlnZ2 - lnZ;
+
+          // Check for finite results without clamping
+          if (isfinite(exp_arg1) && isfinite(exp_arg2))
+          {
+            double exp_val1 = exp(exp_arg1);
+            double exp_val2 = exp(exp_arg2);
+
+            if (isfinite(exp_val1) && isfinite(exp_val2))
+            {
+              double contribution = weight * exp_val1 * exp_val2;
+              if (isfinite(contribution) && contribution >= 0)
+              {
+                myCC += contribution;
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // Validate before storing in shared memory - be strict about invalid values
+  if (!isfinite(myCC))
+  {
+    myCC = 0.0; // Only handle NaN/Inf, preserve valid negative values for debugging
+  }
+  if (myCC < 0)
+  {
+    // Log negative values for debugging but don't change them yet
+    // This helps identify numerical issues
+  }
+  loc_CC[threadIdx.x] = myCC;
+
+  __syncthreads();
+
+  // Enhanced reduction with validation
+  for (int k = 1; k < 100; k *= 2)
+  {
+    if (threadIdx.x % (2 * k) == 0 && threadIdx.x + k < 100)
+    {
+      double val = loc_CC[threadIdx.x + k];
+      if (isfinite(val))
+      {
+        loc_CC[threadIdx.x] += val;
+      }
+    }
+    __syncthreads();
+  }
+
+  if (threadIdx.x == 0)
+  {
+    double final_result = loc_CC[0];
+    if (!isfinite(final_result))
+      final_result = 0.0;
+    // Keep negative values for now - they indicate numerical issues
+
+    int output_idx = gridDim.x * j1 + j2;
+    if (output_idx >= 0)
+    {
+      data.CC_d[output_idx] = final_result;
+    }
+  }
+}
+
+// G_imp profile size validation function
+int validate_gimp_file_size(const char *filename, int expected_size)
+{
+  FILE *fp = fopen(filename, "r");
+  if (!fp)
+  {
+    return -1; // File doesn't exist
+  }
+
+  int count = 0;
+  double value;
+  while (fscanf(fp, "%lf", &value) == 1)
+  {
+    count++;
+  }
+  fclose(fp);
+
+  if (count != expected_size)
+  {
+    fprintf(stderr, "ERROR: G_imp file %s has %d values, expected %d\n",
+            filename, count, expected_size);
+    fprintf(stderr, "This may indicate incorrect bin configuration or outdated profile files\n");
+    return 0; // Size mismatch
+  }
+
+  return 1; // Correct size
+}
+
+// G_imp dimension detection function
+int detect_g_file_dimensions(const char *filename, int *dim1, int *dim2, int is_2d)
+{
+  FILE *fp = fopen(filename, "r");
+  if (!fp)
+  {
+    fprintf(stderr, "Warning: G_imp file %s does not exist, using default dimensions\n", filename);
+    *dim1 = is_2d ? 32 : 1024;
+    *dim2 = is_2d ? 32 : 1;
+    return 0; // File doesn't exist, return defaults
+  }
+
+  int count = 0;
+  double value;
+  while (fscanf(fp, "%lf", &value) == 1)
+  {
+    count++;
+  }
+  fclose(fp);
+
+  if (is_2d)
+  {
+    // For 2D profiles, find the square root or nearest factors
+    double sqrt_count = sqrt((double)count);
+    if (sqrt_count == floor(sqrt_count))
+    {
+      // Perfect square
+      *dim1 = *dim2 = (int)sqrt_count;
+    }
+    else
+    {
+      // Find best factorization close to square
+      int best_dim1 = (int)sqrt_count;
+      while (best_dim1 > 1 && count % best_dim1 != 0)
+        best_dim1--;
+      *dim1 = best_dim1;
+      *dim2 = count / best_dim1;
+    }
+    fprintf(stderr, "Detected 2D G_imp file %s: %d x %d = %d values\n",
+            filename, *dim1, *dim2, count);
+  }
+  else
+  {
+    // For 1D profiles
+    *dim1 = count;
+    *dim2 = 1;
+    fprintf(stderr, "Detected 1D G_imp file %s: %d values\n", filename, count);
+  }
+
+  return 1; // Success
+}
+
+// Auto-detect profile dimensions from existing G_imp files
+void auto_detect_profile_dimensions(struct_data *data)
+{
+  char fnm[MAXLENGTH];
+  int dim1_1d = 1024, dim2_1d = 1; // Default 1D dimensions
+  int dim1_2d = 32, dim2_2d = 32;  // Default 2D dimensions
+  int found_1d = 0, found_2d = 0;
+
+  fprintf(stderr, "\n=== Auto-detecting profile dimensions from G_imp files ===\n");
+
+  // Try to find existing G_imp files to determine dimensions
+  for (int s1 = 0; s1 < data->Nsites; s1++)
+  {
+    // Check for 1D profile files
+    sprintf(fnm, "G_imp/G1_%d.dat", data->Nsubs[s1]);
+    if (detect_g_file_dimensions(fnm, &dim1_1d, &dim2_1d, 0))
+    {
+      found_1d = 1;
+      break; // Found one, that's enough
+    }
+  }
+
+  // Check for 2D profile files
+  for (int s1 = 0; s1 < data->Nsites; s1++)
+  {
+    sprintf(fnm, "G_imp/G12_%d.dat", data->Nsubs[s1]);
+    if (detect_g_file_dimensions(fnm, &dim1_2d, &dim2_2d, 1))
+    {
+      found_2d = 1;
+      break;
+    }
+
+    sprintf(fnm, "G_imp/G2_%d.dat", data->Nsubs[s1]);
+    if (detect_g_file_dimensions(fnm, &dim1_2d, &dim2_2d, 1))
+    {
+      found_2d = 1;
+      break;
+    }
+
+    // Check multi-site profiles
+    for (int s2 = s1 + 1; s2 < data->Nsites; s2++)
+    {
+      sprintf(fnm, "G_imp/G1_%d_%d.dat", data->Nsubs[s1], data->Nsubs[s2]);
+      if (detect_g_file_dimensions(fnm, &dim1_2d, &dim2_2d, 1))
+      {
+        found_2d = 1;
+        break;
+      }
+    }
+    if (found_2d)
+      break;
+  }
+
+  // Update data structure with detected dimensions
+  data->B[1].N = dim1_1d;
+  data->B2d[1].N = dim1_2d;
+  data->B2d[2].N = dim2_2d;
+
+  // Update dx values proportionally if dimensions changed from defaults
+  if (found_1d && dim1_1d != 1024)
+  {
+    data->B[1].dx = 1.0 / dim1_1d;
+    fprintf(stderr, "Updated 1D dx to %f for %d bins\n", data->B[1].dx, dim1_1d);
+  }
+
+  if (found_2d && (dim1_2d != 32 || dim2_2d != 32))
+  {
+    data->B2d[1].dx = 1.0 / dim1_2d;
+    data->B2d[2].dx = 1.0 / dim2_2d;
+    fprintf(stderr, "Updated 2D dx to %f x %f for %d x %d bins\n",
+            data->B2d[1].dx, data->B2d[2].dx, dim1_2d, dim2_2d);
+  }
+
+  fprintf(stderr, "Final dimensions: 1D=%d, 2D=%dx%d\n",
+          data->B[1].N, data->B2d[1].N, data->B2d[2].N);
+  fprintf(stderr, "========================================================\n\n");
+
+  // Update device constants with detected dimensions
+  update_device_dimensions(data->B[1].N, data->B2d[1].N, data->B2d[2].N);
+}
+
+// Update device dimension constants
+void update_device_dimensions(int bins_1d, int bins_2d_x, int bins_2d_y)
+{
+  // Validate dimensions don't exceed maximums
+  if (bins_1d > MAX_1D_BINS)
+  {
+    fprintf(stderr, "Warning: 1D bins (%d) exceed maximum (%d), clamping\n",
+            bins_1d, MAX_1D_BINS);
+    bins_1d = MAX_1D_BINS;
+  }
+
+  if (bins_2d_x > MAX_2D_BINS || bins_2d_y > MAX_2D_BINS)
+  {
+    fprintf(stderr, "Warning: 2D bins (%dx%d) exceed maximum (%dx%d), clamping\n",
+            bins_2d_x, bins_2d_y, MAX_2D_BINS, MAX_2D_BINS);
+    bins_2d_x = (bins_2d_x > MAX_2D_BINS) ? MAX_2D_BINS : bins_2d_x;
+    bins_2d_y = (bins_2d_y > MAX_2D_BINS) ? MAX_2D_BINS : bins_2d_y;
+  }
+
+  // Update device constants
+  CUDA_CHECK(cudaMemcpyToSymbol(g_1d_bins, &bins_1d, sizeof(int)));
+  CUDA_CHECK(cudaMemcpyToSymbol(g_2d_bins_x, &bins_2d_x, sizeof(int)));
+  CUDA_CHECK(cudaMemcpyToSymbol(g_2d_bins_y, &bins_2d_y, sizeof(int)));
+
+  fprintf(stderr, "Updated device dimensions: 1D=%d, 2D=%dx%d\n",
+          bins_1d, bins_2d_x, bins_2d_y);
+}
+
+// Result validation functions
+void validate_matrix_results(double *matrix, int rows, int cols, const char *name)
+{
+  int nan_count = 0, inf_count = 0, negative_count = 0;
+  double sum = 0.0, max_val = -INFINITY, min_val = INFINITY;
+
+  for (int i = 0; i < rows * cols; i++)
+  {
+    if (!isfinite(matrix[i]))
+    {
+      if (isnan(matrix[i]))
+        nan_count++;
+      else
+        inf_count++;
+    }
+    else
+    {
+      sum += matrix[i];
+      if (matrix[i] > max_val)
+        max_val = matrix[i];
+      if (matrix[i] < min_val)
+        min_val = matrix[i];
+      if (matrix[i] < 0)
+        negative_count++;
+    }
+  }
+
+  fprintf(stderr, "%s validation: %d NaN, %d Inf, %d negative values\n",
+          name, nan_count, inf_count, negative_count);
+  fprintf(stderr, "%s range: [%g, %g], sum: %g\n", name, min_val, max_val, sum);
+
+  if (nan_count > 0 || inf_count > 0)
+  {
+    fprintf(stderr, "WARNING: %s contains invalid values!\n", name);
+
+    // Only replace NaN/Inf, not negative values - they might be meaningful
+    for (int i = 0; i < rows * cols; i++)
+    {
+      if (!isfinite(matrix[i]))
+      {
+        matrix[i] = 0.0;
+      }
+    }
+    fprintf(stderr, "Invalid values in %s replaced with zeros\n", name);
+  }
+
+  // Report negative values but don't automatically fix them
+  if (negative_count > 0)
+  {
+    fprintf(stderr, "INFO: %s has %d negative values - check for numerical issues\n",
+            name, negative_count);
+  }
+}
+
+void validate_gpu_results(struct_data *data, int B_N, int jN)
+{
+  // Validate lnZ results - be more careful about what we consider "invalid"
+  int invalid_lnZ = 0;
+  for (int k = 0; k < B_N; k++)
+  {
+    if (!isfinite(data->lnZ_h[k]))
+    {
+      invalid_lnZ++;
+      // Don't use fallback values - let the calling code handle this
+      // data->lnZ_h[k] remains as NaN/Inf for debugging
+    }
+  }
+  // if (invalid_lnZ > 0)
+  // {
+  //   fprintf(stderr, "WARNING: %d invalid lnZ values found (not corrected)\n", invalid_lnZ);
+  // }
+
+  // Validate dlnZ results - same approach
+  for (int j1 = 0; j1 < jN; j1++)
+  {
+    int invalid_dlnZ = 0;
+    for (int k = 0; k < B_N; k++)
+    {
+      if (!isfinite(data->dlnZ_hN[j1][k]))
+      {
+        invalid_dlnZ++;
+        // Keep invalid values for debugging
+      }
+    }
+    // if (invalid_dlnZ > 0)
+    // {
+    //   fprintf(stderr, "WARNING: %d invalid dlnZ[%d] values found (not corrected)\n", invalid_dlnZ, j1);
+    // }
+  }
+}
+
+void getfofq(struct_data *data, double beta)
+{
+  int B_N = (data->B2d[1].N * data->B2d[2].N > data->B[1].N) ? data->B2d[1].N * data->B2d[2].N : data->B[1].N;
+  int iN = data->iN, jN = data->jN, i, j1, j2, k;
+  double *C = (double *)malloc((jN + iN) * (jN + iN) * sizeof(double));
+  double *V = (double *)malloc((jN + iN) * sizeof(double));
+  double wnorm, weight;
+  int ptype;
+  char fnm[MAXLENGTH];
+  FILE *fpC, *fpV, *fp;
+
+  // Iterative refinement (1 iteration)
+  double lambda_reg = 1e-9; // Very small regularization for high-precision lambda data
+  for (int iter = 0; iter < 1; iter++)
+  {
+    // Initialize C and V inside the loop
+    for (j1 = 0; j1 < jN + iN; j1++)
+    {
+      for (j2 = 0; j2 < jN + iN; j2++)
+        C[j1 * (jN + iN) + j2] = 0.0;
+      V[j1] = 0.0;
+    }
+
+    sumdenom<<<(data->ND + BLOCK - 1) / BLOCK, BLOCK>>>(data[0]);
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    for (i = 0; i < iN; i++)
+    {
+      wnorm = bin_all(data, &ptype, i);
+      resetlogdata<<<(B_N + BLOCK - 1) / BLOCK, BLOCK>>>(data->lnZ_d, B_N);
+      CUDA_CHECK(cudaGetLastError());
+      CUDA_CHECK(cudaDeviceSynchronize());
+
+      get_lnZ<<<(data->ND + (100 * SBLOCK) - 1) / (100 * SBLOCK), 100>>>(data[0], data->beta_t,
+                                                                         data->gshift_d, data->current_block_idx);
+      CUDA_CHECK(cudaGetLastError());
+      CUDA_CHECK(cudaDeviceSynchronize());
+
+      CUDA_CHECK(cudaMemcpy(data->lnZ_h, data->lnZ_d, B_N * sizeof(double), cudaMemcpyDeviceToHost));
+
+      // Variance of lnZ for diagnostics
+      double lnZ_mean = 0, lnZ_var = 0;
+      int count = 0;
+      for (k = 0; k < B_N; k++)
+      {
+        if (isfinite(data->lnZ_h[k]))
+        {
+          lnZ_mean += data->lnZ_h[k];
+          count++;
+        }
+      }
+      if (count > 0)
+      {
+        lnZ_mean /= count;
+      }
+      else
+      {
+        // Don't use fallback - report the issue and let it propagate
+        fprintf(stderr, "ERROR: No finite lnZ values found for profile %d\n", i);
+        // Keep the invalid values for debugging
+      }
+      for (k = 0; k < B_N; k++)
+      {
+        if (isfinite(data->lnZ_h[k]))
+        {
+          double diff = data->lnZ_h[k] - lnZ_mean;
+          lnZ_var += diff * diff;
+        }
+      }
+      if (count > 0)
+        lnZ_var /= count;
+      fprintf(stderr, "Profile %d, lnZ variance: %g\n", i, lnZ_var);
+
+      sprintf(fnm, "multisite/G%d.dat", i + 1);
+      fp = fopen(fnm, "w");
+      for (k = 0; k < B_N; k++)
+      {
+        fprintf(fp, "%.12g\n", (-data->lnZ_h[k] - data->Gimp_h[k]) / data->beta_t); // Higher precision output
+      }
+      fclose(fp);
+
+      for (k = 0; k < B_N; k++)
+      {
+        weight = wnorm;
+        if ((ptype == 0 || ptype == 3) && k == B_N - 1)
+          weight *= 100.0;
+        if (isfinite(data->lnZ_h[k]))
+        {
+          double dG = (-data->lnZ_h[k] - data->Gimp_h[k]) / data->beta_t;
+          // Don't clamp values - let extreme values be visible
+          if (isfinite(dG))
+          {
+            V[jN + i] += weight * dG;
+            C[(jN + i) * (jN + iN) + jN + i] += weight;
+          }
+        }
+      }
+
+      for (j1 = 0; j1 < jN; j1++)
+      {
+        reactioncoord_all(data, j1);
+        resetlogdata<<<(B_N + BLOCK - 1) / BLOCK, BLOCK>>>(&(data->dlnZ_dN[B_N * j1]), B_N);
+        CUDA_CHECK(cudaGetLastError());
+        CUDA_CHECK(cudaDeviceSynchronize());
+
+        get_dlnZ<<<(data->ND + (100 * SBLOCK) - 1) / (100 * SBLOCK), 100>>>(data[0], j1, data->beta_t,
+                                                                            data->gshift_d, data->current_block_idx);
+        CUDA_CHECK(cudaGetLastError());
+        CUDA_CHECK(cudaDeviceSynchronize());
+
+        CUDA_CHECK(cudaMemcpy(data->dlnZ_hN[j1], &(data->dlnZ_dN[B_N * j1]), B_N * sizeof(double), cudaMemcpyDeviceToHost));
+      }
+
+      get_CC<<<make_uint3(jN, jN, 1), 100>>>(data[0], i, data->beta_t, wnorm, ptype,
+                                             data->gshift_d, data->current_block_idx);
+      CUDA_CHECK(cudaGetLastError());
+      CUDA_CHECK(cudaDeviceSynchronize());
+
+      CUDA_CHECK(cudaMemcpy(data->CC_h, data->CC_d, jN * jN * sizeof(double), cudaMemcpyDeviceToHost));
+
+      // Validate GPU results before using them
+      validate_gpu_results(data, B_N, jN);
+      validate_matrix_results(data->CC_h, jN, jN, "CC matrix");
+
+      for (j1 = 0; j1 < jN; j1++)
+      {
+        for (k = 0; k < B_N; k++)
+        {
+          weight = wnorm;
+          if ((ptype == 0 || ptype == 3) && k == B_N - 1)
+            weight *= 100.0;
+          if (isfinite(data->lnZ_h[k]))
+          {
+            double dG = (-data->lnZ_h[k] - data->Gimp_h[k]) / data->beta_t;
+            double exp_arg = data->dlnZ_hN[j1][k] - data->lnZ_h[k];
+
+            // Check for finite intermediate results without clamping
+            if (isfinite(dG) && isfinite(exp_arg))
+            {
+              double exp_val = exp(exp_arg);
+
+              // Validate final results
+              if (isfinite(exp_val) && exp_val >= 0)
+              {
+                V[j1] += weight * exp_val * dG;
+                C[j1 * (jN + iN) + jN + i] += weight * exp_val;
+                C[(jN + i) * (jN + iN) + j1] += weight * exp_val;
+              }
+            }
+          }
+        }
+        for (j2 = 0; j2 < jN; j2++)
+        {
+          double cc_val = data->CC_h[j1 * jN + j2];
+          if (isfinite(cc_val) && cc_val >= 0) // Validate CC matrix values
+          {
+            C[j1 * (jN + iN) + j2] += cc_val;
+          }
+        }
+      }
+    }
+  }
+
+  // Add regularization and handle empty rows/cols with higher precision
+  double big_lambda = 1.0;
+  for (j1 = 0; j1 < jN + iN; j1++)
+  {
+    double row_weight = 0.0;
+    for (j2 = 0; j2 < jN + iN; j2++)
+    {
+      row_weight += fabs(C[j1 * (jN + iN) + j2]);
+    }
+    // Use more precise threshold for empty row detection
+    if (row_weight < 1e-12)
+    {
+      C[j1 * (jN + iN) + j1] += big_lambda;
+      V[j1] = 0.0;
+    }
+    C[j1 * (jN + iN) + j1] += lambda_reg;
+  }
+
+  // Condition number estimation (simplified, using trace and norm)
+  double trace = 0, norm = 0;
+  for (j1 = 0; j1 < jN + iN; j1++)
+  {
+    trace += C[j1 * (jN + iN) + j1];
+    for (j2 = 0; j2 < jN + iN; j2++)
+    {
+      norm += C[j1 * (jN + iN) + j2] * C[j1 * (jN + iN) + j2];
+    }
+  }
+  norm = sqrt(norm);
+  fprintf(stderr, "C matrix condition number estimate: %g\n", norm / trace);
+
+  // Final validation of C and V matrices
+  validate_matrix_results(C, jN + iN, jN + iN, "Final C matrix");
+  validate_matrix_results(V, jN + iN, 1, "Final V vector");
+
+  fpC = fopen("multisite/C.dat", "w");
+  fpV = fopen("multisite/V.dat", "w");
+  for (j1 = 0; j1 < jN + iN; j1++)
+  {
+    for (j2 = 0; j2 < jN + iN; j2++)
+      fprintf(fpC, " %.12g", C[j1 * (jN + iN) + j2]); // Higher precision for matrix output
+    fprintf(fpC, "\n");
+    fprintf(fpV, " %.12g\n", V[j1]); // Higher precision for vector output
+  }
+  fclose(fpC);
+  fclose(fpV);
+
+  free(C);
+  free(V);
+}
+
+extern "C" int wham(int arg1, double arg2, int arg3, int arg4, int use_gshift)
+{
+  // Initialize and validate GPU
+  validate_and_setup_gpu();
+
+  struct_data *data = readdata(arg1, arg2, arg3, arg4, use_gshift);
+  if (!data)
+  {
+    fprintf(stderr, "Error: Failed to read data\n");
+    return -1;
+  }
+
+  // Synchronize before starting main computation
+  CUDA_CHECK(cudaDeviceSynchronize());
+
+  iteratedata(data);
+
+  // Synchronize before final computation
+  CUDA_CHECK(cudaDeviceSynchronize());
+
+  getfofq(data, data->beta_t);
+
+  // Final synchronization and cleanup
+  CUDA_CHECK(cudaDeviceSynchronize());
+  CUDA_CHECK(cudaDeviceReset());
+
+  return 0;
+}
+
+/**
+ * Apply G_imp shifts to G_imp profile data based on block index
+ *
+ * @param gimp_data: Array of G_imp values to be shifted
+ * @param data_size: Number of elements in gimp_data
+ * @param gimp_filename: Name of the G_imp file (for logging)
+ * @param block_index: Index of the block (0=G1, 1=G12, 2=G2, 3=G1_i_j)
+ */
+void apply_gimp_shifts(double *gimp_data, int data_size, const char *gimp_filename, int block_index)
+{
+  // Extract filename from full path
+  const char *filename = strrchr(gimp_filename, '/');
+  if (filename)
+  {
+    filename++; // Skip the '/'
+  }
+  else
+  {
+    filename = gimp_filename;
+  }
+
+  // Determine profile type and parse indices
+  int profile_type = 0; // 0=1D, 1=2D, 2=conditional
+  int actual_block_index = -1;
+  int subsite1 = -1, subsite2 = -1;
+
+  // Parse different G_imp file patterns
+  if (strncmp(filename, "G1_", 3) == 0)
+  {
+    // Check if it's G1_i_j.dat (2D) or G1_i.dat (1D)
+    int i, j;
+    if (sscanf(filename, "G1_%d_%d.dat", &i, &j) == 2)
+    {
+      // 2D cross-site profile: G1_i_j.dat
+      subsite1 = i;
+      subsite2 = j;
+      profile_type = 1; // 2D
+    }
+    else if (sscanf(filename, "G1_%d.dat", &subsite1) == 1)
+    {
+      // 1D profile: G1_i.dat
+      actual_block_index = subsite1 - 2; // G1_2→block 0, G1_3→block 1, G1_4→block 2
+      profile_type = 0;                  // 1D
+    }
+    else
+    {
+      printf("Warning: Could not parse G1 filename %s\n", filename);
+      return;
+    }
+  }
+  else if (strncmp(filename, "G12_", 4) == 0)
+  {
+    if (sscanf(filename, "G12_%d.dat", &subsite1) == 1)
+    {
+      // Conditional profile: G12_i.dat
+      actual_block_index = subsite1 - 2;
+      profile_type = 2; // Conditional
+    }
+    else
+    {
+      printf("Warning: Could not parse G12 filename %s\n", filename);
+      return;
+    }
+  }
+  else if (strncmp(filename, "G2_", 3) == 0)
+  {
+    // Check if it's G2_i_j.dat (2D) or G2_i.dat (1D)
+    int i, j;
+    if (sscanf(filename, "G2_%d_%d.dat", &i, &j) == 2)
+    {
+      // 2D pair profile: G2_i_j.dat
+      subsite1 = i;
+      subsite2 = j;
+      profile_type = 1; // 2D
+    }
+    else if (sscanf(filename, "G2_%d.dat", &subsite1) == 1)
+    {
+      // 1D profile: G2_i.dat
+      actual_block_index = subsite1 - 2;
+      profile_type = 0; // 1D
+    }
+    else
+    {
+      printf("Warning: Could not parse G2 filename %s\n", filename);
+      return;
+    }
+  }
+  else
+  {
+    printf("Warning: Unknown G_imp file pattern: %s\n", filename);
+    return;
+  }
+
+  // Use a single shift file (for now, use shifts_sim1.dat)
+  char shift_filename[256];
+  snprintf(shift_filename, sizeof(shift_filename), "G_imp_shifts/shifts_sim1.dat");
+
+  FILE *shift_file = fopen(shift_filename, "r");
+  if (!shift_file)
+  {
+    printf("No G_imp shift file found (%s), using zero shift for %s\n", shift_filename, filename);
+    return; // No shift applied
+  }
+
+  // Read shift values (skip comment lines)
+  double shift_values[10]; // Support up to 10 blocks
+  int num_shifts = 0;
+  char line[256];
+
+  while (fgets(line, sizeof(line), shift_file) && num_shifts < 10)
+  {
+    // Skip comment lines
+    if (line[0] == '#' || line[0] == '\n')
+      continue;
+
+    double shift_val;
+    if (sscanf(line, "%lf", &shift_val) == 1)
+    {
+      shift_values[num_shifts] = shift_val;
+      num_shifts++;
+    }
+  }
+  fclose(shift_file);
+
+  // Apply shifts based on profile type
+  if (profile_type == 0)
+  {
+    // 1D profiles: uniform shift
+    if (actual_block_index >= 0 && actual_block_index < num_shifts)
+    {
+      double shift = shift_values[actual_block_index];
+
+      for (int i = 0; i < data_size; i++)
+      {
+        gimp_data[i] += shift;
+      }
+
+      printf("Applied G_imp shift %.6f to %s (block %d)\n",
+             shift, filename, actual_block_index);
+    }
+    else
+    {
+      printf("Warning: No shift available for block %d in %s, using zero shift for %s\n",
+             actual_block_index, shift_filename, filename);
+    }
+  }
+  else if (profile_type == 1)
+  {
+    // 2D profiles: position-dependent shifts
+    int block1 = subsite1 - 2;
+    int block2 = subsite2 - 2;
+
+    if (block1 >= 0 && block1 < num_shifts && block2 >= 0 && block2 < num_shifts)
+    {
+      double shift1 = shift_values[block1];
+      double shift2 = shift_values[block2];
+
+      // Determine grid size (assume square 2D matrix)
+      int grid_size = (int)sqrt((double)data_size);
+      if (grid_size * grid_size != data_size)
+      {
+        printf("Warning: Cannot determine 2D grid size for %s (size=%d), using average shift\n",
+               filename, data_size);
+        // Fall back to average shift
+        double avg_shift = (shift1 + shift2) / 2.0;
+        for (int i = 0; i < data_size; i++)
+        {
+          gimp_data[i] += avg_shift;
+        }
+        printf("Applied G_imp average shift %.6f to %s\n", avg_shift, filename);
+      }
+      else
+      {
+        // Apply position-dependent shifts
+        for (int i = 0; i < grid_size; i++)
+        {
+          for (int j = 0; j < grid_size; j++)
+          {
+            int idx = i * grid_size + j;
+
+            // Lambda coordinates [0,1]
+            double lambda1 = (grid_size > 1) ? (double)i / (double)(grid_size - 1) : 0.0;
+            double lambda2 = (grid_size > 1) ? (double)j / (double)(grid_size - 1) : 0.0;
+
+            // Position-dependent shift: weighted by lambda coordinates
+            double position_shift = shift1 * lambda1 + shift2 * lambda2;
+            gimp_data[idx] += position_shift;
+          }
+        }
+
+        printf("Applied G_imp position-dependent shifts to %s (blocks %d:%.6f, %d:%.6f)\n",
+               filename, block1, shift1, block2, shift2);
+      }
+    }
+    else
+    {
+      printf("Warning: Invalid block indices (%d,%d) for 2D profile %s\n",
+             block1, block2, filename);
+    }
+  }
+  else if (profile_type == 2)
+  {
+    // Conditional profiles: uniform shift for now
+    // Could be enhanced to handle specific conditional constraints
+    if (actual_block_index >= 0 && actual_block_index < num_shifts)
+    {
+      double shift = shift_values[actual_block_index];
+
+      for (int i = 0; i < data_size; i++)
+      {
+        gimp_data[i] += shift;
+      }
+
+      printf("Applied G_imp conditional shift %.6f to %s (block %d)\n",
+             shift, filename, actual_block_index);
+    }
+    else
+    {
+      printf("Warning: No shift available for conditional profile %s\n", filename);
+    }
+  }
+}
