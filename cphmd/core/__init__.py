@@ -1,6 +1,6 @@
 """Core module - main CpHMD workflow components."""
 
-from .patching import PatchConfig, PatchParser, patch_system
+from .patching import LigandPatchDef, PatchConfig, PatchParser, patch_system
 from .alf_runner import ALFConfig, ALFSimulation, run_alf_simulation
 from .cphmd_params import (
     CpHMDParameters,
@@ -41,9 +41,41 @@ from .generate_block import (
     BlockGeneratorResult,
     generate_block_files,
 )
+from .alf_utils import (
+    ALFInfo,
+    init_vars,
+    set_vars,
+    get_energy,
+    compute_bias_energy,
+    write_lambda_text,
+    convert_lambda_binary_to_text,
+)
+from .free_energy import (
+    FreeEnergyResult,
+    get_free_energy5,
+    fallback_bias_update,
+    get_populations_from_lambda,
+)
+from .entropy import (
+    compute_g_imp,
+    ensure_g_imp_available,
+    get_cache_path,
+    get_cache_dir,
+    clear_cache,
+)
+from .variance import (
+    VarianceResult,
+    get_variance,
+)
+from .transitions import (
+    TransitionResult,
+    get_transitions,
+    summarize_transitions,
+)
 
 __all__ = [
     # Patching
+    "LigandPatchDef",
     "PatchConfig",
     "PatchParser",
     "patch_system",
@@ -84,4 +116,30 @@ __all__ = [
     "BlockGeneratorConfig",
     "BlockGeneratorResult",
     "generate_block_files",
+    # ALF Utilities
+    "ALFInfo",
+    "init_vars",
+    "set_vars",
+    "get_energy",
+    "compute_bias_energy",
+    "write_lambda_text",
+    "convert_lambda_binary_to_text",
+    # Free Energy Optimization
+    "FreeEnergyResult",
+    "get_free_energy5",
+    "fallback_bias_update",
+    "get_populations_from_lambda",
+    # Entropy / G_imp
+    "compute_g_imp",
+    "ensure_g_imp_available",
+    "get_cache_path",
+    "get_cache_dir",
+    "clear_cache",
+    # Variance Estimation
+    "VarianceResult",
+    "get_variance",
+    # Transition Analysis
+    "TransitionResult",
+    "get_transitions",
+    "summarize_transitions",
 ]
