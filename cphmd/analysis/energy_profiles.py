@@ -189,11 +189,23 @@ def analyze_energy_profiles(config: EnergyProfileConfig) -> EnergyProfileResult:
     """
     input_folder = config.input_folder
 
-    # Find analysis directories
-    analysis_dirs = sorted([
-        d for d in input_folder.iterdir()
-        if d.is_dir() and d.name.startswith("analysis") and d.name[8:].isdigit()
-    ], key=lambda d: int(d.name[8:]))
+    # Find analysis directories (support both analysis/0 and analysis0 formats)
+    analysis_dirs = []
+
+    # Check for analysis/N format (e.g., analysis/0, analysis/1, ...)
+    analysis_parent = input_folder / "analysis"
+    if analysis_parent.exists() and analysis_parent.is_dir():
+        analysis_dirs = sorted([
+            d for d in analysis_parent.iterdir()
+            if d.is_dir() and d.name.isdigit()
+        ], key=lambda d: int(d.name))
+
+    # Fallback: check for analysisN format (e.g., analysis0, analysis1, ...)
+    if not analysis_dirs:
+        analysis_dirs = sorted([
+            d for d in input_folder.iterdir()
+            if d.is_dir() and d.name.startswith("analysis") and d.name[8:].isdigit()
+        ], key=lambda d: int(d.name[8:]))
 
     if not analysis_dirs:
         raise ValueError(f"No analysis directories found in {input_folder}")
