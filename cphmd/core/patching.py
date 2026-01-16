@@ -32,21 +32,84 @@ from cphmd import TOPPAR_DIR
 
 
 @dataclass
+class LigandPatchDef:
+    """Definition of titratable patches for a custom ligand.
+
+    Attributes:
+        resname: Residue name of the ligand in the structure.
+        patch_file: Path to RTF file containing PRES definitions for this ligand.
+        patches: List of patch names to apply (e.g., ["p1_1", "p1_3", "p1_4"]).
+        pka_values: Dict mapping patch name to pKa value (auto-detected from file if not provided).
+        reference_patch: Name of the reference state patch (default: first in patches).
+
+    Note:
+        Atoms are automatically parsed from the patch file's PRES definitions.
+        pKa values can also be auto-detected from "! pKa = X.X" comments in the patch file.
+
+    Example:
+        LigandPatchDef(
+            resname="RIBO",
+            patch_file="/path/to/master-patch.rtf",
+            patches=["p1_1", "p1_3", "p1_4"],
+        )
+    """
+
+    resname: str
+    patch_file: str | Path
+    patches: list[str]
+    pka_values: dict[str, float] = field(default_factory=dict)
+    reference_patch: str | None = None
+
+
+@dataclass
 class PatchConfig:
     """Configuration for patching titratable residues.
 
     Attributes:
-        input_folder: Input folder containing structure files.
+        input_folder: Input folder containing structure files (used with structure_file).
         structure_file: Base name of structure file (without extension).
+        psf_file: Direct path to PSF file (overrides input_folder/structure_file).
+        crd_file: Direct path to CRD file (overrides input_folder/structure_file).
+        output_folder: Output folder for patched files (defaults to input_folder).
         hmr: Enable hydrogen mass repartitioning.
         hmr_waters: Apply HMR to water molecules too.
         selected_residues: List of residue selections (e.g., ["ASP", "PROA:15"]).
         toppar_dir: Path to topology directory.
-        topology_files: List of topology files to load.
+        topology_files: List of topology files to load (relative to toppar_dir).
+        extra_files: Additional topology files as absolute paths (for custom ligands).
+        ligand_patches: List of LigandPatchDef for custom titratable ligands.
+
+    Note:
+        Either (input_folder + structure_file) OR (psf_file + crd_file) must be provided.
+        If both are provided, psf_file/crd_file take precedence.
+
+        For custom ligands, provide:
+        - extra_files: List of RTF, PRM, or STR files with ligand topology/parameters
+        - ligand_patches: LigandPatchDef objects defining titratable sites
+
+    Example for ligand with custom patches:
+        config = PatchConfig(
+            input_folder="my_system/prep",
+            extra_files=[
+                "/path/to/ligand.rtf",
+                "/path/to/ligand.prm",
+            ],
+            ligand_patches=[
+                LigandPatchDef(
+                    resname="RIBO",
+                    patch_file="/path/to/master-patch.rtf",
+                    patches=["p1_1", "p1_3", "p1_4"],
+                    # atoms and pKa values are auto-detected from patch file
+                ),
+            ],
+        )
     """
 
-    input_folder: str | Path
+    input_folder: str | Path | None = None
     structure_file: str = "solvated"
+    psf_file: str | Path | None = None
+    crd_file: str | Path | None = None
+    output_folder: str | Path | None = None
     hmr: bool = True
     hmr_waters: bool = False
     selected_residues: list[str] = field(default_factory=list)
@@ -63,6 +126,47 @@ class PatchConfig:
         "my_files/nucleic_c36.str",
         "my_files/his_patches.str",
     ])
+    extra_files: list[str | Path] = field(default_factory=list)
+    ligand_patches: list[LigandPatchDef] = field(default_factory=list)
+
+    def __post_init__(self):
+        """Validate and resolve file paths."""
+        # Check that we have valid input specification
+        has_folder = self.input_folder is not None
+        has_files = self.psf_file is not None and self.crd_file is not None
+
+        if not has_folder and not has_files:
+            raise ValueError(
+                "Must provide either input_folder or both psf_file and crd_file"
+            )
+
+        # Resolve paths
+        if has_files:
+            self.psf_file = Path(self.psf_file)
+            self.crd_file = Path(self.crd_file)
+            if self.output_folder is None:
+                self.output_folder = self.psf_file.parent
+        else:
+            self.input_folder = Path(self.input_folder)
+            if self.output_folder is None:
+                self.output_folder = self.input_folder
+
+        self.output_folder = Path(self.output_folder)
+
+        # Resolve extra_files to Path objects
+        self.extra_files = [Path(f) for f in self.extra_files]
+
+        # Validate ligand patch definitions
+        for ligand_def in self.ligand_patches:
+            patch_file = Path(ligand_def.patch_file)
+            if not patch_file.exists():
+                raise FileNotFoundError(
+                    f"Ligand patch file not found: {patch_file}"
+                )
+            if not ligand_def.patches:
+                raise ValueError(
+                    f"Ligand {ligand_def.resname}: must specify at least one patch"
+                )
 
 
 class PatchParser:
@@ -90,6 +194,8 @@ class PatchParser:
         self.pka: dict[str, str] = {}
         self.residues: list[str] = []
         self.default_patches: list[str] = []
+        # Maps resname -> reference_patch name (None means use default RESNAME+"O")
+        self.reference_patches: dict[str, str | None] = {}
 
         self._load_patches()
         self._load_topology()
@@ -205,6 +311,102 @@ class PatchParser:
             else:
                 print(f"{name}: {self.atom_groups[name]}\n")
 
+    def register_ligand(self, ligand_def: LigandPatchDef) -> None:
+        """Register a custom ligand with its patch definitions.
+
+        Atoms and pKa values are automatically parsed from the patch file.
+        This allows adding titratable ligands with custom patch files
+        to the patching workflow.
+
+        Args:
+            ligand_def: LigandPatchDef containing resname, patch_file, and patches.
+        """
+        resname = ligand_def.resname.upper()
+        patch_file = Path(ligand_def.patch_file)
+
+        # Parse patch file to extract atoms and pKa values
+        patch_atoms, patch_pka = self._parse_ligand_patch_file(
+            patch_file, ligand_def.patches
+        )
+
+        # Add to residues list
+        if resname not in self.residues:
+            self.residues.append(resname)
+
+        # Set patches for this residue
+        self.patches[resname] = [patch.upper() for patch in ligand_def.patches]
+
+        # Collect all atoms across patches for the residue
+        all_atoms: set[str] = set()
+        for patch in ligand_def.patches:
+            patch_upper = patch.upper()
+            atoms = patch_atoms.get(patch_upper, [])
+            self.atom_groups[patch_upper] = atoms
+            all_atoms.update(atoms)
+
+            # Set pKa (user-provided takes precedence over auto-detected)
+            if patch in ligand_def.pka_values:
+                self.pka[patch_upper] = str(ligand_def.pka_values[patch])
+            elif patch_upper in patch_pka:
+                self.pka[patch_upper] = patch_pka[patch_upper]
+
+        # Set all atoms for the residue
+        self.atom_groups[resname] = list(all_atoms)
+
+        print(f"Registered ligand {resname} with patches: {self.patches[resname]}")
+        print(f"  Atoms: {self.atom_groups[resname]}")
+
+    def _parse_ligand_patch_file(
+        self, patch_file: Path, patches: list[str]
+    ) -> tuple[dict[str, list[str]], dict[str, str]]:
+        """Parse a ligand patch file to extract atoms and pKa values.
+
+        Args:
+            patch_file: Path to the RTF file with PRES definitions.
+            patches: List of patch names to extract.
+
+        Returns:
+            Tuple of (patch_atoms, patch_pka) dicts.
+        """
+        patch_atoms: dict[str, list[str]] = {}
+        patch_pka: dict[str, str] = {}
+        patches_upper = [p.upper() for p in patches]
+
+        with open(patch_file, "r") as f:
+            lines = [line.upper() for line in f.readlines()]
+
+        current_patch = None
+        for i, line in enumerate(lines):
+            if line.startswith("PRES"):
+                parts = line.split()
+                if len(parts) >= 2:
+                    patch_name = parts[1]
+                    if patch_name in patches_upper:
+                        current_patch = patch_name
+                        patch_atoms[current_patch] = []
+                    else:
+                        current_patch = None
+            elif current_patch:
+                # Check for pKa comment
+                if "PKA" in line and "=" in line:
+                    try:
+                        pka_val = line.split("=")[1].strip().split()[0]
+                        patch_pka[current_patch] = pka_val
+                    except (IndexError, ValueError):
+                        pass
+                # Extract atoms
+                if line.startswith("ATOM"):
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        atom_name = parts[1]
+                        if atom_name not in patch_atoms[current_patch]:
+                            patch_atoms[current_patch].append(atom_name)
+                # End of patch section
+                if line.startswith("END") or (line.startswith("PRES") and i > 0):
+                    current_patch = None
+
+        return patch_atoms, patch_pka
+
 
 class Universe:
     """Helper class for working with CHARMM atom data as pandas DataFrames."""
@@ -305,7 +507,11 @@ def _should_patch_residue(
 
 
 def _read_topology_files(config: PatchConfig, verbose: bool = True) -> None:
-    """Load CHARMM topology and parameter files."""
+    """Load CHARMM topology and parameter files.
+    
+    Loads standard topology files from toppar_dir, then any extra_files
+    specified as absolute paths for custom residues or parameters.
+    """
     toppar_dir = config.toppar_dir or TOPPAR_DIR
 
     if not verbose:
@@ -330,6 +536,36 @@ def _read_topology_files(config: PatchConfig, verbose: bool = True) -> None:
 
     for f in str_files:
         lingo.charmm_script(f"stream {toppar_dir / f}")
+
+    # Load extra files (absolute paths for custom residues/parameters)
+    for extra_file in config.extra_files:
+        extra_path = Path(extra_file)
+        if not extra_path.exists():
+            raise FileNotFoundError(f"Extra topology file not found: {extra_path}")
+
+        suffix = extra_path.suffix.lower()
+        if suffix == ".rtf":
+            read.rtf(str(extra_path), append=True)
+        elif suffix == ".prm":
+            read.prm(str(extra_path), flex=True, append=True)
+        elif suffix == ".str":
+            lingo.charmm_script(f"stream {extra_path}")
+        else:
+            # Try streaming unknown file types
+            lingo.charmm_script(f"stream {extra_path}")
+
+    # Load ligand patch files
+    for ligand_def in config.ligand_patches:
+        patch_path = Path(ligand_def.patch_file)
+        suffix = patch_path.suffix.lower()
+        if suffix == ".rtf":
+            read.rtf(str(patch_path), append=True)
+        elif suffix == ".str":
+            lingo.charmm_script(f"stream {patch_path}")
+        else:
+            # Try reading as RTF for unknown patch file types
+            read.rtf(str(patch_path), append=True)
+        print(f"Loaded ligand patch file: {patch_path}")
 
     settings.set_warn_level(5)
     lingo.charmm_script("bomblevel 0")
@@ -425,7 +661,7 @@ def patch_system(config: PatchConfig) -> Path:
         config: Patching configuration.
 
     Returns:
-        Path to the input folder containing output files.
+        Path to the output folder containing output files.
 
     Output files:
         - system.pdb, system.psf, system.crd: Patched system
@@ -434,17 +670,31 @@ def patch_system(config: PatchConfig) -> Path:
         - select.str: CHARMM selection definitions
         - box.dat, size.dat, fft.dat: Box parameters
     """
-    input_folder = Path(config.input_folder)
     toppar_dir = config.toppar_dir or TOPPAR_DIR
+    output_folder = config.output_folder
+
+    # Resolve input file paths
+    if config.psf_file is not None and config.crd_file is not None:
+        # Direct file paths provided
+        psf_path = Path(config.psf_file)
+        crd_path = Path(config.crd_file)
+        print(f"Using direct file paths: PSF={psf_path}, CRD={crd_path}")
+    else:
+        # Folder-based paths
+        input_folder = Path(config.input_folder)
+        psf_path = input_folder / f"{config.structure_file}.psf"
+        crd_path = input_folder / f"{config.structure_file}.crd"
+        print(f"Using folder-based paths: {input_folder}/{config.structure_file}.*")
 
     # Validate input files
-    required_files = [f"{config.structure_file}.crd", f"{config.structure_file}.psf"]
-    for f in required_files:
-        fpath = input_folder / f
+    for fpath in [psf_path, crd_path]:
         if not fpath.exists():
-            raise FileNotFoundError(f"{f} not found in {input_folder}")
+            raise FileNotFoundError(f"File not found: {fpath}")
         if fpath.stat().st_size == 0:
-            raise ValueError(f"{f} is empty")
+            raise ValueError(f"File is empty: {fpath}")
+
+    # Ensure output folder exists
+    output_folder.mkdir(parents=True, exist_ok=True)
 
     # Parse selection criteria
     criteria = _parse_selection_criteria(config.selected_residues)
@@ -454,14 +704,19 @@ def patch_system(config: PatchConfig) -> Path:
     lingo.charmm_script("IOFOrmat EXTEnded")
 
     # Load structure
-    read.psf_card(str(input_folder / f"{config.structure_file}.psf"))
-    read.coor_card(str(input_folder / f"{config.structure_file}.crd"))
+    read.psf_card(str(psf_path))
+    read.coor_card(str(crd_path))
 
     uni = Universe()
     patches_topology = PatchParser(
         segment_path=toppar_dir / "my_files" / "titratable_residues.str",
         topology_path=toppar_dir / "top_all36_prot.rtf",
     )
+
+    # Register custom ligand patches
+    for ligand_def in config.ligand_patches:
+        patches_topology.register_ligand(ligand_def)
+
     patches_topology.print_atoms()
 
     # Find titratable residues
@@ -484,14 +739,14 @@ def patch_system(config: PatchConfig) -> Path:
     seg_ids = uni.universe["seg_id"].unique().tolist()
     print(f"Structure segids: {seg_ids}")
 
-    tmp_dir = input_folder / "tmp"
+    tmp_dir = output_folder / "tmp"
     tmp_dir.mkdir(exist_ok=True)
 
     for seg_id in seg_ids:
         if seg_id != seg_ids[0]:
             psf.delete_atoms(pycharmm.SelectAtoms().all_atoms())
-            read.psf_card(str(input_folder / f"{config.structure_file}.psf"))
-            read.coor_card(str(input_folder / f"{config.structure_file}.crd"))
+            read.psf_card(str(psf_path))
+            read.coor_card(str(crd_path))
 
         if len(seg_ids) > 1:
             lingo.charmm_script(f"DELEte ATOMs SELEct .not. segid {seg_id} END")
@@ -533,11 +788,13 @@ def patch_system(config: PatchConfig) -> Path:
     uni.universe.loc[uni.universe["res_name"] == "HSE", "res_name"] = "HSP"
 
     # Initialize patches.dat
-    patches_file = input_folder / "patches.dat"
+    patches_file = output_folder / "patches.dat"
     with open(patches_file, "w") as f:
         f.write("SEGID,RESID,PATCH,SELECT,ATOMS,TAG\n")
 
     # Apply patches per segment
+    # Keep bomblevel -2 for entire patching loop to handle non-integer charge warnings
+    pycharmm.charmm_script("bomblevel -2")
     global_idx = 0
     for seg_id in seg_ids:
         with open(patches_file, "a") as f:
@@ -549,11 +806,13 @@ def patch_system(config: PatchConfig) -> Path:
             print(f"Patching segment {seg_id}: {sublist}")
 
             global_idx = _apply_patches(
-                input_folder, patches_topology, sublist, global_idx, f
+                output_folder, patches_topology, sublist, global_idx, f
             )
 
         ic.build()
         ic.prm_fill(replace_all=True)
+        # Build coordinates for newly added hydrogens (e.g., H36, H37 from ligand patches)
+        pycharmm.charmm_script("HBUILD")
         write.coor_card(str(tmp_dir / f"{seg_id}.crd"))
         write.psf_card(str(tmp_dir / f"{seg_id}.psf"))
 
@@ -567,10 +826,13 @@ def patch_system(config: PatchConfig) -> Path:
             read.psf_card(str(tmp_dir / f"{seg_id}.psf"), append=True)
             read.coor_card(str(tmp_dir / f"{seg_id}.crd"), append=True)
 
+    # Reset bomblevel after all patching is complete
+    pycharmm.charmm_script("bomblevel 0")
+
     # Write output files
-    write.coor_pdb(str(input_folder / "system.pdb"))
-    write.psf_card(str(input_folder / "system.psf"))
-    write.coor_card(str(input_folder / "system.crd"))
+    write.coor_pdb(str(output_folder / "system.pdb"))
+    write.psf_card(str(output_folder / "system.psf"))
+    write.coor_card(str(output_folder / "system.crd"))
 
     # Apply HMR
     if config.hmr:
@@ -580,30 +842,20 @@ def patch_system(config: PatchConfig) -> Path:
         else:
             psf.hmr()
             print("HMR enabled for system without waters")
-        write.psf_card(str(input_folder / "system_hmr.psf"))
-        write.coor_card(str(input_folder / "system_hmr.crd"))
+        write.psf_card(str(output_folder / "system_hmr.psf"))
+        write.coor_card(str(output_folder / "system_hmr.crd"))
 
     # Calculate box parameters
-    _write_box_params(input_folder)
+    _write_box_params(output_folder)
 
     # Write selection file
-    _write_selections(input_folder, patches_topology, titratable_list)
+    _write_selections(output_folder, patches_topology, titratable_list)
 
     # Cleanup
     shutil.rmtree(tmp_dir)
 
-    # Move files to prep folder
-    prep_dir = input_folder / "prep"
-    prep_dir.mkdir(exist_ok=True)
-    for f in input_folder.iterdir():
-        if f.is_dir():
-            continue
-        if f.suffix in [".out", ".err"]:
-            continue
-        shutil.move(str(f), str(prep_dir / f.name))
-
-    print("Patching completed. Files moved to prep/")
-    return input_folder
+    print(f"Patching completed. Output files in: {output_folder}")
+    return output_folder
 
 
 def _apply_patches(
