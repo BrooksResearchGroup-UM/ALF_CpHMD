@@ -72,6 +72,20 @@ from .transitions import (
     get_transitions,
     summarize_transitions,
 )
+from .phase_switcher import (
+    PhaseTransitionConfig,
+    ReplicaLambdaData,
+    PKaFitResult,
+    check_phase_transition,
+    check_pka_convergence,
+    check_pka_convergence_simple,
+    load_lambda_data,
+    load_lambda_data_per_replica,
+    compute_replica_populations,
+    fit_pka_from_replicas,
+    calculate_populations,
+    write_populations_file,
+)
 
 __all__ = [
     # Patching
@@ -142,4 +156,17 @@ __all__ = [
     "TransitionResult",
     "get_transitions",
     "summarize_transitions",
+    # Phase Switching
+    "PhaseTransitionConfig",
+    "ReplicaLambdaData",
+    "PKaFitResult",
+    "check_phase_transition",
+    "check_pka_convergence",
+    "check_pka_convergence_simple",
+    "load_lambda_data",
+    "load_lambda_data_per_replica",
+    "compute_replica_populations",
+    "fit_pka_from_replicas",
+    "calculate_populations",
+    "write_populations_file",
 ]

@@ -25,6 +25,22 @@ from .dca import (
     get_variance_dca,
     bootstrap_moments_dca,
 )
+from .henderson_hasselbalch import (
+    HHFitResult,
+    SubstatePopulation,
+    SiteHHResult,
+    logistic,
+    three_state_hh,
+    two_state_basic_hh,
+    two_state_acidic_hh,
+    compute_block_weights,
+    compute_theoretical_populations,
+    fit_hh_curve,
+    plot_hh_curves,
+    plot_site_substates,
+    write_hh_csv,
+    generate_hh_analysis,
+)
 
 __all__ = [
     # Energy profiles
@@ -42,4 +58,19 @@ __all__ = [
     "get_model_dca",
     "get_variance_dca",
     "bootstrap_moments_dca",
+    # Henderson-Hasselbalch
+    "HHFitResult",
+    "SubstatePopulation",
+    "SiteHHResult",
+    "logistic",
+    "three_state_hh",
+    "two_state_basic_hh",
+    "two_state_acidic_hh",
+    "compute_block_weights",
+    "compute_theoretical_populations",
+    "fit_hh_curve",
+    "plot_hh_curves",
+    "plot_site_substates",
+    "write_hh_csv",
+    "generate_hh_analysis",
 ]
