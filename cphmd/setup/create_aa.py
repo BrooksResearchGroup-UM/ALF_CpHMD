@@ -18,6 +18,7 @@ import pycharmm.ic as ic
 import pycharmm.lingo as lingo
 import pycharmm.psf as psf
 import pycharmm.read as read
+import pycharmm.settings as settings
 import pycharmm.write as write
 
 from cphmd import TOPPAR_DIR
@@ -41,11 +42,17 @@ def _load_topology(toppar_dir: Path | None = None) -> None:
 
     toppar_dir = Path(toppar_dir)
 
+    # Suppress warnings during topology loading
+    settings.set_bomb_level(-1)
+
     read.rtf(str(toppar_dir / "top_all36_prot.rtf"))
     read.rtf(str(toppar_dir / "top_all36_na.rtf"), append=True)
     read.prm(str(toppar_dir / "par_all36m_prot.prm"), flex=True)
     read.prm(str(toppar_dir / "par_all36_na.prm"), flex=True, append=True)
     lingo.charmm_script(f"stream {toppar_dir / 'toppar_water_ions.str'}")
+
+    # Restore bomb level
+    settings.set_bomb_level(0)
 
 
 def create_amino_acid(
