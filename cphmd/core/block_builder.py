@@ -163,7 +163,7 @@ def generate_dynamics_setup(config: BlockConfig) -> str:
     ]
 
     # CpHMD pH coupling
-    if config.pH is not None and config.delta_pKa != 0:
+    if config.use_cphmd:
         lines.extend([
             "!----------------------------------------",
             "!Setup CpHMD with replica-specific pH",
@@ -235,7 +235,7 @@ def generate_ldin_statements(
             patch_info.loc[mask, "l0"] = l0
 
     # Generate LDIN statements
-    use_tags = config.pH is not None and config.delta_pKa != 0
+    use_tags = config.use_cphmd
 
     if use_tags:
         # Environment block

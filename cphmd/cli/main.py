@@ -15,7 +15,7 @@ Usage:
 import typer
 from rich.console import Console
 
-from cphmd import __version__
+from cphmd import __version__, TOPPAR_DIR
 
 app = typer.Typer(
     name="cphmd",
@@ -140,6 +140,10 @@ def alf(
     nreps: int = typer.Option(None, "-n", "--nreps", help="Number of replicas (default: MPI size)"),
     restrains: str = typer.Option("SCAT", "-r", "--restrains", help="Restraint type: SCAT or NOE"),
     restrain_hydrogens: bool = typer.Option(False, "-H", "--hydrogens", help="Include hydrogens in restraints"),
+    no_pka_bias: bool = typer.Option(False, "--no-pka-bias", help="Disable pKa-based bias shifts (use zero shifts)"),
+    auto_phase: bool = typer.Option(False, "--auto-phase/--no-auto-phase", help="Enable automatic phase switching"),
+    hh_plots: bool = typer.Option(False, "--hh-plots/--no-hh-plots", help="Generate Henderson-Hasselbalch plots"),
+    cleanup: bool = typer.Option(True, "--cleanup/--no-cleanup", help="Remove old analysis directories"),
     elec_type: str = typer.Option("pmeex", "--elec", help="Electrostatics: pmeex, pmeon, pmenn, fshift, fswitch"),
     vdw_type: str = typer.Option("vswitch", "--vdw", help="VDW method: vswitch or vfswitch"),
 ):
@@ -154,9 +158,16 @@ def alf(
     console.print(f"[dim]Temp: {temperature}K, pH: {pH}, Phase: {phase}, Runs: {start}-{end}[/dim]")
     console.print(f"[dim]Restraints: {restrains}, Hydrogens: {restrain_hydrogens}[/dim]")
     console.print(f"[dim]Electrostatics: {elec_type}, VDW: {vdw_type}[/dim]")
+    if no_pka_bias:
+        console.print(f"[yellow]pKa bias disabled (no PHMD pH, no TAG values)[/yellow]")
+    if auto_phase:
+        console.print(f"[green]Automatic phase switching enabled[/green]")
+    if hh_plots:
+        console.print(f"[green]Henderson-Hasselbalch plots enabled[/green]")
 
     config = ALFConfig(
         input_folder=input_folder,
+        toppar_dir=TOPPAR_DIR,
         temperature=temperature,
         pH=pH,
         hmr=hmr,
@@ -166,6 +177,10 @@ def alf(
         nreps=nreps,
         restrains=restrains,  # type: ignore
         restrain_hydrogens=restrain_hydrogens,
+        no_pka_bias=no_pka_bias,
+        auto_phase_switch=auto_phase,
+        cleanup_old_analysis=cleanup,
+        generate_hh_plots=hh_plots,
         elec_type=elec_type,  # type: ignore
         vdw_type=vdw_type,  # type: ignore
     )

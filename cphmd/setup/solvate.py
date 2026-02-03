@@ -26,6 +26,7 @@ import pycharmm.lingo as lingo
 import pycharmm.minimize as minimize
 import pycharmm.psf as psf
 import pycharmm.read as read
+import pycharmm.settings as settings
 import pycharmm.write as write
 
 from cphmd import TOPPAR_DIR
@@ -79,7 +80,11 @@ class SolvationConfig:
         "toppar_water_ions.str",
         "top_all36_na.rtf",
         "par_all36_na.prm",
+        "top_all36_cgenff.rtf",
+        "par_all36_cgenff.prm",
     ])
+    extra_files: list[str | Path] = field(default_factory=list)
+    """Additional topology/parameter files as absolute paths (for custom ligands)."""
 
 
 def water_density(temp: float) -> float:
@@ -203,6 +208,9 @@ def _read_topology_files(config: SolvationConfig, verbose: bool = True) -> None:
     if not verbose:
         lingo.charmm_script("prnlev 0")
 
+    # Suppress warnings during topology loading (e.g., duplicate definitions)
+    settings.set_bomb_level(-1)
+
     prm_files = [f for f in config.topology_files if f.endswith(".prm")]
     rtf_files = [f for f in config.topology_files if f.endswith(".rtf")]
     str_files = [f for f in config.topology_files if f.endswith(".str")]
@@ -219,6 +227,19 @@ def _read_topology_files(config: SolvationConfig, verbose: bool = True) -> None:
 
     for f in str_files:
         lingo.charmm_script(f"stream {toppar_dir / f}")
+
+    # Load extra files (absolute paths for custom ligands)
+    for extra_file in config.extra_files:
+        extra_path = Path(extra_file)
+        if extra_path.suffix == ".rtf":
+            read.rtf(str(extra_path), append=True)
+        elif extra_path.suffix == ".prm":
+            read.prm(str(extra_path), flex=True, append=True)
+        elif extra_path.suffix == ".str":
+            lingo.charmm_script(f"stream {extra_path}")
+
+    # Restore bomb level
+    settings.set_bomb_level(0)
 
     if not verbose:
         lingo.charmm_script("prnlev 5")
