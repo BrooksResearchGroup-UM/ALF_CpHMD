@@ -1311,6 +1311,7 @@ class ALFSimulation:
             use_gshift=False,
             nsubs=nsubs,
             g_imp_path="../G_imp",
+            log_file="analysis.log",
         )
         GetFreeEnergy5(
             self.state.alf_info, ms=ms, msprof=msprof, **cut_params
@@ -1370,6 +1371,7 @@ class ALFSimulation:
             tolerance=self.config.lmalf_tolerance,
             nsubs=nsubs,
             g_imp_path="../G_imp",
+            log_file="analysis.log",
         )
         print("[LMALF] LMALF optimization finished")
 
