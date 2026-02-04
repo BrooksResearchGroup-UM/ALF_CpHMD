@@ -90,6 +90,9 @@ def _redirect_c_output(log_path: Path | None) -> Generator[None, None, None]:
     saved_stdout_fd = os.dup(1)
     saved_stderr_fd = os.dup(2)
 
+    # Get libc for flushing C-level stdio buffers
+    libc = ctypes.CDLL(None)
+
     try:
         log_f = open(log_path, "a")
         os.dup2(log_f.fileno(), 1)  # redirect fd 1 (C stdout)
@@ -97,7 +100,9 @@ def _redirect_c_output(log_path: Path | None) -> Generator[None, None, None]:
         log_f.close()               # fd is now duplicated, safe to close
         yield
     finally:
-        # Flush before restoring
+        # Flush C-level stdio buffers BEFORE restoring fds, so buffered
+        # fprintf output goes to the log file, not back to the terminal
+        libc.fflush(None)
         sys.stdout.flush()
         sys.stderr.flush()
         os.dup2(saved_stdout_fd, 1)
