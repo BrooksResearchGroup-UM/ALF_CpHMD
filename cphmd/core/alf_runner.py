@@ -1568,7 +1568,7 @@ class ALFSimulation:
 
             # Run WHAM with retry (3 attempts) and validation
             # Verbose output appended to analysis.log, summary message returned
-            nf = N * self.config.nreps
+            nf = N * repeats * self.config.nreps
             wham_success, wham_msg = self._run_wham_with_retry(
                 run_idx=run_idx,
                 nf=nf,
