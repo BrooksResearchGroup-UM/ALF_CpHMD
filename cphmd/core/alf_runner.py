@@ -29,6 +29,7 @@ import numpy as np
 import pandas as pd
 
 from cphmd.core.phase_switcher import (
+    _per_site_ranges,
     check_phase_transition,
     check_phase3_stop,
     load_lambda_data,
@@ -498,10 +499,12 @@ class ALFSimulation:
         # Population convergence plots
         try:
             from cphmd.analysis import generate_population_plots
+            nsubs = self.state.alf_info.get("nsubs") if self.state.alf_info else None
             generate_population_plots(
                 input_folder=self.config.input_folder,
                 max_run=final_run,
                 output_dir=plots_dir,
+                nsubs=nsubs,
             )
             print(f"  Population convergence plots saved to {plots_dir}")
         except Exception as e:
@@ -1596,7 +1599,10 @@ class ALFSimulation:
 
             if lambda_data is not None:
                 # Write population statistics at two thresholds
-                pop_data = calculate_populations(lambda_data, thresholds=(0.8, 0.985))
+                nsubs = self.state.alf_info.get("nsubs")
+                pop_data = calculate_populations(
+                    lambda_data, thresholds=(0.8, 0.985), nsubs=nsubs,
+                )
                 write_populations_file(Path("populations.dat"), pop_data)
 
                 # Print short population summary for λ > 0.985
@@ -1604,8 +1610,18 @@ class ALFSimulation:
                     pop_strict = pop_data.get("pop_strict_norm", [])
                     if len(pop_strict) > 0:
                         pop_str = ", ".join(f"{p:.1%}" for p in pop_strict)
-                        frac_diff = (max(pop_strict) - min(pop_strict)) * 100
-                        print(f"Populations (λ>0.985): [{pop_str}] diff={frac_diff:.1f}%")
+                        if nsubs is not None and len(nsubs) > 1:
+                            # Per-site diff: report worst site
+                            site_diffs = []
+                            for start, end in _per_site_ranges(nsubs):
+                                s = pop_strict[start:end]
+                                site_diffs.append((max(s) - min(s)) * 100)
+                            worst_diff = max(site_diffs)
+                            print(f"Populations (λ>0.985): [{pop_str}] "
+                                  f"worst-site diff={worst_diff:.1f}%")
+                        else:
+                            frac_diff = (max(pop_strict) - min(pop_strict)) * 100
+                            print(f"Populations (λ>0.985): [{pop_str}] diff={frac_diff:.1f}%")
 
                 # Generate population convergence plots
                 from cphmd.analysis.population_convergence import generate_population_plots
@@ -1613,6 +1629,7 @@ class ALFSimulation:
                     input_folder=Path(".."),
                     max_run=run_idx,
                     output_dir=Path(home_path) / "plots",
+                    nsubs=self.state.alf_info.get("nsubs"),
                 )
 
             # Check for automatic phase transition
@@ -1642,6 +1659,7 @@ class ALFSimulation:
                     self.state.phase,
                     lambda_data,
                     **cphmd_kwargs,
+                    nsubs=nsubs,
                 )
 
                 if new_phase != self.state.phase:
@@ -1664,7 +1682,7 @@ class ALFSimulation:
                 )
 
                 should_stop, stop_reason, stop_result = check_phase3_stop(
-                    lambda_data, stop_config
+                    lambda_data, stop_config, nsubs=nsubs,
                 )
 
                 if confirmation:
