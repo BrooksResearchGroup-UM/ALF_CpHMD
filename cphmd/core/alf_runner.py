@@ -1593,9 +1593,7 @@ class ALFSimulation:
 
             # Load lambda data for phase checking and population stats
             data_dir = Path("data")
-            print(f"[DEBUG] Loading lambda data from {Path.cwd() / data_dir}")
             lambda_data, _ = load_lambda_data(data_dir)
-            print(f"[DEBUG] lambda_data: {lambda_data.shape if lambda_data is not None else None}")
 
             if lambda_data is not None:
                 # Write population statistics at two thresholds
