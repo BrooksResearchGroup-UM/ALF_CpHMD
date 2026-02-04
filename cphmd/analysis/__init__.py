@@ -25,6 +25,11 @@ from .dca import (
     get_variance_dca,
     bootstrap_moments_dca,
 )
+from .population_convergence import (
+    read_populations_from_runs,
+    plot_population_convergence,
+    generate_population_plots,
+)
 from .henderson_hasselbalch import (
     HHFitResult,
     SubstatePopulation,
@@ -58,6 +63,10 @@ __all__ = [
     "get_model_dca",
     "get_variance_dca",
     "bootstrap_moments_dca",
+    # Population convergence
+    "read_populations_from_runs",
+    "plot_population_convergence",
+    "generate_population_plots",
     # Henderson-Hasselbalch
     "HHFitResult",
     "SubstatePopulation",
