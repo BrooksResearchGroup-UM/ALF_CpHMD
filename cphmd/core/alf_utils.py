@@ -819,14 +819,24 @@ def get_free_energy_lm(
     # Load LMALF output
     coeff = np.loadtxt("OUT.dat")
 
-    # Apply adaptive scaling to prevent large parameter changes
-    max_ratio = np.max(np.abs(coeff[:n0] / cutlist))
-    scaling = 1.5 / max_ratio if max_ratio > 0 else 1.0
-    if scaling > 1:
-        scaling = 1.0
-    coeff *= scaling
+    # Apply per-parameter clipping to prevent large changes
+    # This matches WHAM's behavior better than global scaling:
+    # - Global scaling: if ONE parameter is too large, ALL get reduced
+    # - Per-parameter clipping: each parameter is independently limited
+    #
+    # The cutoff acts as a "speed limit" for each parameter type,
+    # preventing oscillation from overcorrection.
+    n_clipped = 0
+    max_ratio = 0.0
+    for i in range(n0):
+        limit = 1.5 * cutlist[i]
+        ratio = abs(coeff[i] / cutlist[i]) if cutlist[i] > 0 else 0
+        max_ratio = max(max_ratio, ratio)
+        if abs(coeff[i]) > limit:
+            coeff[i] = np.clip(coeff[i], -limit, limit)
+            n_clipped += 1
 
-    print(f"LMALF scaling factor: {scaling:.4f}")
+    print(f"LMALF: max_ratio={max_ratio:.2f}, clipped {n_clipped}/{n0} parameters")
 
     # Unpack coefficients into b/c/x/s matrices
     ind = 0
