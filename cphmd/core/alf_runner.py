@@ -30,10 +30,12 @@ import pandas as pd
 
 from cphmd.core.phase_switcher import (
     check_phase_transition,
+    check_phase3_stop,
     load_lambda_data,
     calculate_populations,
     write_populations_file,
     PhaseTransitionConfig,
+    StopCriteriaConfig,
 )
 
 # Add ALF library to path if not already installed
@@ -47,6 +49,7 @@ PhaseType = Literal[1, 2, 3]
 RestrainType = Literal["SCAT", "NOE"]
 ElecType = Literal["pmeex", "pmeon", "pmenn", "fshift", "fswitch"]
 VdwType = Literal["vswitch", "vfswitch"]
+AnalysisMethod = Literal["wham", "lmalf"]
 
 
 @dataclass
@@ -86,9 +89,15 @@ class ALFConfig:
     no_s_bias: bool = False
     no_pka_bias: bool = False  # Disable pKa-based bias shifts
     auto_phase_switch: bool = False  # Enable automatic phase switching
+    auto_stop: bool = False  # Enable automatic stop when converged in Phase 3
     cleanup_old_analysis: bool = True  # Remove analysis directories older than 6 runs
     generate_hh_plots: bool = False  # Generate Henderson-Hasselbalch plots
     cent_ncres: int | bool = False
+
+    # Analysis method configuration
+    analysis_method: AnalysisMethod = "wham"  # "wham" or "lmalf"
+    lmalf_max_iter: int = 0  # Maximum L-BFGS iterations (0 = use default)
+    lmalf_tolerance: float = 0.0  # Convergence tolerance (0 = use default)
 
     # Non-bonded parameters
     cutnb: float = 14.0
@@ -109,6 +118,9 @@ class ALFConfig:
         "my_files/titratable_residues.str",
         "my_files/nucleic_c36.str",
     ])
+
+    # Extra topology/parameter files (absolute paths for custom ligands)
+    extra_files: list[str | Path] = field(default_factory=list)
 
     def __post_init__(self):
         """Validate configuration after initialization."""
@@ -155,6 +167,11 @@ class SimulationState:
     site_pKa_shifts: dict[str, dict] = field(default_factory=dict)
     delta_pKa: float = 0.0
 
+    # Stop criteria state
+    converged: bool = False
+    stop_reason: str = ""
+    needs_confirmation: bool = False  # Flag to trigger confirmation repeat
+
 
 class ALFSimulation:
     """Main ALF simulation orchestrator.
@@ -172,6 +189,7 @@ class ALFSimulation:
     """
 
     ALPHABET = "abcdefghijklmnopqrstuvwxyz"
+    LOG_UNIT = 99  # File unit for CHARMM log redirection
 
     def __init__(self, config: ALFConfig):
         """Initialize ALF simulation.
@@ -184,6 +202,7 @@ class ALFSimulation:
         self.state.phase = config.phase  # Initialize phase from config
         self._comm = None
         self._initialized = False
+        self._log_file = None  # Current CHARMM log file object
 
     def _init_mpi(self):
         """Initialize MPI and determine rank/size."""
@@ -229,6 +248,48 @@ class ALFSimulation:
 
         return local_rank
 
+    def _redirect_output(self, run_idx: int, k: int, replica_idx: int):
+        """Redirect CHARMM output to a separate log file for this replica/repeat.
+
+        Creates a log file at run{run_idx}/log.{k}.{replica_idx}.out and redirects
+        CHARMM's output unit (OUTU) to write to it. This separates CHARMM output
+        by replica and repeat for easier debugging.
+
+        Args:
+            run_idx: Current run number
+            k: Repeat index within run
+            replica_idx: MPI replica index
+        """
+        import pycharmm
+        import pycharmm.lingo as lingo
+
+        run_dir = self.config.input_folder / f"run{run_idx}"
+        log_path = run_dir / f"log.{k}.{replica_idx}.out"
+
+        # Create CharmmFile for log output
+        self._log_file = pycharmm.CharmmFile(
+            file_name=str(log_path),
+            file_unit=self.LOG_UNIT,
+            read_only=False,
+            formatted=True,
+        )
+
+        # Redirect CHARMM output to this file unit
+        lingo.charmm_script(f"OUTUnit {self.LOG_UNIT}")
+
+    def _return_output(self):
+        """Return CHARMM output to standard output (unit 6).
+
+        Closes the current log file and restores CHARMM's output to stdout.
+        """
+        import pycharmm.lingo as lingo
+
+        if self._log_file is not None:
+            # Restore output to stdout (unit 6)
+            lingo.charmm_script("OUTUnit 6")
+            self._log_file.close()
+            self._log_file = None
+
     def _init_charmm(self):
         """Initialize CHARMM and read topology files."""
         from .charmm_utils import read_topology_files
@@ -244,6 +305,44 @@ class ALFSimulation:
             self.config.topology_files,
             verbose=False,
         )
+
+        # Load extra files for custom ligands (absolute paths)
+        if self.config.extra_files:
+            self._load_extra_files()
+
+    def _load_extra_files(self):
+        """Load extra topology/parameter files for custom ligands.
+
+        These are absolute paths to RTF, PRM, or STR files that supplement
+        the standard CHARMM topology. Used for custom ligands with CGenFF
+        parameters.
+        """
+        from pycharmm import lingo, read, settings
+
+        # Suppress warnings during loading
+        lingo.charmm_script("prnlev -1")
+        lingo.charmm_script("bomblevel -2")
+        settings.set_warn_level(-1)
+
+        for file_path in self.config.extra_files:
+            file_path = Path(file_path)
+            if not file_path.exists():
+                raise FileNotFoundError(f"Extra file not found: {file_path}")
+
+            suffix = file_path.suffix.lower()
+            if suffix == ".rtf":
+                read.rtf(str(file_path), append=True)
+            elif suffix == ".prm":
+                read.prm(str(file_path), flex=True, append=True)
+            elif suffix == ".str":
+                lingo.charmm_script(f"stream {file_path}")
+            else:
+                raise ValueError(f"Unknown file type: {file_path}")
+
+        # Restore settings
+        settings.set_warn_level(5)
+        lingo.charmm_script("bomblevel 0")
+        lingo.charmm_script("prnlev 5")
 
     def _load_patch_info(self):
         """Load patch information from patches.dat."""
@@ -362,6 +461,12 @@ class ALFSimulation:
         for run_idx in range(start_run, self.config.end + 1):
             self._execute_run(run_idx)
 
+            # Check for early convergence (auto_stop)
+            if self.state.converged:
+                print(f"\nSimulation converged at run {run_idx}. Stopping early.")
+                print(f"  {self.state.stop_reason}")
+                break
+
     def _find_last_run(self) -> int:
         """Find the last completed run to resume from.
 
@@ -428,7 +533,11 @@ class ALFSimulation:
         2. Building BLOCK/MSLD commands
         3. Running equilibration + production dynamics
         4. ALF analysis (rank 0 only)
+        5. Confirmation repeat if stop criteria met
         """
+        # Reset confirmation flag at start of each run
+        self.state.needs_confirmation = False
+
         # Broadcast current phase from rank 0
         self.state.phase = self._comm.bcast(self.state.phase, root=0)
 
@@ -446,8 +555,11 @@ class ALFSimulation:
             for replica_idx in my_replicas:
                 letter = f"_{self.ALPHABET[replica_idx]}" if self.config.nreps > 1 else ""
 
-                # Setup and run dynamics
+                # Setup run directory and redirect CHARMM output to log file
                 self._setup_run_directory(run_idx)
+                self._redirect_output(run_idx, k, replica_idx)
+
+                # Setup and run dynamics (all output goes to log.{k}.{replica_idx}.out)
                 self._setup_crystal(run_idx, letter, k, replica_idx)
                 self._build_block_commands(run_idx, letter, k, replica_idx)
                 self._apply_restraints(run_idx, k)
@@ -457,6 +569,9 @@ class ALFSimulation:
                     self._run_minimization(run_idx, replica_idx)
 
                 self._run_dynamics(run_idx, letter, k, replica_idx)
+
+                # Return CHARMM output to stdout
+                self._return_output()
 
             self._comm.Barrier()
             elapsed = time.time() - start_time
@@ -470,6 +585,40 @@ class ALFSimulation:
             print(f"Analysis completed in {elapsed:.1f}s")
 
         self._comm.Barrier()
+
+        # Check if confirmation repeat is needed (broadcast from rank 0)
+        needs_confirmation = self._comm.bcast(self.state.needs_confirmation, root=0)
+
+        if needs_confirmation:
+            print(f"\nRunning confirmation repeat for run {run_idx}...")
+
+            # Run one more repeat (k = repeats, since we already did 0..repeats-1)
+            k = repeats
+            start_time = time.time()
+
+            self._comm.Barrier()
+
+            # Get replica assignments for this rank
+            my_replicas = self._get_replica_assignments()
+
+            for replica_idx in my_replicas:
+                letter = f"_{self.ALPHABET[replica_idx]}" if self.config.nreps > 1 else ""
+
+                # Redirect output to log file for confirmation repeat
+                self._redirect_output(run_idx, k, replica_idx)
+                self._run_dynamics(run_idx, letter, k, replica_idx)
+                self._return_output()
+
+            self._comm.Barrier()
+            elapsed = time.time() - start_time
+            print(f"Run {run_idx}.{k} (confirmation) completed in {elapsed:.1f}s")
+
+            # Re-run analysis with additional data
+            if self.state.rank == 0:
+                print("Re-analyzing with confirmation data...")
+                self._alf_analysis(run_idx, repeats + 1, confirmation=True)
+
+            self._comm.Barrier()
 
     def _get_replica_assignments(self) -> list[int]:
         """Get replica indices assigned to this MPI rank."""
@@ -512,6 +661,7 @@ class ALFSimulation:
         )
         import pycharmm.read as read
         import pycharmm.lingo as lingo
+        import pycharmm.settings as settings
         import random
 
         prep_dir = self.config.input_folder / "prep"
@@ -527,9 +677,11 @@ class ALFSimulation:
 
 
         if is_first_run:
-            # Read PSF file
+            # Read PSF file (suppress non-integer charge warning for MSLD systems)
+            settings.set_bomb_level(-1)
             psf_file = prep_dir / ("system_hmr.psf" if self.config.hmr else "system.psf")
             read.psf_card(str(psf_file))
+            settings.set_bomb_level(0)
 
             # Define selections for titratable groups
             if self.state.patch_info is not None:
@@ -1008,8 +1160,11 @@ class ALFSimulation:
         msprof: int,
         cut_params: dict,
         max_attempts: int = 3,
-    ) -> bool:
-        """Run WHAM analysis with retry on failure or invalid output.
+    ) -> tuple[bool, str]:
+        """Run analysis (WHAM or LMALF) with retry on failure or invalid output.
+
+        Verbose WHAM output is redirected to analysis.log in the current directory.
+        Only summary messages are returned to be printed to main output.
 
         Args:
             run_idx: Current run number
@@ -1020,41 +1175,173 @@ class ALFSimulation:
             max_attempts: Maximum number of retry attempts
 
         Returns:
-            True if WHAM succeeded, False if all attempts failed
+            Tuple of (success: bool, summary_message: str)
         """
-        from alf.GetFreeEnergy5 import GetFreeEnergy5
-        from alf.wham.RunWham import RunWham
+        import contextlib
 
         analysis_dir = Path.cwd()  # We're already chdir'd to analysis dir
+        method = self.config.analysis_method
+        log_file = analysis_dir / "analysis.log"
 
-        for attempt in range(max_attempts):
-            try:
-                print(f"WHAM attempt {attempt + 1}/{max_attempts}...")
+        # Append WHAM verbose output to existing log file
+        with open(log_file, "a") as log_f:
+            for attempt in range(max_attempts):
+                try:
+                    log_f.write(f"{method.upper()} attempt {attempt + 1}/{max_attempts}...\n")
+                    log_f.flush()
 
-                # Run WHAM
-                RunWham(nf, self.config.temperature, ms, msprof)
-                GetFreeEnergy5(
-                    self.state.alf_info, ms=ms, msprof=msprof, **cut_params
-                )
+                    # Redirect stdout to log file during WHAM execution
+                    with contextlib.redirect_stdout(log_f):
+                        if method == "lmalf":
+                            # Run LMALF analysis
+                            self._run_lmalf_analysis(nf, ms, msprof, cut_params)
+                        else:
+                            # Run WHAM analysis (default)
+                            self._run_wham_analysis(nf, ms, msprof, cut_params)
 
-                # Validate output
-                if self._is_wham_output_invalid(analysis_dir):
-                    print(f"WHAM output invalid on attempt {attempt + 1}")
+                    # Validate output
+                    if self._is_wham_output_invalid(analysis_dir):
+                        msg = f"{method.upper()} output invalid on attempt {attempt + 1}"
+                        log_f.write(f"{msg}\n")
+                        log_f.flush()
+                        self._cleanup_invalid_wham(analysis_dir)
+                        continue
+
+                    msg = f"{method.upper()} succeeded on attempt {attempt + 1}"
+                    log_f.write(f"{msg}\n")
+                    return True, msg
+
+                except Exception as e:
+                    msg = f"{method.upper()} attempt {attempt + 1} failed: {e}"
+                    log_f.write(f"{msg}\n")
+                    log_f.flush()
                     self._cleanup_invalid_wham(analysis_dir)
-                    continue
 
-                print(f"WHAM succeeded on attempt {attempt + 1}")
-                return True
+                    if attempt == max_attempts - 1:
+                        msg = f"{method.upper()} failed after {max_attempts} attempts"
+                        log_f.write(f"{msg}\n")
+                        return False, msg
 
-            except Exception as e:
-                print(f"WHAM attempt {attempt + 1} failed: {e}")
-                self._cleanup_invalid_wham(analysis_dir)
+        return False, f"{method.upper()} failed after {max_attempts} attempts"
 
-                if attempt == max_attempts - 1:
-                    print(f"WHAM failed after {max_attempts} attempts")
-                    return False
+    def _run_wham_analysis(
+        self, nf: int, ms: int, msprof: int, cut_params: dict
+    ) -> None:
+        """Run WHAM analysis using bundled GPU library with ALF fallback.
 
-        return False
+        Prefers our bundled WHAM library (with G-shift support, enhanced
+        numerical stability) but falls back to ALF's WHAM if unavailable.
+
+        Args:
+            nf: Number of simulation files
+            ms: Multisite parameter
+            msprof: Multisite profile parameter
+            cut_params: Cutoff parameters
+        """
+        from cphmd.wham import check_wham_available
+
+        if check_wham_available():
+            # Use our bundled WHAM with improved features
+            print("Using bundled WHAM library (cphmd.wham)")
+            from cphmd.wham import run_wham
+            from alf.GetFreeEnergy5 import GetFreeEnergy5
+
+            # Bundled WHAM is called from analysis directory context
+            run_wham(
+                analysis_dir=Path.cwd(),
+                nf=nf,
+                temp=self.config.temperature,
+                nts0=ms,
+                nts1=msprof,
+                use_gshift=False,  # Legacy behavior by default
+            )
+            # Use ALF's GetFreeEnergy5 to convert WHAM output to b/c/x/s
+            GetFreeEnergy5(
+                self.state.alf_info, ms=ms, msprof=msprof, **cut_params
+            )
+        else:
+            # Fall back to ALF's WHAM implementation
+            print("Using ALF WHAM library (fallback)")
+            from alf.GetFreeEnergy5 import GetFreeEnergy5
+            from alf.wham.RunWham import RunWham
+
+            RunWham(nf, self.config.temperature, ms, msprof)
+            GetFreeEnergy5(
+                self.state.alf_info, ms=ms, msprof=msprof, **cut_params
+            )
+
+    def _run_lmalf_analysis(
+        self, nf: int, ms: int, msprof: int, cut_params: dict
+    ) -> None:
+        """Run LMALF analysis using bundled GPU library.
+
+        LMALF expects:
+        - Lambda.dat: Combined lambda trajectory
+        - ensweight.dat: Ensemble weights (optional)
+        - ../../prep/nsubs: System topology
+
+        Args:
+            nf: Number of simulation files
+            ms: Multisite parameter
+            msprof: Multisite profile parameter
+            cut_params: Cutoff parameters for GetFreeEnergyLM
+        """
+        from cphmd.wham import run_lmalf, prepare_lmalf_input
+        from cphmd.core.alf_utils import get_free_energy_lm
+
+        # LMALF needs a combined Lambda.dat file
+        # Collect all data/Lambda.*.*.dat files
+        import sys
+        print("[LMALF] Starting analysis...", flush=True)
+        sys.stdout.flush()
+        data_dir = Path("data")
+        lambda_files = sorted(data_dir.glob("Lambda.*.*.dat"))
+
+        if not lambda_files:
+            raise FileNotFoundError("No Lambda.*.*.dat files found in data/")
+
+        print(f"[LMALF] Found {len(lambda_files)} lambda files")
+
+        # Prepare combined Lambda.dat for LMALF
+        print("[LMALF] Preparing input files...")
+        prepare_lmalf_input(
+            analysis_dir=Path.cwd(),
+            lambda_files=lambda_files,
+            weight_files=None,  # Use uniform weights
+        )
+
+        # Run LMALF optimization
+        print("[LMALF] Running LMALF optimization...")
+        run_lmalf(
+            analysis_dir=Path.cwd(),
+            nf=nf,
+            temp=self.config.temperature,
+            ms=ms,
+            msprof=msprof,
+            max_iter=self.config.lmalf_max_iter,
+            tolerance=self.config.lmalf_tolerance,
+        )
+        print("[LMALF] LMALF optimization finished")
+
+        # Check if LMALF produced valid output (not all zeros)
+        out_file = Path("OUT.dat")
+        if out_file.exists():
+            out_data = np.loadtxt(out_file)
+            if np.all(out_data == 0):
+                print("[LMALF] Warning: LMALF produced all zeros - falling back to WHAM")
+                # Fall back to WHAM
+                self._run_wham_analysis(nf, ms, msprof, cut_params)
+                return
+
+        # Convert OUT.dat to b/c/x/s.dat
+        print("[LMALF] Converting OUT.dat to b/c/x/s.dat...")
+        get_free_energy_lm(
+            self.state.alf_info,
+            ms=ms,
+            msprof=msprof,
+            **cut_params,
+        )
+        print("[LMALF] Analysis complete")
 
     def _detect_phase_from_logs(self, run_idx: int) -> int | None:
         """Detect simulation phase from NSTEP in log files.
@@ -1115,13 +1402,18 @@ class ALFSimulation:
         else:
             return 3
 
-    def _alf_analysis(self, run_idx: int, repeats: int):
+    def _alf_analysis(self, run_idx: int, repeats: int, confirmation: bool = False):
         """Perform ALF analysis and update biases.
 
         Uses the ALF library to:
         1. Extract lambda values from trajectory
         2. Compute free energies with WHAM
         3. Update bias parameters for next iteration
+
+        Args:
+            run_idx: Current run number
+            repeats: Number of dynamics repeats completed
+            confirmation: If True, this is a confirmation re-analysis (skip bias update)
         """
         import alf
         import alf.GetLambda
@@ -1171,26 +1463,32 @@ class ALFSimulation:
 
             name = self.config.input_folder.name
 
-            for j in range(self.config.nreps):
-                for kk in range(repeats):
-                    if self.state.phase in [1, 2]:
-                        fnmsin = [f"../run{run_idx}/res/{name}_flat.{kk}.{j}.lmd"]
+            # Redirect verbose ALF output to analysis.log
+            import contextlib
+            log_file = Path("analysis.log")
+
+            with open(log_file, "w") as log_f:
+                with contextlib.redirect_stdout(log_f):
+                    # Process lambda files (verbose)
+                    for j in range(self.config.nreps):
+                        for kk in range(repeats):
+                            if self.state.phase in [1, 2]:
+                                fnmsin = [f"../run{run_idx}/res/{name}_flat.{kk}.{j}.lmd"]
+                            else:
+                                fnmsin = [f"../run{run_idx}/res/{name}_prod.{kk}.{j}.lmd"]
+
+                            fnmout = f"data/Lambda.{kk}.{j}.dat"
+
+                            if Path(fnmsin[0]).exists():
+                                alf.GetLambda.GetLambda(self.state.alf_info, fnmout, fnmsin)
+
+                    # Run energy calculation (verbose)
+                    # Phase 2/3 generate many more samples per run, so we need to subsample
+                    if self.state.phase == 1:
+                        skipE = 10   # 40K samples → 4K per simulation
                     else:
-                        fnmsin = [f"../run{run_idx}/res/{name}_prod.{kk}.{j}.lmd"]
-
-                    fnmout = f"data/Lambda.{kk}.{j}.dat"
-
-                    if Path(fnmsin[0]).exists():
-                        alf.GetLambda.GetLambda(self.state.alf_info, fnmout, fnmsin)
-
-            # Run energy calculation with appropriate skip factor for WHAM
-            # Phase 2/3 generate many more samples per run, so we need to subsample
-            # to avoid overwhelming WHAM with too much data
-            if self.state.phase == 1:
-                skipE = 10   # 40K samples → 4K per simulation
-            else:
-                skipE = 100  # 450K+ samples → 4.5K per simulation
-            alf.GetEnergy(self.state.alf_info, im5, run_idx, skipE=skipE)
+                        skipE = 100  # 450K+ samples → 4.5K per simulation
+                    alf.GetEnergy(self.state.alf_info, im5, run_idx, skipE=skipE)
 
             # Write nsubs and nblocks files for WHAM library
             nsubs = self.state.alf_info["nsubs"]
@@ -1232,9 +1530,7 @@ class ALFSimulation:
             if self.config.no_s_bias:
                 cut_params["cuts"] = 0.0
 
-            # After enough data, run full WHAM analysis with retry logic
             # Create prep directory and copy nsubs for WHAM compatibility
-            # WHAM expects ../../prep/nsubs from multisite/site1/
             prep_dir = Path("prep")
             prep_dir.mkdir(exist_ok=True)
             src_nsubs = Path("../prep/nsubs")
@@ -1242,8 +1538,9 @@ class ALFSimulation:
                 shutil.copy(src_nsubs, prep_dir / "nsubs")
 
             # Run WHAM with retry (3 attempts) and validation
+            # Verbose output appended to analysis.log, summary message returned
             nf = N * self.config.nreps
-            wham_success = self._run_wham_with_retry(
+            wham_success, wham_msg = self._run_wham_with_retry(
                 run_idx=run_idx,
                 nf=nf,
                 ms=ms,
@@ -1251,6 +1548,7 @@ class ALFSimulation:
                 cut_params=cut_params,
                 max_attempts=3,
             )
+            print(wham_msg)  # Print summary to main output
 
             if not wham_success:
                 print("All WHAM attempts failed, using zero bias updates")
@@ -1259,53 +1557,118 @@ class ALFSimulation:
                 np.savetxt("x.dat", np.zeros((nblocks, nblocks)), fmt=" %7.2f")
                 np.savetxt("s.dat", np.zeros((nblocks, nblocks)), fmt=" %7.2f")
 
+            # Load lambda data for phase checking and population stats
+            data_dir = Path("data")
+            lambda_data, _ = load_lambda_data(data_dir)
+
+            if lambda_data is not None:
+                # Write population statistics at two thresholds
+                pop_data = calculate_populations(lambda_data, thresholds=(0.8, 0.985))
+                write_populations_file(Path("populations.dat"), pop_data)
+
+                # Print short population summary for λ > 0.985
+                if pop_data:
+                    pop_strict = pop_data.get("pop_strict_norm", [])
+                    if len(pop_strict) > 0:
+                        pop_str = ", ".join(f"{p:.1%}" for p in pop_strict)
+                        frac_diff = (max(pop_strict) - min(pop_strict)) * 100
+                        print(f"Populations (λ>0.985): [{pop_str}] diff={frac_diff:.1f}%")
+
             # Check for automatic phase transition
-            if self.config.auto_phase_switch:
-                data_dir = Path("data")
-                lambda_data, _ = load_lambda_data(data_dir)
+            if self.config.auto_phase_switch and lambda_data is not None:
+                # Get delta_pKa for current phase
+                from .cphmd_params import get_delta_pKa_for_phase
+                delta_pKa = get_delta_pKa_for_phase(self.state.phase)
 
-                if lambda_data is not None:
-                    # Get delta_pKa for current phase
-                    from .cphmd_params import get_delta_pKa_for_phase
-                    delta_pKa = get_delta_pKa_for_phase(self.state.phase)
-
-                    # Build CpHMD parameters if pH is set
-                    cphmd_kwargs = {}
-                    if self.config.pH is not None and self.config.nreps > 3:
-                        from .cphmd_params import compute_all_site_parameters
-                        cphmd_params = compute_all_site_parameters(
-                            self.state.patch_info,
-                            self.config.temperature,
-                            self.config.pH,
-                        )
-                        cphmd_kwargs = {
-                            "data_dir": data_dir,
-                            "patch_info": self.state.patch_info,
-                            "effective_pH": cphmd_params.effective_pH,
-                            "delta_pKa": delta_pKa,
-                            "nreps": self.config.nreps,
-                        }
-
-                    new_phase, reason = check_phase_transition(
-                        self.state.phase,
-                        lambda_data,
-                        **cphmd_kwargs,
+                # Build CpHMD parameters if pH is set
+                cphmd_kwargs = {}
+                if self.config.pH is not None and self.config.nreps > 3:
+                    from .cphmd_params import compute_all_site_parameters
+                    cphmd_params = compute_all_site_parameters(
+                        self.state.patch_info,
+                        self.config.temperature,
+                        self.config.pH,
                     )
+                    cphmd_kwargs = {
+                        "data_dir": data_dir,
+                        "patch_info": self.state.patch_info,
+                        "effective_pH": cphmd_params.effective_pH,
+                        "delta_pKa": delta_pKa,
+                        "nreps": self.config.nreps,
+                    }
 
-                    if new_phase != self.state.phase:
-                        print(f"PHASE TRANSITION: {self.state.phase} → {new_phase}")
-                        print(f"  Reason: {reason}")
-                        self.state.phase = new_phase
+                new_phase, reason = check_phase_transition(
+                    self.state.phase,
+                    lambda_data,
+                    **cphmd_kwargs,
+                )
+
+                if new_phase != self.state.phase:
+                    print(f"PHASE TRANSITION: {self.state.phase} → {new_phase}")
+                    print(f"  Reason: {reason}")
+                    self.state.phase = new_phase
+                else:
+                    print(f"Phase check: {reason}")
+
+                # Save current phase to file
+                np.savetxt("phase.dat", np.array([self.state.phase]), fmt="%d")
+
+            # Check stop criteria if in Phase 3 and auto_stop is enabled
+            if self.config.auto_stop and self.state.phase == 3 and lambda_data is not None:
+                # Build stop criteria config (step5-style)
+                timestep_fs = 4.0 if self.config.hmr else 2.0
+                stop_config = StopCriteriaConfig(
+                    timestep_fs=timestep_fs,
+                    max_frac_diff=0.02,  # 2% population difference threshold
+                )
+
+                should_stop, stop_reason, stop_result = check_phase3_stop(
+                    lambda_data, stop_config
+                )
+
+                if confirmation:
+                    # This is the confirmation re-analysis
+                    if should_stop:
+                        # Confirmed! Stop criteria met with additional data
+                        self.state.converged = True
+                        self.state.stop_reason = stop_reason
+                        self.state.needs_confirmation = False
+                        print(f"\n{'='*60}")
+                        print(f"CONVERGENCE CONFIRMED at run {run_idx}")
+                        print(f"  {stop_reason}")
+                        print(f"  Fractions (λ>{stop_config.threshold_strict}): {stop_result.fractions}")
+                        print(f"  Fraction diff: {stop_result.frac_diff_pct:.2f}%")
+                        print(f"  Score: {stop_result.score:.4f}")
+                        print(f"{'='*60}\n")
+
+                        # Write convergence marker file
+                        with open("CONVERGED", "w") as f:
+                            f.write(f"Converged at run {run_idx}\n")
+                            f.write(f"{stop_reason}\n")
+                            f.write(f"Fractions: {stop_result.fractions}\n")
+                            f.write(f"Score: {stop_result.score:.4f}\n")
                     else:
-                        print(f"Phase check: {reason}")
-
-                    # Save current phase to file
-                    np.savetxt("phase.dat", np.array([self.state.phase]), fmt="%d")
-
-                    # Write population statistics at two thresholds
-                    pop_data = calculate_populations(lambda_data, thresholds=(0.8, 0.985))
-                    write_populations_file(Path("populations.dat"), pop_data)
-                    print(f"Population stats written to populations.dat")
+                        # Confirmation failed - continue search
+                        self.state.needs_confirmation = False
+                        print(f"\n{'='*60}")
+                        print(f"CONVERGENCE NOT CONFIRMED at run {run_idx}")
+                        print(f"  With additional data: {stop_reason}")
+                        print(f"  Continuing optimization...")
+                        print(f"{'='*60}\n")
+                else:
+                    # Normal check (first pass)
+                    if should_stop:
+                        # Trigger confirmation repeat
+                        self.state.needs_confirmation = True
+                        print(f"\n{'='*60}")
+                        print(f"CONVERGENCE CANDIDATE at run {run_idx}")
+                        print(f"  {stop_reason}")
+                        print(f"  Fractions: {stop_result.fractions}")
+                        print(f"  Fraction diff: {stop_result.frac_diff_pct:.2f}%")
+                        print(f"  Triggering confirmation repeat...")
+                        print(f"{'='*60}\n")
+                    else:
+                        print(f"Stop check: {stop_reason}")
 
             # Generate Henderson-Hasselbalch plots if enabled
             # Guard: require nreps > 3 for meaningful multi-point HH fitting
@@ -1333,8 +1696,9 @@ class ALFSimulation:
                     ncentral=self.state.alf_info.get("ncentral", self.config.nreps // 2),
                 )
 
-            # Update variables for next run
-            alf.SetVars(self.state.alf_info, run_idx + 1)
+            # Update variables for next run (skip during confirmation)
+            if not confirmation:
+                alf.SetVars(self.state.alf_info, run_idx + 1)
 
             # Cleanup old analysis directories to save disk space
             if self.config.cleanup_old_analysis and run_idx > 6:
@@ -1387,6 +1751,8 @@ def main():
     parser.add_argument("-r", "--restrains", default="SCAT", choices=["SCAT", "NOE"], help="Restraint type")
     parser.add_argument("-nx", "--no-x-bias", action="store_true", help="Disable skew bias")
     parser.add_argument("-ns", "--no-s-bias", action="store_true", help="Disable endpoint bias")
+    parser.add_argument("--auto-phase", action="store_true", help="Enable automatic phase switching")
+    parser.add_argument("--auto-stop", action="store_true", help="Enable automatic stop when converged")
 
     args = parser.parse_args()
 
@@ -1402,6 +1768,8 @@ def main():
         restrains=args.restrains,
         no_x_bias=args.no_x_bias,
         no_s_bias=args.no_s_bias,
+        auto_phase_switch=args.auto_phase,
+        auto_stop=args.auto_stop,
     )
 
     run_alf_simulation(config)

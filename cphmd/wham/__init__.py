@@ -1,15 +1,25 @@
-"""WHAM (Weighted Histogram Analysis Method) module.
+"""WHAM and LMALF analysis module.
 
-This module provides GPU-accelerated WHAM analysis for ALF simulations.
-Bundled from wham_3 variant with G-shift support for variable blocks.
+This module provides GPU-accelerated analysis for ALF simulations:
+- WHAM (Weighted Histogram Analysis Method): Iterative histogram reweighting
+- LMALF (Likelihood Maximization ALF): L-BFGS optimization of bias parameters
 
-The WHAM library must be compiled before use:
-    cd cphmd/wham/src
+Both methods compute optimal bias parameters from simulation trajectories.
+LMALF is an alternative to WHAM that uses direct optimization.
+
+The library must be compiled before use:
+    cd cphmd/wham && ./build.sh
+    # or manually:
     nvcc -shared -Xcompiler -fPIC -o ../libwham.so wham.cu
 
 Usage:
-    from cphmd.wham import run_wham
+    from cphmd.wham import run_wham, run_lmalf
+
+    # WHAM analysis (default)
     run_wham(analysis_dir, nf=10, temp=298.15, nts0=1, nts1=1)
+
+    # LMALF analysis (alternative)
+    run_lmalf(analysis_dir, nf=10, temp=298.15)
 
 With automatic G_imp computation:
     from cphmd.wham import run_wham_with_g_imp
@@ -300,3 +310,179 @@ def run_wham_with_g_imp(
         nts1=nts1,
         use_gshift=use_gshift,
     )
+
+
+def run_lmalf(
+    analysis_dir: str | Path,
+    nf: int,
+    temp: float,
+    ms: int = 0,
+    msprof: int = 0,
+    max_iter: int = 0,
+    tolerance: float = 0.0,
+) -> None:
+    """Run LMALF (Likelihood Maximization ALF) analysis.
+
+    LMALF is an alternative to WHAM that uses L-BFGS optimization to find
+    optimal bias parameters by maximizing likelihood. Key differences:
+    - Direct optimization instead of iterative histogram reweighting
+    - Profile-based fitting with built-in L2 regularization
+    - May converge faster for some systems
+
+    Args:
+        analysis_dir: Path to analysis directory containing Lambda.dat.
+        nf: Number of simulation files (used for logging, data read from files).
+        temp: Temperature in Kelvin.
+        ms: Multisite coupling flag (0=none, 1=full coupling, 2=c-only).
+        msprof: Multisite profiles flag (0=disabled, 1=enabled).
+        max_iter: Maximum L-BFGS iterations (0 = use default 250).
+        tolerance: Convergence tolerance (0 = use default 1.25e-3).
+
+    Raises:
+        FileNotFoundError: If analysis directory or library not found.
+        RuntimeError: If LMALF analysis fails.
+
+    Note:
+        LMALF expects the following files in the analysis directory:
+        - Lambda.dat: Combined lambda trajectory [frames x nblocks]
+        - ensweight.dat: Ensemble weights [frames] (optional, defaults to 1.0)
+        - ../../prep/nsubs: Number of subsites per site
+        - x_prev.dat, s_prev.dat: Previous parameters (optional, for ms=1)
+
+        LMALF produces:
+        - OUT.dat: Optimized bias parameters in flat format
+
+        The OUT.dat must be post-processed with GetFreeEnergyLM() to
+        generate the b.dat, c.dat, x.dat, s.dat files.
+
+    Example:
+        >>> from cphmd.wham import run_lmalf
+        >>> run_lmalf("./analysis/5", nf=10, temp=298.15)
+        >>> # With custom convergence settings:
+        >>> run_lmalf("./analysis/5", nf=10, temp=298.15, max_iter=500, tolerance=1e-4)
+    """
+    analysis_dir = Path(analysis_dir)
+    if not analysis_dir.exists():
+        raise FileNotFoundError(f"Analysis directory not found: {analysis_dir}")
+
+    # Check for compiled library
+    if not _WHAM_LIB_PATH.exists():
+        raise FileNotFoundError(
+            f"WHAM/LMALF library not found at {_WHAM_LIB_PATH}. "
+            "Please compile: cd cphmd/wham && ./build.sh"
+        )
+
+    # Verify Lambda.dat exists
+    lambda_file = analysis_dir / "Lambda.dat"
+    if not lambda_file.exists():
+        raise FileNotFoundError(
+            f"Lambda.dat not found in {analysis_dir}. "
+            "LMALF requires a combined Lambda.dat file."
+        )
+
+    # Run LMALF in analysis directory context
+    with _chdir_context(analysis_dir):
+        try:
+            logger.info(f"Running LMALF with nf={nf}, temp={temp}, ms={ms}, msprof={msprof}")
+            whamlib = ctypes.CDLL(str(_WHAM_LIB_PATH))
+            pylmalf = whamlib.lmalf
+            pylmalf.argtypes = [
+                ctypes.c_int,     # nf
+                ctypes.c_double,  # temp
+                ctypes.c_int,     # ms
+                ctypes.c_int,     # msprof
+                ctypes.c_int,     # max_iter
+                ctypes.c_double,  # tolerance
+            ]
+            pylmalf.restype = ctypes.c_int
+
+            result = pylmalf(nf, temp, ms, msprof, max_iter, tolerance)
+            if result != 0:
+                raise RuntimeError(f"LMALF returned error code: {result}")
+
+            logger.info("LMALF analysis completed successfully")
+
+        except OSError as e:
+            raise RuntimeError(
+                f"Failed to load WHAM/LMALF library: {e}. "
+                "Ensure CUDA is available and library is compiled correctly."
+            )
+
+
+def check_lmalf_available() -> bool:
+    """Check if LMALF is available in the compiled library.
+
+    Returns:
+        True if LMALF function exists and can be called, False otherwise.
+    """
+    if not _WHAM_LIB_PATH.exists():
+        return False
+
+    try:
+        whamlib = ctypes.CDLL(str(_WHAM_LIB_PATH))
+        _ = whamlib.lmalf
+        return True
+    except (OSError, AttributeError):
+        return False
+
+
+def prepare_lmalf_input(
+    analysis_dir: str | Path,
+    lambda_files: list[str | Path],
+    weight_files: list[str | Path] | None = None,
+) -> None:
+    """Prepare input files for LMALF analysis.
+
+    Concatenates multiple lambda trajectory files into a single Lambda.dat
+    and optionally prepares ensemble weights.
+
+    Args:
+        analysis_dir: Target analysis directory.
+        lambda_files: List of lambda trajectory files to concatenate.
+        weight_files: Optional list of weight files (same length as lambda_files).
+            If not provided, all frames are weighted equally.
+
+    Example:
+        >>> from cphmd.wham import prepare_lmalf_input
+        >>> lambda_files = [f"data/Lambda.{k}.{r}.dat" for k in range(3) for r in range(4)]
+        >>> prepare_lmalf_input("./analysis/5", lambda_files)
+    """
+    analysis_dir = Path(analysis_dir)
+    analysis_dir.mkdir(parents=True, exist_ok=True)
+
+    # Concatenate lambda files
+    all_lambda = []
+    for lf in lambda_files:
+        lf = Path(lf)
+        if lf.exists():
+            data = np.loadtxt(lf)
+            if data.ndim == 1:
+                data = data.reshape(1, -1)
+            all_lambda.append(data)
+
+    if not all_lambda:
+        raise ValueError("No valid lambda files found")
+
+    combined_lambda = np.vstack(all_lambda)
+    np.savetxt(analysis_dir / "Lambda.dat", combined_lambda, fmt="%.8f")
+    logger.info(f"Created Lambda.dat with {combined_lambda.shape[0]} frames, {combined_lambda.shape[1]} blocks")
+
+    # Handle weights
+    if weight_files:
+        all_weights = []
+        for wf in weight_files:
+            wf = Path(wf)
+            if wf.exists():
+                weights = np.loadtxt(wf)
+                if weights.ndim == 0:
+                    weights = np.array([weights])
+                all_weights.extend(weights.flatten())
+
+        if all_weights:
+            np.savetxt(analysis_dir / "ensweight.dat", all_weights, fmt="%.8f")
+            logger.info(f"Created ensweight.dat with {len(all_weights)} weights")
+    else:
+        # Default uniform weights
+        n_frames = combined_lambda.shape[0]
+        np.savetxt(analysis_dir / "ensweight.dat", np.ones(n_frames), fmt="%.8f")
+        logger.info(f"Created ensweight.dat with {n_frames} uniform weights")

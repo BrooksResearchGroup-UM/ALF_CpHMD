@@ -27,11 +27,20 @@ if ! command -v nvcc &> /dev/null; then
     exit 1
 fi
 
-# Compile
+# Compile for multiple GPU architectures:
+# - sm_75: RTX 2080, 2080 Ti, Turing (T4, Quadro RTX)
+# - sm_86: RTX 3090, 3080, Ampere (A5000, A6000)
+# - sm_89: RTX 4090, Ada Lovelace
 cd "$SRC_DIR"
-nvcc -shared -Xcompiler -fPIC -O3 -o "$OUTPUT" wham.cu
+nvcc -shared -Xcompiler -fPIC -O3 \
+    -gencode arch=compute_75,code=sm_75 \
+    -gencode arch=compute_86,code=sm_86 \
+    -gencode arch=compute_89,code=sm_89 \
+    -o "$OUTPUT" wham.cu
 
 echo "Build successful: $OUTPUT"
+echo ""
+echo "The library includes both WHAM and LMALF analysis methods."
 echo ""
 echo "To enable verbose output, edit src/wham.cu and change:"
 echo "  #define VERBOSE 0  ->  #define VERBOSE 1"
