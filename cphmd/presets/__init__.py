@@ -13,29 +13,36 @@ Common settings for cubic presets:
     - RMLA: bond theta impr
     - Cutoffs: cutnb=14.0, ctofnb=12.0, ctonnb=10.0
     - Temperature: 298.15 K
-    - Restraints: SCAT (except noe_h)
-    - Hydrogen restraints: OFF (except noe_h)
 
 Available configurations:
-    Cubic (SCAT, no H restraints):
-    - "pmenn_vswitch" (default): PME NN + vswitch
-    - "pmenn_vfswitch": PME NN + vfswitch
+    PME EX (Ewald eXact):
+    - "pme_ex_vswitch": PME EX + vswitch
+    - "pme_ex_vfswitch": PME EX + vfswitch
+
+    PME NN (Nearest Neighbor):
+    - "pme_nn_vswitch" (default): PME NN + vswitch
+    - "pme_nn_vfswitch": PME NN + vfswitch
+
+    PME ON:
+    - "pme_on_vswitch": PME ON + vswitch
+    - "pme_on_vfswitch": PME ON + vfswitch
+
+    FSHIFT:
     - "fshift_vswitch": FSHIFT + vswitch
     - "fshift_vfswitch": FSHIFT + vfswitch
-    Residues: ASP, GLU, HSP, LYS, TYR
 
-    NOE:
-    - "noe_noh": PME NN + vswitch, no H restraints
-      Residues: ASP, GLU, HSP, LYS, TYR
-    - "noe_h": PME NN + vswitch, with H restraints
-      Residues: ASP, GLU, HSP, LYS, TYR, ARG, CYS, SER
+    FSWITCH:
+    - "fswitch_vswitch": FSWITCH + vswitch
+    - "fswitch_vfswitch": FSWITCH + vfswitch
+
+    Residues: ASP, GLU, HSP, LYS, TYR
 
 Usage:
     >>> from cphmd.presets import list_configs, get_preset_biases
     >>> list_configs()
-    ['fshift_vfswitch', 'fshift_vswitch', 'noe_h', 'pmenn_vfswitch', 'pmenn_vswitch', 'scat_noh']
-    >>> biases = get_preset_biases("ASP")  # uses default (pmenn_vswitch)
-    >>> biases = get_preset_biases("ASP", config="fshift_vswitch")
+    ['fshift_vfswitch', 'fshift_vswitch', 'fswitch_vfswitch', 'fswitch_vswitch', 'pme_ex_vfswitch', 'pme_ex_vswitch', 'pme_nn_vfswitch', 'pme_nn_vswitch', 'pme_on_vfswitch', 'pme_on_vswitch']
+    >>> biases = get_preset_biases("ASP")  # uses default (pme_nn_vswitch)
+    >>> biases = get_preset_biases("ASP", config="pme_on_vswitch")
 """
 
 from .biases import (
