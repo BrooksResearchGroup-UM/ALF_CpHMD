@@ -75,6 +75,8 @@ def run_wham(
     nts0: int = 1,
     nts1: int = 1,
     use_gshift: bool = False,
+    nsubs: np.ndarray | list[int] | None = None,
+    g_imp_path: str | Path | None = None,
 ) -> None:
     """Run WHAM analysis using bundled GPU-accelerated library.
 
@@ -93,6 +95,8 @@ def run_wham(
         nts1: Second terminal site index (for intersite profiles).
         use_gshift: If True, apply G_imp shifts from G_imp_shifts/ directory.
             If False (default), use zero shifts (legacy ALF behavior).
+        nsubs: Array of subsites per site. If None, reads from prep/nsubs file.
+        g_imp_path: Path to G_imp directory. If None, uses "G_imp" in analysis_dir.
 
     Raises:
         FileNotFoundError: If analysis directory or WHAM library not found.
@@ -102,8 +106,7 @@ def run_wham(
         WHAM expects the following files in the analysis directory:
         - Lambda/ directory with lambda trajectory files
         - Energy/ directory with cross-simulation energies
-        - ../prep/nsubs file with system info
-        - G_imp/ directory with entropy reference profiles
+        - G_imp/ directory with entropy reference profiles (or custom g_imp_path)
         - G_imp_shifts/ directory with shift tables (required if use_gshift=True)
 
         WHAM produces:
@@ -114,8 +117,8 @@ def run_wham(
     Example:
         >>> from cphmd.wham import run_wham
         >>> run_wham("./analysis/5", nf=10, temp=298.15)
-        >>> # With G_imp shifts:
-        >>> run_wham("./analysis/5", nf=10, temp=298.15, use_gshift=True)
+        >>> # With explicit nsubs and G_imp path:
+        >>> run_wham("./analysis/5", nf=10, temp=298.15, nsubs=[2, 2], g_imp_path="/path/to/G_imp")
     """
     analysis_dir = Path(analysis_dir)
     if not analysis_dir.exists():
@@ -133,22 +136,48 @@ def run_wham(
     multisite_dir = analysis_dir / "multisite"
     multisite_dir.mkdir(exist_ok=True)
 
+    # Prepare nsubs array for ctypes
+    if nsubs is not None:
+        nsubs_arr = np.asarray(nsubs, dtype=np.int32)
+        nsubs_ptr = nsubs_arr.ctypes.data_as(ctypes.POINTER(ctypes.c_int))
+        nsites = len(nsubs_arr)
+    else:
+        nsubs_ptr = None
+        nsites = 0
+
+    # Prepare g_imp_path for ctypes
+    if g_imp_path is not None:
+        g_imp_path_bytes = str(g_imp_path).encode('utf-8')
+    else:
+        g_imp_path_bytes = None
+
     # Run WHAM in analysis directory context
     # WHAM expects files in current directory, so we must chdir temporarily
     with _chdir_context(analysis_dir):
         try:
             logger.info(f"Running WHAM with nf={nf}, temp={temp}, use_gshift={use_gshift}")
+            if nsubs is not None:
+                logger.info(f"  nsubs={list(nsubs_arr)}, g_imp_path={g_imp_path}")
             whamlib = ctypes.CDLL(str(_WHAM_LIB_PATH))
             pywham = whamlib.wham
-            pywham.argtypes = [ctypes.c_int, ctypes.c_double, ctypes.c_int, ctypes.c_int, ctypes.c_int]
+            pywham.argtypes = [
+                ctypes.c_int,                      # nf
+                ctypes.c_double,                   # temp
+                ctypes.c_int,                      # nts0
+                ctypes.c_int,                      # nts1
+                ctypes.c_int,                      # use_gshift
+                ctypes.POINTER(ctypes.c_int),     # nsubs
+                ctypes.c_int,                      # nsites
+                ctypes.c_char_p,                   # g_imp_path
+            ]
             pywham.restype = ctypes.c_int
 
-            result = pywham(nf, temp, nts0, nts1, int(use_gshift))
+            result = pywham(nf, temp, nts0, nts1, int(use_gshift), nsubs_ptr, nsites, g_imp_path_bytes)
             if result != 0:
                 raise RuntimeError(f"WHAM returned error code: {result}")
-                
+
             logger.info("WHAM analysis completed successfully")
-            
+
         except OSError as e:
             raise RuntimeError(
                 f"Failed to load WHAM library: {e}. "
@@ -299,9 +328,9 @@ def run_wham_with_g_imp(
     alf_info = ensure_alf_info(alf_info)
 
     # Prepare G_imp files
-    prepare_g_imp_for_wham(analysis_dir, alf_info, force_recompute_g_imp)
+    g_imp_dir = prepare_g_imp_for_wham(analysis_dir, alf_info, force_recompute_g_imp)
 
-    # Run WHAM
+    # Run WHAM with nsubs and g_imp_path
     run_wham(
         analysis_dir=analysis_dir,
         nf=nf,
@@ -309,6 +338,8 @@ def run_wham_with_g_imp(
         nts0=nts0,
         nts1=nts1,
         use_gshift=use_gshift,
+        nsubs=alf_info.nsubs,
+        g_imp_path=g_imp_dir,
     )
 
 
@@ -320,6 +351,8 @@ def run_lmalf(
     msprof: int = 0,
     max_iter: int = 0,
     tolerance: float = 0.0,
+    nsubs: np.ndarray | list[int] | None = None,
+    g_imp_path: str | Path | None = None,
 ) -> None:
     """Run LMALF (Likelihood Maximization ALF) analysis.
 
@@ -337,6 +370,8 @@ def run_lmalf(
         msprof: Multisite profiles flag (0=disabled, 1=enabled).
         max_iter: Maximum L-BFGS iterations (0 = use default 250).
         tolerance: Convergence tolerance (0 = use default 1.25e-3).
+        nsubs: Array of subsites per site. If None, reads from prep/nsubs file.
+        g_imp_path: Path to G_imp directory. If None, uses "G_imp" in analysis_dir.
 
     Raises:
         FileNotFoundError: If analysis directory or library not found.
@@ -346,7 +381,6 @@ def run_lmalf(
         LMALF expects the following files in the analysis directory:
         - Lambda.dat: Combined lambda trajectory [frames x nblocks]
         - ensweight.dat: Ensemble weights [frames] (optional, defaults to 1.0)
-        - ../../prep/nsubs: Number of subsites per site
         - x_prev.dat, s_prev.dat: Previous parameters (optional, for ms=1)
 
         LMALF produces:
@@ -358,8 +392,8 @@ def run_lmalf(
     Example:
         >>> from cphmd.wham import run_lmalf
         >>> run_lmalf("./analysis/5", nf=10, temp=298.15)
-        >>> # With custom convergence settings:
-        >>> run_lmalf("./analysis/5", nf=10, temp=298.15, max_iter=500, tolerance=1e-4)
+        >>> # With explicit nsubs:
+        >>> run_lmalf("./analysis/5", nf=10, temp=298.15, nsubs=[2, 2], g_imp_path="/path/to/G_imp")
     """
     analysis_dir = Path(analysis_dir)
     if not analysis_dir.exists():
@@ -380,23 +414,43 @@ def run_lmalf(
             "LMALF requires a combined Lambda.dat file."
         )
 
+    # Prepare nsubs array for ctypes
+    if nsubs is not None:
+        nsubs_arr = np.asarray(nsubs, dtype=np.int32)
+        nsubs_ptr = nsubs_arr.ctypes.data_as(ctypes.POINTER(ctypes.c_int))
+        nsites = len(nsubs_arr)
+    else:
+        nsubs_ptr = None
+        nsites = 0
+
+    # Prepare g_imp_path for ctypes
+    if g_imp_path is not None:
+        g_imp_path_bytes = str(g_imp_path).encode('utf-8')
+    else:
+        g_imp_path_bytes = None
+
     # Run LMALF in analysis directory context
     with _chdir_context(analysis_dir):
         try:
             logger.info(f"Running LMALF with nf={nf}, temp={temp}, ms={ms}, msprof={msprof}")
+            if nsubs is not None:
+                logger.info(f"  nsubs={list(nsubs_arr)}, g_imp_path={g_imp_path}")
             whamlib = ctypes.CDLL(str(_WHAM_LIB_PATH))
             pylmalf = whamlib.lmalf
             pylmalf.argtypes = [
-                ctypes.c_int,     # nf
-                ctypes.c_double,  # temp
-                ctypes.c_int,     # ms
-                ctypes.c_int,     # msprof
-                ctypes.c_int,     # max_iter
-                ctypes.c_double,  # tolerance
+                ctypes.c_int,                      # nf
+                ctypes.c_double,                   # temp
+                ctypes.c_int,                      # ms
+                ctypes.c_int,                      # msprof
+                ctypes.c_int,                      # max_iter
+                ctypes.c_double,                   # tolerance
+                ctypes.POINTER(ctypes.c_int),     # nsubs
+                ctypes.c_int,                      # nsites
+                ctypes.c_char_p,                   # g_imp_path
             ]
             pylmalf.restype = ctypes.c_int
 
-            result = pylmalf(nf, temp, ms, msprof, max_iter, tolerance)
+            result = pylmalf(nf, temp, ms, msprof, max_iter, tolerance, nsubs_ptr, nsites, g_imp_path_bytes)
             if result != 0:
                 raise RuntimeError(f"LMALF returned error code: {result}")
 
