@@ -35,7 +35,7 @@ class PhaseTransitionConfig:
     spread_1to2: float = 0.3
 
     # Spread tolerance for phase 2→3 transition
-    spread_2to3: float = 0.1
+    spread_2to3: float = 0.2
 
     # Minimum sample count per state
     min_hits: int = 1000
@@ -158,19 +158,48 @@ class StopCriteriaResult:
     reasons: list[str] = field(default_factory=list)
 
 
-def good_overlap(fracs: np.ndarray, spread_tol: float) -> bool:
+def _per_site_ranges(nsubs: list[int]) -> list[tuple[int, int]]:
+    """Compute column index ranges for each site.
+
+    Args:
+        nsubs: Number of substates per site, e.g. [2, 3]
+
+    Returns:
+        List of (start, end) tuples for slicing columns per site
+    """
+    ranges = []
+    offset = 0
+    for ns in nsubs:
+        ranges.append((offset, offset + ns))
+        offset += ns
+    return ranges
+
+
+def good_overlap(fracs: np.ndarray, spread_tol: float, nsubs: list[int] | None = None) -> bool:
     """Check if lambda fractions have good overlap across states.
+
+    When nsubs is provided, checks spread **per site** and requires ALL
+    sites to pass. This prevents multi-site systems from producing
+    meaningless global spread values.
 
     Args:
         fracs: Array of fraction of samples above threshold per state
         spread_tol: Maximum allowed spread (max - min)
+        nsubs: Number of substates per site (e.g. [2, 3]). If None,
+               treats all states as one site (legacy behavior).
 
     Returns:
-        True if spread is within tolerance
+        True if spread is within tolerance (for every site when nsubs given)
     """
     if fracs.size == 0:
         return False
-    return float(np.max(fracs) - np.min(fracs)) < spread_tol
+    if nsubs is None:
+        return float(np.max(fracs) - np.min(fracs)) < spread_tol
+    for start, end in _per_site_ranges(nsubs):
+        site_fracs = fracs[start:end]
+        if float(np.max(site_fracs) - np.min(site_fracs)) >= spread_tol:
+            return False
+    return True
 
 
 def enough_samples(mask: np.ndarray, min_hits: int = 200) -> bool:
@@ -374,16 +403,23 @@ def compute_replica_populations(
 def calculate_populations(
     lambda_data: np.ndarray,
     thresholds: tuple[float, float] = (0.8, 0.985),
+    nsubs: list[int] | None = None,
 ) -> dict[str, np.ndarray]:
     """Calculate state populations at different lambda thresholds.
 
     For each threshold, computes two types of populations:
     1. Raw: fraction of ALL samples where lambda > threshold per state
-    2. Normalized: distribution among physical-state samples only (sums to 1)
+    2. Normalized: distribution among physical-state samples only
+
+    When nsubs is provided, normalization is done **per site** so that each
+    site's substates sum to 1.0. Without nsubs, global normalization is used
+    (all states sum to 1.0).
 
     Args:
         lambda_data: Combined lambda data array (samples x states)
         thresholds: Tuple of (relaxed, strict) lambda thresholds
+        nsubs: Number of substates per site (e.g. [2, 3]). If None,
+               normalizes globally (legacy behavior).
 
     Returns:
         Dictionary with population arrays and statistics
@@ -402,33 +438,47 @@ def calculate_populations(
     hits_relaxed = mask_relaxed.sum(axis=0)
     hits_strict = mask_strict.sum(axis=0)
 
-    # Raw populations (fraction of ALL samples per state)
+    # Raw populations (fraction of ALL samples per state) — site-independent
     pop_relaxed_raw = mask_relaxed.mean(axis=0)
     pop_strict_raw = mask_strict.mean(axis=0)
 
-    # Normalized populations (fraction among physical samples only)
-    total_hits_relaxed = hits_relaxed.sum()
-    total_hits_strict = hits_strict.sum()
+    # Normalized populations — per-site when nsubs provided
+    total_hits_relaxed = int(hits_relaxed.sum())
+    total_hits_strict = int(hits_strict.sum())
 
-    if total_hits_relaxed > 0:
-        pop_relaxed_norm = hits_relaxed / total_hits_relaxed
-    else:
+    if nsubs is not None:
+        # Per-site normalization: each site's substates sum to 1.0
         pop_relaxed_norm = np.zeros(n_states)
-
-    if total_hits_strict > 0:
-        pop_strict_norm = hits_strict / total_hits_strict
-    else:
         pop_strict_norm = np.zeros(n_states)
+        for start, end in _per_site_ranges(nsubs):
+            site_total_r = hits_relaxed[start:end].sum()
+            site_total_s = hits_strict[start:end].sum()
+            if site_total_r > 0:
+                pop_relaxed_norm[start:end] = hits_relaxed[start:end] / site_total_r
+            if site_total_s > 0:
+                pop_strict_norm[start:end] = hits_strict[start:end] / site_total_s
+    else:
+        # Global normalization (legacy)
+        if total_hits_relaxed > 0:
+            pop_relaxed_norm = hits_relaxed / total_hits_relaxed
+        else:
+            pop_relaxed_norm = np.zeros(n_states)
+
+        if total_hits_strict > 0:
+            pop_strict_norm = hits_strict / total_hits_strict
+        else:
+            pop_strict_norm = np.zeros(n_states)
 
     return {
         "n_samples": n_samples,
         "n_states": n_states,
+        "nsubs": nsubs,
         "threshold_relaxed": relaxed_thresh,
         "threshold_strict": strict_thresh,
         # Raw populations (fraction of all samples)
         "pop_relaxed_raw": pop_relaxed_raw,
         "pop_strict_raw": pop_strict_raw,
-        # Normalized populations (fraction of physical samples)
+        # Normalized populations (per-site when nsubs given)
         "pop_relaxed_norm": pop_relaxed_norm,
         "pop_strict_norm": pop_strict_norm,
         # Hit counts
@@ -460,15 +510,21 @@ def check_stop_criteria(
     lambda_data: np.ndarray,
     config: StopCriteriaConfig | None = None,
     bias_history: np.ndarray | None = None,
+    nsubs: list[int] | None = None,
 ) -> StopCriteriaResult:
     """Check if Phase 3 → STOP criteria are met.
 
     Uses step5_bias_search-style scoring based on population fractions
     at the strict lambda threshold (0.985).
 
+    When nsubs is provided, frac_diff is computed **per site** and the
+    worst (largest) site frac_diff is used. Fractions are also normalized
+    per-site for the score calculation. All sites must be balanced for
+    the overall check to pass.
+
     Stop criteria:
         1. Total samples >= min_total_samples (adjusted for HMR)
-        2. Fraction difference < max_frac_diff (e.g., 2%)
+        2. Fraction difference < max_frac_diff (e.g., 2%) — per site
         3. Bias parameters stable (rolling std < threshold)
 
     Args:
@@ -476,6 +532,8 @@ def check_stop_criteria(
         config: Stop criteria configuration (uses defaults if None)
         bias_history: Optional array of bias values over iterations for stability check
                       Shape: (n_iterations, n_bias_params) or 1D for single param
+        nsubs: Number of substates per site (e.g. [2, 3]). If None,
+               uses global metrics (legacy behavior).
 
     Returns:
         StopCriteriaResult with detailed metrics and decision
@@ -494,11 +552,27 @@ def check_stop_criteria(
 
     # Compute population fractions at strict threshold (step5 style)
     mask_strict = lambda_data > config.threshold_strict
-    fractions = mask_strict.sum(axis=0) / n_samples
+    raw_fractions = mask_strict.sum(axis=0) / n_samples
+
+    if nsubs is not None:
+        # Per-site normalization and frac_diff
+        fractions = np.zeros(n_states)
+        site_diffs = []
+        for start, end in _per_site_ranges(nsubs):
+            site_raw = raw_fractions[start:end]
+            site_total = site_raw.sum()
+            if site_total > 0:
+                fractions[start:end] = site_raw / site_total
+            else:
+                fractions[start:end] = 0.0
+            site_diffs.append(float(np.max(site_raw) - np.min(site_raw)))
+        frac_diff = max(site_diffs)
+    else:
+        fractions = raw_fractions
+        frac_diff = float(np.max(fractions) - np.min(fractions))
 
     # Step5-style metrics
     avg_frac = float(np.mean(fractions))
-    frac_diff = float(np.max(fractions) - np.min(fractions))
     frac_diff_pct = frac_diff * 100
     score = avg_frac - config.alpha * frac_diff
 
@@ -567,14 +641,21 @@ def write_populations_file(
     total_r = pop_data["total_hits_relaxed"]
     total_s = pop_data["total_hits_strict"]
 
+    nsubs = pop_data.get("nsubs")
+
     with open(filepath, "w") as f:
         f.write(f"# Lambda Population Analysis\n")
         f.write(f"# Total samples: {n_samples}\n")
+        if nsubs is not None:
+            f.write(f"# Sites: {len(nsubs)}, nsubs={nsubs}\n")
         f.write(f"# Relaxed threshold: {thresh_r} (total physical: {total_r})\n")
         f.write(f"# Strict threshold: {thresh_s} (total physical: {total_s})\n")
         f.write(f"#\n")
         f.write(f"# Raw = fraction of ALL samples in physical state\n")
-        f.write(f"# Norm = fraction among physical samples only (sums to 1)\n")
+        if nsubs is not None:
+            f.write(f"# Norm = fraction among physical samples per site (each site sums to 1)\n")
+        else:
+            f.write(f"# Norm = fraction among physical samples only (sums to 1)\n")
         f.write(f"#\n")
 
         # Header
@@ -603,14 +684,28 @@ def write_populations_file(
                 f"max={pop_data['pop_strict_raw'].max():.4f}, "
                 f"spread={pop_data['pop_strict_raw'].max() - pop_data['pop_strict_raw'].min():.4f}\n")
         f.write(f"#\n")
-        f.write(f"# Norm summary (>{thresh_r}): "
-                f"min={pop_data['pop_relaxed_norm'].min():.4f}, "
-                f"max={pop_data['pop_relaxed_norm'].max():.4f}, "
-                f"sum={pop_data['pop_relaxed_norm'].sum():.4f}\n")
-        f.write(f"# Norm summary (>{thresh_s}): "
-                f"min={pop_data['pop_strict_norm'].min():.4f}, "
-                f"max={pop_data['pop_strict_norm'].max():.4f}, "
-                f"sum={pop_data['pop_strict_norm'].sum():.4f}\n")
+        if nsubs is not None:
+            # Per-site norm summaries
+            for site_idx, (start, end) in enumerate(_per_site_ranges(nsubs)):
+                site_r = pop_data['pop_relaxed_norm'][start:end]
+                site_s = pop_data['pop_strict_norm'][start:end]
+                f.write(f"# Norm site {site_idx} (>{thresh_r}): "
+                        f"min={site_r.min():.4f}, "
+                        f"max={site_r.max():.4f}, "
+                        f"sum={site_r.sum():.4f}\n")
+                f.write(f"# Norm site {site_idx} (>{thresh_s}): "
+                        f"min={site_s.min():.4f}, "
+                        f"max={site_s.max():.4f}, "
+                        f"sum={site_s.sum():.4f}\n")
+        else:
+            f.write(f"# Norm summary (>{thresh_r}): "
+                    f"min={pop_data['pop_relaxed_norm'].min():.4f}, "
+                    f"max={pop_data['pop_relaxed_norm'].max():.4f}, "
+                    f"sum={pop_data['pop_relaxed_norm'].sum():.4f}\n")
+            f.write(f"# Norm summary (>{thresh_s}): "
+                    f"min={pop_data['pop_strict_norm'].min():.4f}, "
+                    f"max={pop_data['pop_strict_norm'].max():.4f}, "
+                    f"sum={pop_data['pop_strict_norm'].sum():.4f}\n")
 
 
 def check_phase_transition(
@@ -624,11 +719,12 @@ def check_phase_transition(
     effective_pH: float | None = None,
     delta_pKa: float | None = None,
     nreps: int | None = None,
+    nsubs: list[int] | None = None,
 ) -> tuple[int, str]:
     """Check if phase transition criteria are met.
 
     For phase transitions, three criteria must be satisfied:
-    1. Good overlap (spread within tolerance)
+    1. Good overlap (spread within tolerance) — checked per site
     2. Enough samples per state
     3. pKa convergence (if CpHMD parameters provided)
 
@@ -641,6 +737,8 @@ def check_phase_transition(
         effective_pH: Base pH for central replica (for pKa check)
         delta_pKa: pH increment between replicas (for pKa check)
         nreps: Number of replicas (for pKa check)
+        nsubs: Number of substates per site (e.g. [2, 3]). If None,
+               uses global spread check (legacy behavior).
 
     Returns:
         Tuple of (new_phase, reason_string)
@@ -668,7 +766,7 @@ def check_phase_transition(
 
     # Phase 1 → 2 transition
     if current_phase == 1:
-        overlap_ok = good_overlap(col_fracs, config.spread_1to2)
+        overlap_ok = good_overlap(col_fracs, config.spread_1to2, nsubs=nsubs)
         samples_ok = enough_samples(mask, config.min_hits)
 
         # Check pKa convergence if CpHMD
@@ -715,7 +813,7 @@ def check_phase_transition(
 
     # Phase 2 → 3 transition
     elif current_phase == 2:
-        overlap_ok = good_overlap(col_fracs, config.spread_2to3)
+        overlap_ok = good_overlap(col_fracs, config.spread_2to3, nsubs=nsubs)
         samples_ok = enough_samples(mask, config.min_hits)
 
         # Check pKa convergence if CpHMD (stricter tolerance)
@@ -766,6 +864,7 @@ def check_phase3_stop(
     lambda_data: np.ndarray,
     stop_config: StopCriteriaConfig | None = None,
     bias_history: np.ndarray | None = None,
+    nsubs: list[int] | None = None,
 ) -> tuple[bool, str, StopCriteriaResult]:
     """Check if Phase 3 simulation should stop.
 
@@ -777,6 +876,8 @@ def check_phase3_stop(
         stop_config: Stop criteria configuration (uses defaults if None)
         bias_history: Optional array of bias values for stability check
                       Shape: (n_iterations, n_bias_params)
+        nsubs: Number of substates per site (e.g. [2, 3]). If None,
+               uses global metrics (legacy behavior).
 
     Returns:
         Tuple of (should_stop, reason_string, full_result)
@@ -787,7 +888,7 @@ def check_phase3_stop(
         >>> if should_stop:
         ...     print(f"Converged: diff={result.frac_diff_pct:.2f}%")
     """
-    result = check_stop_criteria(lambda_data, stop_config, bias_history)
+    result = check_stop_criteria(lambda_data, stop_config, bias_history, nsubs=nsubs)
 
     if result.should_stop:
         reason = (
