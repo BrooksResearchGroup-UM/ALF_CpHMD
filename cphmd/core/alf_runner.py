@@ -78,7 +78,7 @@ class ALFConfig:
     toppar_dir: str | Path = "toppar"
     temperature: float = 298.15
     pH: float | None = None
-    hmr: bool = False
+    hmr: bool = True
     start: int = 1
     end: int = 20
     phase: PhaseType = 1
@@ -467,6 +467,48 @@ class ALFSimulation:
                 print(f"  {self.state.stop_reason}")
                 break
 
+        # Run final analysis after simulation completes (convergence or end of runs)
+        final_run = run_idx if self.state.converged else self.config.end
+        self._run_final_analysis(final_run)
+
+    def _run_final_analysis(self, final_run: int) -> None:
+        """Run final analysis after simulation completes or converges."""
+        print(f"\n{'='*60}")
+        print(f"Running final analysis (up to run {final_run})")
+        print(f"{'='*60}")
+
+        plots_dir = Path(self.config.input_folder) / "plots"
+        plots_dir.mkdir(exist_ok=True)
+
+        # Energy Profile RMSD analysis
+        try:
+            from cphmd.analysis import EnergyProfileConfig, analyze_energy_profiles
+            energy_config = EnergyProfileConfig(
+                input_folder=self.config.input_folder,
+                output_dir=plots_dir,
+            )
+            result = analyze_energy_profiles(energy_config)
+            if result.rmsd_plot:
+                print(f"  Energy RMSD plot: {result.rmsd_plot}")
+            if result.profile_plot:
+                print(f"  Energy profile plot: {result.profile_plot}")
+        except Exception as e:
+            print(f"  Energy profile analysis failed: {e}")
+
+        # Population convergence plots
+        try:
+            from cphmd.analysis import generate_population_plots
+            generate_population_plots(
+                input_folder=self.config.input_folder,
+                max_run=final_run,
+                output_dir=plots_dir,
+            )
+            print(f"  Population convergence plots saved to {plots_dir}")
+        except Exception as e:
+            print(f"  Population convergence analysis failed: {e}")
+
+        print(f"{'='*60}\n")
+
     def _find_last_run(self) -> int:
         """Find the last completed run to resume from.
 
@@ -638,7 +680,6 @@ class ALFSimulation:
         if self.state.rank == 0:
             run_dir = self.config.input_folder / f"run{run_idx}"
             run_dir.mkdir(exist_ok=True)
-            (run_dir / "dcd").mkdir(exist_ok=True)
             (run_dir / "res").mkdir(exist_ok=True)
         self._comm.Barrier()
 
@@ -679,8 +720,19 @@ class ALFSimulation:
         if is_first_run:
             # Read PSF file (suppress non-integer charge warning for MSLD systems)
             settings.set_bomb_level(-1)
-            psf_file = prep_dir / ("system_hmr.psf" if self.config.hmr else "system.psf")
-            read.psf_card(str(psf_file))
+            if self.config.hmr:
+                psf_file = prep_dir / "system_hmr.psf"
+                if not psf_file.exists():
+                    # Generate HMR PSF from regular PSF
+                    psf_file = prep_dir / "system.psf"
+                    read.psf_card(str(psf_file))
+                    import pycharmm.psf as pycharmm_psf
+                    pycharmm_psf.hmr(newpsf=str(prep_dir / "system_hmr.psf"))
+                else:
+                    read.psf_card(str(psf_file))
+            else:
+                psf_file = prep_dir / "system.psf"
+                read.psf_card(str(psf_file))
             settings.set_bomb_level(0)
 
             # Define selections for titratable groups
@@ -923,19 +975,19 @@ class ALFSimulation:
 
         # Dynamics parameters vary by phase
         if self.state.phase == 1:
-            nsteps_eq = 10000    # 20 ps
+            nsteps_eq = 0        # No equilibration in phase 1
             nsteps_prod = 40000  # 80 ps
-            nsavc = 1000         # Save coords every 2 ps
+            nsavc = 0            # No DCD saving by default
             nsavl = 1            # Save lambda every 2 fs
         elif self.state.phase == 2:
-            nsteps_eq = 50000    # 100 ps
+            nsteps_eq = 10000    # 20 ps equilibration
             nsteps_prod = 450000 # 900 ps
-            nsavc = 10000        # Save coords every 20 ps
+            nsavc = 0            # No DCD saving by default
             nsavl = 1            # Save lambda every 2 fs
         else:  # Phase 3
-            nsteps_eq = 0        # No equilibration
+            nsteps_eq = 10000    # 20 ps equilibration
             nsteps_prod = 500000 # 1 ns
-            nsavc = 10000        # Save coords every 20 ps
+            nsavc = 0            # No DCD saving by default
             nsavl = 1            # Save lambda every 2 fs
 
         # HMR allows 4fs timestep
@@ -992,12 +1044,12 @@ class ALFSimulation:
             "echeck": -1,  # Disable energy check
             "iunldm": lmd_unit,
             "iunwri": rst_unit,
-            "iuncrd": dcd_unit,
+            "iuncrd": dcd_unit if nsavc > 0 else -1,  # -1 = don't write DCD
             "nsavc": nsavc,
             "nsavl": nsavl,
-            "nprint": nsavc,
-            "iprfrq": nsavc,
-            "isvfrq": nsavc,
+            "nprint": 10000,
+            "iprfrq": 10000,
+            "isvfrq": 0,  # Will be set to nstep before each run (save RST only at end)
         }
 
         # NPT ensemble settings
@@ -1013,26 +1065,32 @@ class ALFSimulation:
 
         name = self.config.input_folder.name
         run_dir = self.config.input_folder / f"run{run_idx}"
-        dcd_dir = run_dir / "dcd"
         res_dir = run_dir / "res"
+        dcd_dir = run_dir / "dcd"
+        if nsavc > 0:
+            dcd_dir.mkdir(exist_ok=True)
 
         # === Equilibration Run ===
         if nsteps_eq > 0:
-            dcd_fn = str(dcd_dir / f"{name}_eq.{k}.{replica_idx}.dcd")
             rst_fn = str(res_dir / f"{name}_eq.{k}.{replica_idx}.rst")
             lmd_fn = str(res_dir / f"{name}_eq.{k}.{replica_idx}.lmd")
 
-            dcd = pycharmm.CharmmFile(file_name=dcd_fn, file_unit=dcd_unit,
-                                      read_only=False, formatted=False)
+            # Only open DCD file if nsavc > 0
+            dcd = None
+            if nsavc > 0:
+                dcd_fn = str(dcd_dir / f"{name}_eq.{k}.{replica_idx}.dcd")
+                dcd = pycharmm.CharmmFile(file_name=dcd_fn, file_unit=dcd_unit,
+                                          read_only=False, formatted=False)
             rst = pycharmm.CharmmFile(file_name=rst_fn, file_unit=rst_unit,
                                       read_only=False, formatted=True)
             lmd = pycharmm.CharmmFile(file_name=lmd_fn, file_unit=lmd_unit,
                                       read_only=False, formatted=False)
 
-            dyn_param.update({"nstep": nsteps_eq})
+            dyn_param.update({"nstep": nsteps_eq, "isvfrq": nsteps_eq})
             pycharmm.DynamicsScript(**dyn_param).run()
 
-            dcd.close()
+            if dcd is not None:
+                dcd.close()
             rst.close()
             lmd.close()
 
@@ -1042,7 +1100,6 @@ class ALFSimulation:
         if nsteps_prod > 0:
             sim_type = "flat" if self.state.phase in (1, 2) else "prod"
 
-            dcd_fn = str(dcd_dir / f"{name}_{sim_type}.{k}.{replica_idx}.dcd")
             rst_fn = str(res_dir / f"{name}_{sim_type}.{k}.{replica_idx}.rst")
             lmd_fn = str(res_dir / f"{name}_{sim_type}.{k}.{replica_idx}.lmd")
 
@@ -1079,17 +1136,22 @@ class ALFSimulation:
                 rpr = pycharmm.CharmmFile(file_name=rpr_fn, file_unit=rpr_unit,
                                           read_only=True, formatted=True)
 
-            dcd = pycharmm.CharmmFile(file_name=dcd_fn, file_unit=dcd_unit,
-                                      read_only=False, formatted=False)
+            # Only open DCD file if nsavc > 0
+            dcd = None
+            if nsavc > 0:
+                dcd_fn = str(dcd_dir / f"{name}_{sim_type}.{k}.{replica_idx}.dcd")
+                dcd = pycharmm.CharmmFile(file_name=dcd_fn, file_unit=dcd_unit,
+                                          read_only=False, formatted=False)
             rst = pycharmm.CharmmFile(file_name=rst_fn, file_unit=rst_unit,
                                       read_only=False, formatted=True)
             lmd = pycharmm.CharmmFile(file_name=lmd_fn, file_unit=lmd_unit,
                                       read_only=False, formatted=False)
 
-            dyn_param.update({"nstep": nsteps_prod})
+            dyn_param.update({"nstep": nsteps_prod, "isvfrq": nsteps_prod})
             pycharmm.DynamicsScript(**dyn_param).run()
 
-            dcd.close()
+            if dcd is not None:
+                dcd.close()
             rst.close()
             lmd.close()
             if rpr is not None:
@@ -1246,6 +1308,9 @@ class ALFSimulation:
             from cphmd.wham import run_wham
             from alf.GetFreeEnergy5 import GetFreeEnergy5
 
+            # Get nsubs from alf_info
+            nsubs = self.state.alf_info["nsubs"]
+
             # Bundled WHAM is called from analysis directory context
             run_wham(
                 analysis_dir=Path.cwd(),
@@ -1254,6 +1319,8 @@ class ALFSimulation:
                 nts0=ms,
                 nts1=msprof,
                 use_gshift=False,  # Legacy behavior by default
+                nsubs=nsubs,
+                g_imp_path="G_imp",  # Relative to analysis directory
             )
             # Use ALF's GetFreeEnergy5 to convert WHAM output to b/c/x/s
             GetFreeEnergy5(
@@ -1310,6 +1377,9 @@ class ALFSimulation:
             weight_files=None,  # Use uniform weights
         )
 
+        # Get nsubs from alf_info
+        nsubs = self.state.alf_info["nsubs"]
+
         # Run LMALF optimization
         print("[LMALF] Running LMALF optimization...")
         run_lmalf(
@@ -1320,6 +1390,8 @@ class ALFSimulation:
             msprof=msprof,
             max_iter=self.config.lmalf_max_iter,
             tolerance=self.config.lmalf_tolerance,
+            nsubs=nsubs,
+            g_imp_path="G_imp",  # Relative to analysis directory
         )
         print("[LMALF] LMALF optimization finished")
 
@@ -1559,7 +1631,9 @@ class ALFSimulation:
 
             # Load lambda data for phase checking and population stats
             data_dir = Path("data")
+            print(f"[DEBUG] Loading lambda data from {Path.cwd() / data_dir}")
             lambda_data, _ = load_lambda_data(data_dir)
+            print(f"[DEBUG] lambda_data: {lambda_data.shape if lambda_data is not None else None}")
 
             if lambda_data is not None:
                 # Write population statistics at two thresholds
@@ -1573,6 +1647,14 @@ class ALFSimulation:
                         pop_str = ", ".join(f"{p:.1%}" for p in pop_strict)
                         frac_diff = (max(pop_strict) - min(pop_strict)) * 100
                         print(f"Populations (λ>0.985): [{pop_str}] diff={frac_diff:.1f}%")
+
+                # Generate population convergence plots
+                from cphmd.analysis.population_convergence import generate_population_plots
+                generate_population_plots(
+                    input_folder=Path(".."),
+                    max_run=run_idx,
+                    output_dir=Path(home_path) / "plots",
+                )
 
             # Check for automatic phase transition
             if self.config.auto_phase_switch and lambda_data is not None:
@@ -1610,8 +1692,8 @@ class ALFSimulation:
                 else:
                     print(f"Phase check: {reason}")
 
-                # Save current phase to file
-                np.savetxt("phase.dat", np.array([self.state.phase]), fmt="%d")
+            # Always save current phase to file (for resumption)
+            np.savetxt("phase.dat", np.array([self.state.phase]), fmt="%d")
 
             # Check stop criteria if in Phase 3 and auto_stop is enabled
             if self.config.auto_stop and self.state.phase == 3 and lambda_data is not None:
