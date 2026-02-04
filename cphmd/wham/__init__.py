@@ -68,6 +68,44 @@ def _chdir_context(path: Path) -> Generator[None, None, None]:
         os.chdir(original_dir)
 
 
+@contextmanager
+def _redirect_c_output(log_path: Path | None) -> Generator[None, None, None]:
+    """Redirect C-level stdout and stderr to a file.
+
+    Python's contextlib.redirect_stdout only affects sys.stdout.
+    C libraries using fprintf(stdout, ...) write to OS file descriptor 1
+    directly, so we must redirect at the fd level with os.dup2().
+    """
+    if log_path is None:
+        yield
+        return
+
+    import sys
+
+    # Flush Python buffers so nothing pending goes to the wrong fd
+    sys.stdout.flush()
+    sys.stderr.flush()
+
+    # Save original file descriptors
+    saved_stdout_fd = os.dup(1)
+    saved_stderr_fd = os.dup(2)
+
+    try:
+        log_f = open(log_path, "a")
+        os.dup2(log_f.fileno(), 1)  # redirect fd 1 (C stdout)
+        os.dup2(log_f.fileno(), 2)  # redirect fd 2 (C stderr)
+        log_f.close()               # fd is now duplicated, safe to close
+        yield
+    finally:
+        # Flush before restoring
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os.dup2(saved_stdout_fd, 1)
+        os.dup2(saved_stderr_fd, 2)
+        os.close(saved_stdout_fd)
+        os.close(saved_stderr_fd)
+
+
 def run_wham(
     analysis_dir: str | Path,
     nf: int,
@@ -77,6 +115,7 @@ def run_wham(
     use_gshift: bool = False,
     nsubs: np.ndarray | list[int] | None = None,
     g_imp_path: str | Path | None = None,
+    log_file: str | Path | None = None,
 ) -> None:
     """Run WHAM analysis using bundled GPU-accelerated library.
 
@@ -151,6 +190,9 @@ def run_wham(
     else:
         g_imp_path_bytes = None
 
+    # Resolve log_file to absolute path before chdir
+    log_path = Path(log_file).resolve() if log_file is not None else None
+
     # Run WHAM in analysis directory context
     # WHAM expects files in current directory, so we must chdir temporarily
     with _chdir_context(analysis_dir):
@@ -172,7 +214,8 @@ def run_wham(
             ]
             pywham.restype = ctypes.c_int
 
-            result = pywham(nf, temp, nts0, nts1, int(use_gshift), nsubs_ptr, nsites, g_imp_path_bytes)
+            with _redirect_c_output(log_path):
+                result = pywham(nf, temp, nts0, nts1, int(use_gshift), nsubs_ptr, nsites, g_imp_path_bytes)
             if result != 0:
                 raise RuntimeError(f"WHAM returned error code: {result}")
 
@@ -353,6 +396,7 @@ def run_lmalf(
     tolerance: float = 0.0,
     nsubs: np.ndarray | list[int] | None = None,
     g_imp_path: str | Path | None = None,
+    log_file: str | Path | None = None,
 ) -> None:
     """Run LMALF (Likelihood Maximization ALF) analysis.
 
@@ -429,6 +473,9 @@ def run_lmalf(
     else:
         g_imp_path_bytes = None
 
+    # Resolve log_file to absolute path before chdir
+    log_path = Path(log_file).resolve() if log_file is not None else None
+
     # Run LMALF in analysis directory context
     with _chdir_context(analysis_dir):
         try:
@@ -450,7 +497,8 @@ def run_lmalf(
             ]
             pylmalf.restype = ctypes.c_int
 
-            result = pylmalf(nf, temp, ms, msprof, max_iter, tolerance, nsubs_ptr, nsites, g_imp_path_bytes)
+            with _redirect_c_output(log_path):
+                result = pylmalf(nf, temp, ms, msprof, max_iter, tolerance, nsubs_ptr, nsites, g_imp_path_bytes)
             if result != 0:
                 raise RuntimeError(f"LMALF returned error code: {result}")
 
