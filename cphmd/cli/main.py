@@ -133,7 +133,7 @@ def alf(
     input_folder: str = typer.Option(..., "-i", "--input", help="Input folder with prep/ directory"),
     temperature: float = typer.Option(298.15, "-t", "--temp", help="Temperature (K)"),
     pH: float = typer.Option(None, "-pH", "--pH", help="Target pH for CpHMD (None for standard ALF)"),
-    hmr: bool = typer.Option(False, "--hmr/--no-hmr", help="Use hydrogen mass repartitioning"),
+    hmr: bool = typer.Option(True, "--hmr/--no-hmr", help="Use hydrogen mass repartitioning"),
     start: int = typer.Option(1, "-s", "--start", help="Start run number"),
     end: int = typer.Option(20, "-e", "--end", help="End run number"),
     phase: int = typer.Option(1, "-p", "--phase", help="Initial phase (1, 2, or 3)"),
@@ -160,7 +160,7 @@ def alf(
 
     console.print(f"[cyan]Starting ALF simulation for {input_folder}/[/cyan]")
     console.print(f"[dim]Temp: {temperature}K, pH: {pH}, Phase: {phase}, Runs: {start}-{end}[/dim]")
-    console.print(f"[dim]Restraints: {restrains}, Hydrogens: {restrain_hydrogens}[/dim]")
+    console.print(f"[dim]HMR: {hmr}, Restraints: {restrains} (hydrogens: {restrain_hydrogens})[/dim]")
     console.print(f"[dim]Electrostatics: {elec_type}, VDW: {vdw_type}[/dim]")
     if no_pka_bias:
         console.print(f"[yellow]pKa bias disabled (no PHMD pH, no TAG values)[/yellow]")
