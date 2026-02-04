@@ -1,0 +1,172 @@
+read rtf card append
+* rtf
+*
+36  1
+
+PRES HP1          0.00  ! Protonated His(HSP) to HSD
+!GROUP   
+!ATOM N    NH1    -0.47 !     |          HD1    HE1
+!ATOM HN   H       0.31 !  HN-N           |     /
+!ATOM CA   CT1     0.07 !     |   HB1    ND1--CE1
+!ATOM HA   HB1     0.09 !     |   |     /      ||
+GROUP                   !  HA-CA--CB--CG       ||
+ATOM CB   CT2   -0.09   !     |   |     \\     ||
+!ATOM HB1  HA2     0.09 !     |   HB2    CD2--NE2
+!ATOM HB2  HA2     0.09 !   O=C           |     
+ATOM CD2  CPH1    0.22  !     |          HD2    
+ATOM HD2  HR3     0.10
+ATOM CG   CPH1   -0.05
+GROUP
+ATOM NE2  NR2    -0.70
+delete ATOM HE2  !H       0.44
+ATOM ND1  NR1    -0.36
+ATOM HD1  H       0.32
+ATOM CE1  CPH2    0.25
+ATOM HE1  HR1     0.13
+!GROUP   
+!ATOM C    C       0.51
+!ATOM O    O      -0.51
+!BOND CB  CA   CG  CB   ND1 CG   CE1 ND1   
+!BOND NE2 CD2  N   HN   N   CA   
+!BOND C   CA   C   +N  CA  HA  CB HB1   
+!BOND CB  HB2  ND1 HD1  NE2 HE2  CD2 HD2 CE1 HE1
+DOUBLE  O   C   CD2 CG     NE2 CE1
+IMPR ND1 CG CE1 HD1  CD2 CG  NE2 HD2  CE1 ND1 NE2 HE1   
+IMPR ND1 CE1 CG HD1  CD2 NE2 CG  HD2  CE1 NE2 ND1 HE1   
+!IMPR N   -C  CA  HN   C   CA  +N  O   
+!CMAP -C  N  CA  C   N  CA  C  +N
+DONOR HN N   
+DONOR HD1 ND1   
+!DONOR HE2 NE2   
+!ACCEPTOR O C
+acceptor ne2
+
+PRES Hp2          0.00  ! Protonated His (HSP) to HSE
+!GROUP   
+!ATOM N    NH1    -0.47  !     |          HD1    HE1
+!ATOM HN   H       0.31  !  HN-N           |     /
+!ATOM CA   CT1     0.07  !     |   HB1    ND1--CE1
+!ATOM HA   HB1     0.09  !     |   |     /      ||
+GROUP                   !  HA-CA--CB--CG       ||
+ATOM CB   CT2    -0.08  !     |   |     \\     ||
+ATOM HB1  HA2     0.09  !     |   HB2    CD2--NE2(+)
+ATOM HB2  HA2     0.09  !   O=C           |     \
+ATOM CD2  CPH1   -0.05  !     |          HD2    HE2
+ATOM HD2  HR3     0.09
+ATOM CG   CPH1    0.22
+GROUP
+ATOM NE2  NR1    -0.36
+ATOM HE2  H       0.32
+ATOM ND1  NR2    -0.70
+delete ATOM HD1  !H       0.44
+ATOM CE1  CPH2    0.25
+ATOM HE1  HR1     0.13
+!BOND CB  CA   CG  CB   ND1 CG   CE1 ND1   
+!BOND NE2 CD2  N   HN   N   CA   
+!BOND C   CA   C   +N  CA  HA  CB HB1   
+!BOND CB  HB2  ND1 HD1  NE2 HE2  CD2 HD2 CE1 HE1
+!DOUBLE  O   C   CD2 CG     cd1 nd1 !NE2 CE1
+IMPR CD2 CG  NE2 HD2  CE1 ND1 NE2 HE1   
+IMPR CD2 NE2 CG  HD2  CE1 NE2 ND1 HE1   
+!IMPR ND1 CG  CE1 HD1  ND1 CE1 CG  HD1
+!IMPR NE2 CD2 CE1 HE2  NE2 CE1 CD2 HE2   
+!IMPR N   -C  CA  HN   C   CA  +N  O   
+!CMAP -C  N  CA  C   N  CA  C  +N
+!DONOR HN N   
+!DONOR HD1 ND1   
+!DONOR HE2 NE2   
+!ACCEPTOR O C
+acceptor nd1
+
+
+PRES HSDP          1.00  ! neutral HIS, proton on ND1 ro HSP
+!GROUP   
+!ATOM N    NH1    -0.47  !     |          HD1    HE1
+!ATOM HN   H       0.31  !  HN-N           |     /
+!ATOM CA   CT1     0.07  !     |   HB1    ND1--CE1
+!ATOM HA   HB1     0.09  !     |   |     /      ||
+GROUP                   !  HA-CA--CB--CG       ||
+ATOM CB   CT2A   -0.05  !     |   |     \\     ||
+!ATOM HB1  HA2     0.09  !     |   HB2    CD2--NE2
+!ATOM HB2  HA2     0.09  !   O=C           |
+ATOM ND1  NR3    -0.51  !     |          HD2
+ATOM HD1  H       0.44
+ATOM CG   CPH1    0.19
+GROUP   
+ATOM CE1  CPH2    0.32
+ATOM HE1  HR2     0.18
+ATOM NE2  NR3    -0.51
+atom he2  h       0.44
+ATOM CD2  CPH1    0.19
+ATOM HD2  HR1     0.13
+!GROUP   
+!ATOM C    C       0.51
+!ATOM O    O      -0.51
+!BOND CB  CA   CG  CB   ND1 CG   CE1 ND1   
+!BOND NE2 CD2  N   HN   N   CA   
+!BOND C   CA   C   +N   CA  HA   CB  HB1   
+!BOND CB  HB2  ND1 HD1  CD2 HD2  CE1 HE1  
+!DOUBLE O  C   CG  CD2   CE1  NE2
+bond ne2 he2
+IMPR NE2 CD2 CE1 HE2  NE2 CE1 CD2 HE2   
+!IMPR ND1 CG CE1 HD1 CD2 CG  NE2 HD2  CE1 ND1 NE2 HE1   
+!IMPR ND1 CE1 CG HD1  CD2 NE2 CG  HD2  CE1 NE2 ND1 HE1   
+delete IMPR CD2 CG  NE2 HD2
+delete improper CE1 ND1 NE2 HE1   
+delete IMPR CD2 NE2 CG  HD2
+delete improper CE1 NE2 ND1 HE1   
+!IMPR N   -C  CA HN   C   CA  +N  O   
+!CMAP -C  N  CA  C   N  CA  C  +N
+!DONOR HN N   
+!DONOR HD1 ND1
+donoe he2 ne2
+!ACCEPTOR NE2   
+!ACCEPTOR O C   
+IC CE1  CD2  *NE2 HE2   1.3256 108.8200 -172.9400 125.5200  1.0020
+
+PRES HSEP          1.00  ! neutral His, proton on NE2 to HSP
+!GROUP   
+!ATOM N    NH1    -0.47  !     |                 HE1
+!ATOM HN   H       0.31  !  HN-N             __  /
+!ATOM CA   CT1     0.07  !     |   HB1    ND1--CE1
+!ATOM HA   HB1     0.09  !     |   |     /      |
+GROUP                   !  HA-CA--CB--CG       |
+ATOM CB   CT2a   -0.05  !     |   |     \\     |
+!ATOM HB1  HA2     0.09  !     |   HB2    CD2--NE2
+!ATOM HB2  HA2     0.09  !   O=C           |     \
+ATOM ND1  NR3    -0.51   !     |          HD2    HE2
+atom hd1  H       0.44
+ATOM CG   CPH1    0.19
+ATOM CE1  CPH2    0.32
+ATOM HE1  HR2     0.18
+GROUP
+ATOM NE2  NR3    -0.51
+ATOM HE2  H       0.44
+ATOM CD2  CPH1    0.19
+ATOM HD2  HR1     0.13
+!GROUP   
+!ATOM C    C       0.51
+!ATOM O    O      -0.51
+!BOND CB  CA   CG  CB   ND1 CG     
+!BOND NE2 CD2  N   HN   N   CA      
+!BOND C   CA   C   +N   NE2 CE1  CA  HA   CB HB1   
+!BOND CB  HB2  NE2 HE2  CD2 HD2  CE1 HE1 
+!DOUBLE   O   C   CD2 CG   CE1 ND1
+bond nd1 hd1
+IMPR ND1 CG  CE1 HD1  ND1 CE1 CG  HD1
+IMPR NE2 CD2 CE1 HE2  NE2 CE1 CD2 HE2   
+
+delete IMPR  CD2 CG  NE2 HD2
+delete impr CE1 ND1 NE2 HE1   
+delete IMPR  CD2 NE2 CG  HD2
+delete impr CE1 NE2 ND1 HE1   
+!IMPR N   -C  CA  HN   C   CA  +N  O   
+!CMAP -C  N  CA  C   N  CA  C  +N
+!DONOR HN N   
+DONOR HE2 NE2
+donor hd1 nd1
+!ACCEPTOR ND1   
+!ACCEPTOR O C   
+IC CE1  CG   *ND1 HD1   1.3262 108.9000  171.4900 126.0900  1.0018
+
+end
