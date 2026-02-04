@@ -66,6 +66,7 @@ typedef struct struct_data
   int jN;
   int current_block_idx; // Current block index being processed
   int use_gshift;        // 0 = disabled (legacy), 1 = enabled (apply G_imp shifts)
+  char g_imp_path[256];  // Path to G_imp directory
 } struct_data;
 
 /**
@@ -172,6 +173,9 @@ typedef struct struct_lmalf
   int doneCount;      // Consecutive convergence count
   int done;           // Optimization complete flag
   int max_iter;       // Maximum iterations
+
+  // Paths
+  char g_imp_path[256];  // Path to G_imp directory
 } struct_lmalf;
 
 // LMALF bin size constants (matching original lmalf.cu)

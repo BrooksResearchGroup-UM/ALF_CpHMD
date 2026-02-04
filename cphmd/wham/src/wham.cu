@@ -43,6 +43,7 @@
 #include <stdio.h>
 #include <math.h>
 #include <stdlib.h> // For rand()
+#include <string.h> // For strncpy, strlen
 #include <cuda_runtime.h>
 #include <vector>
 
@@ -219,7 +220,8 @@ void validate_and_setup_gpu()
   }
 }
 
-struct_data *readdata(int arg1, double arg2, int arg3, int arg4, int use_gshift)
+struct_data *readdata(int arg1, double arg2, int arg3, int arg4, int use_gshift,
+                      int *nsubs_in, int nsites_in, const char *g_imp_path)
 {
   const char *Edir = "Energy", *Ddir = "Lambda";
   FILE *fp, *fpE, *fpQ;
@@ -230,28 +232,61 @@ struct_data *readdata(int arg1, double arg2, int arg3, int arg4, int use_gshift)
   struct_data *data = (struct_data *)malloc(sizeof(struct_data));
 
   data->Nsim = arg1;
-  fp = fopen("../prep/nsubs", "r");
-  if (!fp)
+
+  // Store G_imp path (use provided path or default to "G_imp")
+  if (g_imp_path && strlen(g_imp_path) > 0)
   {
-    fprintf(stderr, "Error, ../prep/nsubs does not exist\n");
-    exit(1);
+    strncpy(data->g_imp_path, g_imp_path, sizeof(data->g_imp_path) - 1);
+    data->g_imp_path[sizeof(data->g_imp_path) - 1] = '\0';
   }
-  data->Nsites = 0;
-  while (fscanf(fp, "%d", &i) == 1)
-    data->Nsites++;
-  fclose(fp);
-  data->Nsubs = (int *)malloc(data->Nsites * sizeof(int));
-  data->block0 = (int *)malloc((data->Nsites + 1) * sizeof(int));
-  fp = fopen("../prep/nsubs", "r");
-  data->Nblocks = 0;
-  data->block0[0] = 0;
-  for (i = 0; i < data->Nsites; i++)
+  else
   {
-    fscanf(fp, "%d", &(data->Nsubs[i]));
-    data->Nblocks += data->Nsubs[i];
-    data->block0[i + 1] = data->block0[i] + data->Nsubs[i];
+    strcpy(data->g_imp_path, "G_imp");
   }
-  fclose(fp);
+
+  // Use provided nsubs array or read from file
+  if (nsubs_in != NULL && nsites_in > 0)
+  {
+    data->Nsites = nsites_in;
+    data->Nsubs = (int *)malloc(data->Nsites * sizeof(int));
+    data->block0 = (int *)malloc((data->Nsites + 1) * sizeof(int));
+    data->Nblocks = 0;
+    data->block0[0] = 0;
+    for (i = 0; i < data->Nsites; i++)
+    {
+      data->Nsubs[i] = nsubs_in[i];
+      data->Nblocks += data->Nsubs[i];
+      data->block0[i + 1] = data->block0[i] + data->Nsubs[i];
+    }
+    fprintf(stderr, "Using provided nsubs array: nsites=%d, nblocks=%d\n", data->Nsites, data->Nblocks);
+  }
+  else
+  {
+    // Fallback: read from file for backward compatibility
+    fp = fopen("prep/nsubs", "r");
+    if (!fp)
+    {
+      fprintf(stderr, "Error, prep/nsubs does not exist and no nsubs array provided\n");
+      exit(1);
+    }
+    data->Nsites = 0;
+    while (fscanf(fp, "%d", &i) == 1)
+      data->Nsites++;
+    fclose(fp);
+    data->Nsubs = (int *)malloc(data->Nsites * sizeof(int));
+    data->block0 = (int *)malloc((data->Nsites + 1) * sizeof(int));
+    fp = fopen("prep/nsubs", "r");
+    data->Nblocks = 0;
+    data->block0[0] = 0;
+    for (i = 0; i < data->Nsites; i++)
+    {
+      fscanf(fp, "%d", &(data->Nsubs[i]));
+      data->Nblocks += data->Nsubs[i];
+      data->block0[i + 1] = data->block0[i] + data->Nsubs[i];
+    }
+    fclose(fp);
+    fprintf(stderr, "Read nsubs from file: nsites=%d, nblocks=%d\n", data->Nsites, data->Nblocks);
+  }
 
   data->ms = arg3;
   data->msprof = arg4;
@@ -780,7 +815,7 @@ double bin_all(struct_data *data, int *ptype, int i)
             CUDA_CHECK(cudaDeviceSynchronize());
             // Map block index to filename: block 0->G1_2, block 1->G1_3, block 2->G1_4
             int subsite_index = (i1 - data->block0[s1]) + 2;
-            sprintf(fnm, "G_imp/G1_%d.dat", subsite_index);
+            sprintf(fnm, "%s/G1_%d.dat", data->g_imp_path, subsite_index);
             B_N = data->B[1].N;
             ptype[0] = 0;
 
@@ -834,7 +869,7 @@ double bin_all(struct_data *data, int *ptype, int i)
               // G12 files are generated per dimension, not per pair
               // All pairs (0,1), (0,2), (1,2) use the same G12_3.dat file
               // But we need to track which pair for shift application
-              sprintf(fnm, "G_imp/G12_%d.dat", data->Nsubs[s1]);
+              sprintf(fnm, "%s/G12_%d.dat", data->g_imp_path, data->Nsubs[s1]);
               B_N = data->B2d[1].N * data->B2d[2].N;
               ptype[0] = 1;
 
@@ -893,7 +928,7 @@ double bin_all(struct_data *data, int *ptype, int i)
                 CUDA_CHECK(cudaDeviceSynchronize());
                 // G2 files are generated per dimension, similar to G12
                 // All pairs use the same G2_3.dat file
-                sprintf(fnm, "G_imp/G2_%d.dat", data->Nsubs[s1]);
+                sprintf(fnm, "%s/G2_%d.dat", data->g_imp_path, data->Nsubs[s1]);
                 B_N = data->B2d[1].N * data->B2d[2].N;
                 ptype[0] = 2;
 
@@ -953,7 +988,7 @@ double bin_all(struct_data *data, int *ptype, int i)
               // For cross-site G1_i_j files, map to actual subsite indices
               int subsite_index_s1 = (i1 - data->block0[s1]) + 2;
               int subsite_index_s2 = (i2 - data->block0[s2]) + 2;
-              sprintf(fnm, "G_imp/G1_%d_%d.dat", subsite_index_s1, subsite_index_s2);
+              sprintf(fnm, "%s/G1_%d_%d.dat", data->g_imp_path, subsite_index_s1, subsite_index_s2);
               B_N = data->B2d[1].N * data->B2d[2].N;
               ptype[0] = 3;
 
@@ -1465,7 +1500,7 @@ void auto_detect_profile_dimensions(struct_data *data)
   for (int s1 = 0; s1 < data->Nsites; s1++)
   {
     // Check for 1D profile files
-    sprintf(fnm, "G_imp/G1_%d.dat", data->Nsubs[s1]);
+    sprintf(fnm, "%s/G1_%d.dat", data->g_imp_path, data->Nsubs[s1]);
     if (detect_g_file_dimensions(fnm, &dim1_1d, &dim2_1d, 0))
     {
       found_1d = 1;
@@ -1476,14 +1511,14 @@ void auto_detect_profile_dimensions(struct_data *data)
   // Check for 2D profile files
   for (int s1 = 0; s1 < data->Nsites; s1++)
   {
-    sprintf(fnm, "G_imp/G12_%d.dat", data->Nsubs[s1]);
+    sprintf(fnm, "%s/G12_%d.dat", data->g_imp_path, data->Nsubs[s1]);
     if (detect_g_file_dimensions(fnm, &dim1_2d, &dim2_2d, 1))
     {
       found_2d = 1;
       break;
     }
 
-    sprintf(fnm, "G_imp/G2_%d.dat", data->Nsubs[s1]);
+    sprintf(fnm, "%s/G2_%d.dat", data->g_imp_path, data->Nsubs[s1]);
     if (detect_g_file_dimensions(fnm, &dim1_2d, &dim2_2d, 1))
     {
       found_2d = 1;
@@ -1493,7 +1528,7 @@ void auto_detect_profile_dimensions(struct_data *data)
     // Check multi-site profiles
     for (int s2 = s1 + 1; s2 < data->Nsites; s2++)
     {
-      sprintf(fnm, "G_imp/G1_%d_%d.dat", data->Nsubs[s1], data->Nsubs[s2]);
+      sprintf(fnm, "%s/G1_%d_%d.dat", data->g_imp_path, data->Nsubs[s1], data->Nsubs[s2]);
       if (detect_g_file_dimensions(fnm, &dim1_2d, &dim2_2d, 1))
       {
         found_2d = 1;
@@ -1865,12 +1900,13 @@ void getfofq(struct_data *data, double beta)
   free(V);
 }
 
-extern "C" int wham(int arg1, double arg2, int arg3, int arg4, int use_gshift)
+extern "C" int wham(int arg1, double arg2, int arg3, int arg4, int use_gshift,
+                   int *nsubs, int nsites, const char *g_imp_path)
 {
   // Initialize and validate GPU
   validate_and_setup_gpu();
 
-  struct_data *data = readdata(arg1, arg2, arg3, arg4, use_gshift);
+  struct_data *data = readdata(arg1, arg2, arg3, arg4, use_gshift, nsubs, nsites, g_imp_path);
   if (!data)
   {
     fprintf(stderr, "Error: Failed to read data\n");
@@ -2443,41 +2479,164 @@ __global__ void lmalf_regularizelinekernel(struct_lmalf lm, double s)
   lmalf_reduce(dLds, Lloc, lm.dLds_d);
 }
 
+// Random double [0, 1) for Monte Carlo
+static double lmalf_rand_double(void)
+{
+  return (rand() + 0.5) / (RAND_MAX + 1.0);
+}
+
+// Generate Monte Carlo reference distribution for partition function normalization
+// This is essential for LMALF to compute meaningful gradients.
+// Without proper reference samples, the gradient would be zero.
+static void lmalf_monte_carlo_Z(struct_lmalf *lm)
+{
+  int ibeg, iend, Ns;
+  int Neq = lm->B / 10;  // Equilibration steps
+  int Nmc = lm->B;       // Production steps
+  double *theta;
+  int s, i, j;
+  double b, st, norm;
+  double thetaNew, eOld, eNew;
+
+  // Seed random number generator
+  srand(12345);  // Fixed seed for reproducibility
+
+  theta = (double *)calloc(lm->nblocks, sizeof(double));
+
+  // Generate MC samples for each site
+  for (s = 0; s < lm->nsites; s++)
+  {
+    ibeg = lm->block0[s];
+    iend = lm->block0[s + 1];
+    Ns = iend - ibeg;
+
+    // Compute optimal b parameter for this site
+    // This empirical formula ensures good sampling efficiency
+    b = 1;
+    for (i = 0; i < 50; i++)
+    {
+      b = 0.5 * log(0.25 * b * Ns * Ns * M_PI / 2);
+      if (!(b > 0)) b = 0;
+    }
+
+    // Initialize theta angles
+    theta[ibeg] = M_PI / 2;
+    for (i = ibeg + 1; i < iend; i++)
+    {
+      theta[i] = 3 * M_PI / 2;
+    }
+
+    // Metropolis Monte Carlo sampling
+    for (i = -Neq; i < Nmc; i++)
+    {
+      if (i % (Neq > 0 ? Neq : 1) == 0 && i >= 0)
+      {
+        fprintf(stdout, "MC Reference Sample Step %d/%d\n", i, Nmc);
+      }
+
+      // Metropolis moves for each subsite
+      for (j = ibeg; j < iend; j++)
+      {
+        st = (-0.5 * sin(theta[j]) + 0.5);
+        eOld = -b * st * st * st * st;
+
+        thetaNew = 2 * M_PI * lmalf_rand_double();
+        st = (-0.5 * sin(thetaNew) + 0.5);
+        eNew = -b * st * st * st * st;
+
+        if (exp(eOld - eNew) > lmalf_rand_double())
+        {
+          theta[j] = thetaNew;
+        }
+      }
+
+      // Store production samples (after equilibration)
+      if (i >= 0)
+      {
+        norm = 0;
+        for (j = ibeg; j < iend; j++)
+        {
+          norm += exp(5.5 * sin(theta[j]));
+        }
+        for (j = ibeg; j < iend; j++)
+        {
+          lm->mc_lambda_h[lm->nblocks * i + j] = exp(5.5 * sin(theta[j])) / norm;
+        }
+      }
+    }
+  }
+
+  free(theta);
+  fprintf(stdout, "MC reference samples generated\n");
+}
+
 // Setup LMALF data structure
-struct_lmalf *lmalf_setup(int nf, double temp, int ms, int msprof)
+struct_lmalf *lmalf_setup(int nf, double temp, int ms, int msprof,
+                          int *nsubs_in, int nsites_in, const char *g_imp_path)
 {
   struct_lmalf *lm = (struct_lmalf *)malloc(sizeof(struct_lmalf));
   FILE *fp;
-  char fnm[MAXLENGTH], line[MAXLENGTH];
+  char line[MAXLENGTH];
   int i, j, k, si, sj;
   double kp, k0;
 
-  // Read nsubs configuration
-  fp = fopen("../prep/nsubs", "r");
-  if (!fp)
+  // Store G_imp path (use provided path or default to "G_imp")
+  if (g_imp_path && strlen(g_imp_path) > 0)
   {
-    fprintf(stderr, "Error: ../prep/nsubs does not exist\n");
-    exit(1);
+    strncpy(lm->g_imp_path, g_imp_path, sizeof(lm->g_imp_path) - 1);
+    lm->g_imp_path[sizeof(lm->g_imp_path) - 1] = '\0';
+  }
+  else
+  {
+    strcpy(lm->g_imp_path, "G_imp");
   }
 
-  lm->nsites = 0;
-  while (fscanf(fp, "%d", &i) == 1)
-    lm->nsites++;
-  fclose(fp);
-
-  lm->nsubs = (int *)calloc(lm->nsites, sizeof(int));
-  lm->block0 = (int *)calloc(lm->nsites + 1, sizeof(int));
-
-  fp = fopen("../prep/nsubs", "r");
-  lm->nblocks = 0;
-  for (i = 0; i < lm->nsites; i++)
+  // Use provided nsubs array or read from file
+  if (nsubs_in != NULL && nsites_in > 0)
   {
-    fscanf(fp, "%d", &lm->nsubs[i]);
-    lm->block0[i] = lm->nblocks;
-    lm->nblocks += lm->nsubs[i];
+    lm->nsites = nsites_in;
+    lm->nsubs = (int *)calloc(lm->nsites, sizeof(int));
+    lm->block0 = (int *)calloc(lm->nsites + 1, sizeof(int));
+    lm->nblocks = 0;
+    for (i = 0; i < lm->nsites; i++)
+    {
+      lm->nsubs[i] = nsubs_in[i];
+      lm->block0[i] = lm->nblocks;
+      lm->nblocks += lm->nsubs[i];
+    }
+    lm->block0[lm->nsites] = lm->nblocks;
+    fprintf(stderr, "LMALF: Using provided nsubs array: nsites=%d, nblocks=%d\n", lm->nsites, lm->nblocks);
   }
-  lm->block0[lm->nsites] = lm->nblocks;
-  fclose(fp);
+  else
+  {
+    // Fallback: read from file for backward compatibility
+    fp = fopen("prep/nsubs", "r");
+    if (!fp)
+    {
+      fprintf(stderr, "Error: prep/nsubs does not exist and no nsubs array provided\n");
+      exit(1);
+    }
+
+    lm->nsites = 0;
+    while (fscanf(fp, "%d", &i) == 1)
+      lm->nsites++;
+    fclose(fp);
+
+    lm->nsubs = (int *)calloc(lm->nsites, sizeof(int));
+    lm->block0 = (int *)calloc(lm->nsites + 1, sizeof(int));
+
+    fp = fopen("prep/nsubs", "r");
+    lm->nblocks = 0;
+    for (i = 0; i < lm->nsites; i++)
+    {
+      fscanf(fp, "%d", &lm->nsubs[i]);
+      lm->block0[i] = lm->nblocks;
+      lm->nblocks += lm->nsubs[i];
+    }
+    lm->block0[lm->nsites] = lm->nblocks;
+    fclose(fp);
+    fprintf(stderr, "LMALF: Read nsubs from file: nsites=%d, nblocks=%d\n", lm->nsites, lm->nblocks);
+  }
 
   CUDA_CHECK(cudaMalloc(&lm->block0_d, (lm->nsites + 1) * sizeof(int)));
   CUDA_CHECK(cudaMemcpy(lm->block0_d, lm->block0, (lm->nsites + 1) * sizeof(int), cudaMemcpyHostToDevice));
@@ -2540,11 +2699,9 @@ struct_lmalf *lmalf_setup(int nf, double temp, int ms, int msprof)
     fclose(fp);
   }
 
-  // Generate Monte Carlo reference (simplified - use same lambda with uniform weights)
-  for (i = 0; i < lm->B * lm->nblocks; i++)
-  {
-    lm->mc_lambda_h[i] = lm->lambda_h[i];
-  }
+  // Generate Monte Carlo reference distribution using Metropolis sampling
+  // This provides the reference distribution for computing meaningful gradients
+  lmalf_monte_carlo_Z(lm);
 
   CUDA_CHECK(cudaMalloc(&lm->lambda_d, lm->B * lm->nblocks * sizeof(double)));
   CUDA_CHECK(cudaMalloc(&lm->mc_lambda_d, lm->B * lm->nblocks * sizeof(double)));
@@ -3232,7 +3389,8 @@ void lmalf_finish(struct_lmalf *lm)
  * Output:
  *   - OUT.dat: Optimized bias parameters
  */
-extern "C" int lmalf(int nf, double temp, int ms, int msprof, int max_iter, double tolerance)
+extern "C" int lmalf(int nf, double temp, int ms, int msprof, int max_iter, double tolerance,
+                     int *nsubs, int nsites, const char *g_imp_path)
 {
   fprintf(stdout, "LMALF: Likelihood Maximization ALF\n");
   fprintf(stdout, "  nf=%d, temp=%.2f, ms=%d, msprof=%d\n", nf, temp, ms, msprof);
@@ -3241,7 +3399,7 @@ extern "C" int lmalf(int nf, double temp, int ms, int msprof, int max_iter, doub
   // Initialize and validate GPU
   validate_and_setup_gpu();
 
-  struct_lmalf *lm = lmalf_setup(nf, temp, ms, msprof);
+  struct_lmalf *lm = lmalf_setup(nf, temp, ms, msprof, nsubs, nsites, g_imp_path);
   if (!lm)
   {
     fprintf(stderr, "Error: Failed to setup LMALF\n");
