@@ -4,10 +4,16 @@ Implements automatic phase progression (1→2→3) based on:
 - Lambda overlap (good sampling across states)
 - Sample count thresholds
 - pKa convergence (optional, for CpHMD)
+
+Also implements Phase 3 → STOP criteria based on:
+- Physical state sample counts (unified N-state formula)
+- Balance across states (spread tolerance)
+- Bias parameter stability
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from math import sqrt
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
@@ -39,6 +45,49 @@ class PhaseTransitionConfig:
 
     # pKa tolerance for phase 2→3 (strict)
     pka_tolerance_2to3: float = 0.3
+
+
+@dataclass
+class StopCriteriaConfig:
+    """Configuration for Phase 3 → STOP criteria.
+
+    Uses step5_bias_search-style scoring based on population fractions
+    at the strict lambda threshold (0.985).
+
+    Stop when:
+        1. Population fraction difference < max_frac_diff (e.g., 2%)
+        2. Minimum sample count per state achieved
+        3. Bias parameters are stable
+    """
+
+    # Lambda threshold for physical state detection (strict endpoint)
+    threshold_strict: float = 0.985
+
+    # Maximum allowed fraction difference between states (e.g., 0.02 = 2%)
+    max_frac_diff: float = 0.02
+
+    # Minimum total samples required (not per-state)
+    min_total_samples: int = 100_000
+
+    # Timestep in femtoseconds (for sample count scaling with HMR)
+    timestep_fs: float = 2.0
+
+    # Bias stability: rolling window and max std tolerance
+    bias_window: int = 10
+    bias_max_std: float = 0.5
+
+    # Scoring parameters (step5-style combined score)
+    # score = avg_frac - alpha * frac_diff
+    alpha: float = 10.0
+
+    def min_samples(self) -> int:
+        """Compute min samples adjusted for timestep.
+
+        Returns:
+            Minimum total samples required
+        """
+        timestep_factor = 2.0 / self.timestep_fs  # HMR uses 4fs → factor 0.5
+        return int(self.min_total_samples * timestep_factor)
 
 
 @dataclass
@@ -75,6 +124,38 @@ class PKaFitResult:
     n_points: int = 0
     pH_values: np.ndarray = field(default_factory=lambda: np.array([]))
     populations: np.ndarray = field(default_factory=lambda: np.array([]))
+
+
+@dataclass
+class StopCriteriaResult:
+    """Result of Phase 3 → STOP criteria check.
+
+    Uses step5_bias_search-style metrics based on population fractions.
+
+    Attributes:
+        should_stop: True if all criteria are met
+        n_states: Number of states in the system
+        n_samples: Total number of samples
+        fractions: Population fractions per state (at strict threshold)
+        avg_frac: Average fraction across states
+        frac_diff: Max fraction - min fraction
+        frac_diff_pct: Fraction difference as percentage
+        score: Combined score (avg - alpha * diff)
+        bias_stable: True if bias parameters are stable
+        bias_rolling_std: Rolling std of bias parameters (if checked)
+        reasons: List of reasons for not stopping (empty if should_stop)
+    """
+    should_stop: bool
+    n_states: int
+    n_samples: int = 0
+    fractions: np.ndarray = field(default_factory=lambda: np.array([]))
+    avg_frac: float = 0.0
+    frac_diff: float = 0.0
+    frac_diff_pct: float = 0.0
+    score: float = 0.0
+    bias_stable: bool = True
+    bias_rolling_std: float = 0.0
+    reasons: list[str] = field(default_factory=list)
 
 
 def good_overlap(fracs: np.ndarray, spread_tol: float) -> bool:
@@ -358,6 +439,114 @@ def calculate_populations(
     }
 
 
+def compute_spread(counts: np.ndarray) -> float:
+    """Compute normalized spread: (max - min) / (max + min).
+
+    Args:
+        counts: Array of sample counts per state
+
+    Returns:
+        Spread value between 0 (perfectly balanced) and 1 (one state dominates)
+    """
+    if counts.size == 0:
+        return 1.0
+    max_c, min_c = counts.max(), counts.min()
+    if max_c + min_c == 0:
+        return 1.0
+    return float((max_c - min_c) / (max_c + min_c))
+
+
+def check_stop_criteria(
+    lambda_data: np.ndarray,
+    config: StopCriteriaConfig | None = None,
+    bias_history: np.ndarray | None = None,
+) -> StopCriteriaResult:
+    """Check if Phase 3 → STOP criteria are met.
+
+    Uses step5_bias_search-style scoring based on population fractions
+    at the strict lambda threshold (0.985).
+
+    Stop criteria:
+        1. Total samples >= min_total_samples (adjusted for HMR)
+        2. Fraction difference < max_frac_diff (e.g., 2%)
+        3. Bias parameters stable (rolling std < threshold)
+
+    Args:
+        lambda_data: Combined lambda data array (samples x states)
+        config: Stop criteria configuration (uses defaults if None)
+        bias_history: Optional array of bias values over iterations for stability check
+                      Shape: (n_iterations, n_bias_params) or 1D for single param
+
+    Returns:
+        StopCriteriaResult with detailed metrics and decision
+    """
+    if config is None:
+        config = StopCriteriaConfig()
+
+    if lambda_data is None or lambda_data.size == 0:
+        return StopCriteriaResult(
+            should_stop=False,
+            n_states=0,
+            reasons=["No lambda data available"],
+        )
+
+    n_samples, n_states = lambda_data.shape
+
+    # Compute population fractions at strict threshold (step5 style)
+    mask_strict = lambda_data > config.threshold_strict
+    fractions = mask_strict.sum(axis=0) / n_samples
+
+    # Step5-style metrics
+    avg_frac = float(np.mean(fractions))
+    frac_diff = float(np.max(fractions) - np.min(fractions))
+    frac_diff_pct = frac_diff * 100
+    score = avg_frac - config.alpha * frac_diff
+
+    # Check bias stability if history provided
+    bias_stable = True
+    bias_rolling_std = 0.0
+
+    if bias_history is not None and bias_history.size > 0:
+        if bias_history.ndim == 1:
+            bias_history = bias_history.reshape(-1, 1)
+
+        if bias_history.shape[0] >= config.bias_window:
+            # Compute rolling std over last window iterations
+            window_data = bias_history[-config.bias_window:]
+            rolling_std = np.std(window_data, axis=0).max()
+            bias_rolling_std = float(rolling_std)
+            bias_stable = bias_rolling_std <= config.bias_max_std
+
+    # Determine if all criteria are met
+    reasons: list[str] = []
+
+    min_samples = config.min_samples()
+    if n_samples < min_samples:
+        reasons.append(f"samples={n_samples:,}<{min_samples:,}")
+
+    if frac_diff > config.max_frac_diff:
+        reasons.append(f"frac_diff={frac_diff_pct:.2f}%>{config.max_frac_diff*100:.1f}%")
+
+    if not bias_stable:
+        reasons.append(f"bias_std={bias_rolling_std:.3f}>{config.bias_max_std}")
+
+    should_stop = len(reasons) == 0
+
+    return StopCriteriaResult(
+        should_stop=should_stop,
+        n_states=n_states,
+        n_samples=n_samples,
+        fractions=fractions,
+        avg_frac=avg_frac,
+        frac_diff=frac_diff,
+        frac_diff_pct=frac_diff_pct,
+        score=score,
+        bias_stable=bias_stable,
+        bias_rolling_std=bias_rolling_std,
+        reasons=reasons,
+    )
+
+
 def write_populations_file(
     filepath: Path,
     pop_data: dict[str, np.ndarray],
@@ -571,6 +760,46 @@ def check_phase_transition(
 
     # Phase 3 - no further transitions
     return 3, "Already in phase 3 (production)"
+
+
+def check_phase3_stop(
+    lambda_data: np.ndarray,
+    stop_config: StopCriteriaConfig | None = None,
+    bias_history: np.ndarray | None = None,
+) -> tuple[bool, str, StopCriteriaResult]:
+    """Check if Phase 3 simulation should stop.
+
+    This is the main entry point for checking stop criteria in Phase 3.
+    Uses step5_bias_search-style scoring based on population balance.
+
+    Args:
+        lambda_data: Combined lambda data array (samples x states)
+        stop_config: Stop criteria configuration (uses defaults if None)
+        bias_history: Optional array of bias values for stability check
+                      Shape: (n_iterations, n_bias_params)
+
+    Returns:
+        Tuple of (should_stop, reason_string, full_result)
+
+    Example:
+        >>> config = StopCriteriaConfig(timestep_fs=4.0, max_frac_diff=0.02)
+        >>> should_stop, reason, result = check_phase3_stop(lambda_data, config)
+        >>> if should_stop:
+        ...     print(f"Converged: diff={result.frac_diff_pct:.2f}%")
+    """
+    result = check_stop_criteria(lambda_data, stop_config, bias_history)
+
+    if result.should_stop:
+        reason = (
+            f"STOP: converged with {result.n_states} states, "
+            f"samples={result.n_samples:,}, "
+            f"frac_diff={result.frac_diff_pct:.2f}%, "
+            f"score={result.score:.4f}"
+        )
+    else:
+        reason = f"Continue Phase 3: {', '.join(result.reasons)}"
+
+    return result.should_stop, reason, result
 
 
 def _hh_acidic(pH: np.ndarray, pKa: float, n: float = 1.0) -> np.ndarray:

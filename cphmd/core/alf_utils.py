@@ -705,3 +705,195 @@ def convert_lambda_binary_to_text(
         write_lambda_text(output_path, combined)
     else:
         print(f"Warning: No valid input files found for {output_path}")
+
+
+def get_free_energy_lm(
+    alf_info: ALFInfo | dict,
+    ms: int = 0,
+    msprof: int = 0,
+    cutb: float = 2.0,
+    cutc: float = 8.0,
+    cutx: float = 2.0,
+    cuts: float = 1.0,
+    cutc2: float = 2.0,
+    cutx2: float = 0.5,
+    cuts2: float = 0.5,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Convert LMALF OUT.dat to b/c/x/s bias matrices.
+
+    This function post-processes the output of LMALF optimization (OUT.dat)
+    to generate the standard bias parameter files (b.dat, c.dat, x.dat, s.dat).
+
+    The conversion involves:
+    1. Reading the flat parameter vector from OUT.dat
+    2. Applying adaptive scaling to prevent large parameter changes
+    3. Unpacking into b/c/x/s matrices based on system topology
+    4. Writing output files
+
+    Args:
+        alf_info: ALF simulation information with nsubs topology.
+        ms: Multisite coupling flag (0=none, 1=full coupling, 2=c-only).
+        msprof: Multisite profiles flag (unused, for API compatibility).
+        cutb: Cutoff for b (linear) parameters.
+        cutc: Cutoff for c (coupling) parameters (same-site).
+        cutx: Cutoff for x (omega) parameters (same-site).
+        cuts: Cutoff for s (chi) parameters (same-site).
+        cutc2: Cutoff for c parameters (cross-site).
+        cutx2: Cutoff for x parameters (cross-site).
+        cuts2: Cutoff for s parameters (cross-site).
+
+    Returns:
+        Tuple of (b, c, x, s) numpy arrays.
+
+    Raises:
+        FileNotFoundError: If OUT.dat or *_prev.dat files not found.
+        ValueError: If parameter count doesn't match topology.
+
+    Note:
+        Must be called from analysis directory containing:
+        - OUT.dat: LMALF output (flat parameter vector)
+        - b_prev.dat, c_prev.dat, x_prev.dat, s_prev.dat: Previous cycle biases
+
+        Produces in current directory:
+        - b.dat, c.dat, x.dat, s.dat: New bias parameter files
+    """
+    alf_info = ensure_alf_info(alf_info)
+    kT = 0.001987 * alf_info.temp
+
+    nsubs = alf_info.nsubs
+    nblocks = alf_info.nblocks
+
+    # Load previous parameters
+    b_prev = np.loadtxt("b_prev.dat")
+    c_prev = np.loadtxt("c_prev.dat")
+    x_prev = np.loadtxt("x_prev.dat")
+    s_prev = np.loadtxt("s_prev.dat")
+
+    # Initialize output arrays
+    b = np.zeros((1, nblocks))
+    c = np.zeros((nblocks, nblocks))
+    x = np.zeros((nblocks, nblocks))
+    s = np.zeros((nblocks, nblocks))
+
+    # Count expected parameters
+    nparm = 0
+    for isite in range(len(nsubs)):
+        n1 = nsubs[isite]
+        n2 = nsubs[isite] * (nsubs[isite] - 1) // 2
+        for jsite in range(isite, len(nsubs)):
+            n3 = nsubs[isite] * nsubs[jsite]
+            if isite == jsite:
+                nparm += n1 + 5 * n2
+            elif ms == 1:
+                nparm += 5 * n3
+            elif ms == 2:
+                nparm += n3
+
+    # Build cutoff list for adaptive scaling
+    cutlist = np.zeros(nparm)
+    n0 = 0
+    for isite in range(len(nsubs)):
+        for jsite in range(isite, len(nsubs)):
+            if isite == jsite:
+                for i in range(nsubs[isite]):
+                    cutlist[n0:n0 + 1] = cutb
+                    n0 += 1
+                    for j in range(i + 1, nsubs[isite]):
+                        cutlist[n0:n0 + 1] = cutc
+                        n0 += 1
+                        cutlist[n0:n0 + 2] = cutx
+                        n0 += 2
+                        cutlist[n0:n0 + 2] = cuts
+                        n0 += 2
+            elif ms > 0:
+                for i in range(nsubs[isite]):
+                    for j in range(nsubs[jsite]):
+                        cutlist[n0:n0 + 1] = cutc2
+                        n0 += 1
+                        if ms == 1:
+                            cutlist[n0:n0 + 2] = cutx2
+                            n0 += 2
+                            cutlist[n0:n0 + 2] = cuts2
+                            n0 += 2
+
+    # Load LMALF output
+    coeff = np.loadtxt("OUT.dat")
+
+    # Apply adaptive scaling to prevent large parameter changes
+    max_ratio = np.max(np.abs(coeff[:n0] / cutlist))
+    scaling = 1.5 / max_ratio if max_ratio > 0 else 1.0
+    if scaling > 1:
+        scaling = 1.0
+    coeff *= scaling
+
+    print(f"LMALF scaling factor: {scaling:.4f}")
+
+    # Unpack coefficients into b/c/x/s matrices
+    ind = 0
+    iblock = 0
+    for isite in range(len(nsubs)):
+        jblock = iblock
+        for jsite in range(isite, len(nsubs)):
+            if isite == jsite:
+                for i in range(nsubs[isite]):
+                    b[0, iblock + i] = coeff[ind]
+                    ind += 1
+                    for j in range(i + 1, nsubs[isite]):
+                        c[iblock + i, jblock + j] = coeff[ind]
+                        ind += 1
+                        x[iblock + i, jblock + j] = coeff[ind]
+                        ind += 1
+                        x[jblock + j, iblock + i] = coeff[ind]
+                        ind += 1
+                        s[iblock + i, jblock + j] = coeff[ind]
+                        ind += 1
+                        s[jblock + j, iblock + i] = coeff[ind]
+                        ind += 1
+            elif ms > 0:
+                for i in range(nsubs[isite]):
+                    for j in range(nsubs[jsite]):
+                        c[iblock + i, jblock + j] = coeff[ind]
+                        ind += 1
+                        if ms == 1:
+                            x[iblock + i, jblock + j] = coeff[ind]
+                            ind += 1
+                            x[jblock + j, iblock + i] = coeff[ind]
+                            ind += 1
+                            s[iblock + i, jblock + j] = coeff[ind]
+                            ind += 1
+                            s[jblock + j, iblock + i] = coeff[ind]
+                            ind += 1
+            jblock += nsubs[jsite]
+        iblock += nsubs[isite]
+
+    # Apply cross-site corrections to b
+    # (absorb constant parts of cross-site coupling into b)
+    iblock = 0
+    for isite in range(len(nsubs)):
+        jblock = iblock
+        for jsite in range(isite, len(nsubs)):
+            if isite != jsite:
+                for i in range(nsubs[isite]):
+                    b[0, iblock + i] += c[iblock + i, jblock]
+                    c[iblock + i, jblock:jblock + nsubs[jsite]] -= c[iblock + i, jblock]
+                for j in range(nsubs[jsite]):
+                    b[0, jblock + j] += c[iblock, jblock + j]
+                    c[iblock:iblock + nsubs[isite], jblock + j] -= c[iblock, jblock + j]
+            jblock += nsubs[jsite]
+        iblock += nsubs[isite]
+
+    # Normalize b within each site (first substate becomes reference)
+    iblock = 0
+    for isite in range(len(nsubs)):
+        b[0, iblock:iblock + nsubs[isite]] -= b[0, iblock]
+        iblock += nsubs[isite]
+
+    # Write output files
+    np.savetxt("b.dat", b, fmt=" %7.2f")
+    np.savetxt("c.dat", c, fmt=" %7.2f")
+    np.savetxt("x.dat", x, fmt=" %7.2f")
+    np.savetxt("s.dat", s, fmt=" %7.2f")
+
+    print(f"LMALF: Wrote b.dat, c.dat, x.dat, s.dat")
+
+    return b, c, x, s

@@ -230,10 +230,10 @@ struct_data *readdata(int arg1, double arg2, int arg3, int arg4, int use_gshift)
   struct_data *data = (struct_data *)malloc(sizeof(struct_data));
 
   data->Nsim = arg1;
-  fp = fopen("../../prep/nsubs", "r");
+  fp = fopen("../prep/nsubs", "r");
   if (!fp)
   {
-    fprintf(stderr, "Error, ../../prep/nsubs does not exist\n");
+    fprintf(stderr, "Error, ../prep/nsubs does not exist\n");
     exit(1);
   }
   data->Nsites = 0;
@@ -242,7 +242,7 @@ struct_data *readdata(int arg1, double arg2, int arg3, int arg4, int use_gshift)
   fclose(fp);
   data->Nsubs = (int *)malloc(data->Nsites * sizeof(int));
   data->block0 = (int *)malloc((data->Nsites + 1) * sizeof(int));
-  fp = fopen("../../prep/nsubs", "r");
+  fp = fopen("../prep/nsubs", "r");
   data->Nblocks = 0;
   data->block0[0] = 0;
   for (i = 0; i < data->Nsites; i++)
@@ -2115,4 +2115,1155 @@ void apply_gimp_shifts(double *gimp_data, int data_size, const char *gimp_filena
       printf("Warning: No shift available for conditional profile %s\n", filename);
     }
   }
+}
+
+// ============================================================================
+// LMALF (Likelihood Maximization ALF) Implementation
+// ============================================================================
+//
+// Alternative to WHAM using L-BFGS optimization for bias parameter fitting.
+// Based on original lmalf.cu by Ryan Hayes (2017).
+// ============================================================================
+
+// Forward declarations for LMALF
+struct_lmalf *lmalf_setup(int nf, double temp, int ms, int msprof);
+void lmalf_run(struct_lmalf *lm);
+void lmalf_finish(struct_lmalf *lm);
+
+// LMALF-specific reduction kernel (sums across block)
+__device__ void lmalf_reduce(double local, double *shared, double *global)
+{
+  int k;
+  shared[threadIdx.x] = local;
+  __syncthreads();
+
+  for (k = 1; k < LMALF_BLOCK; k *= 2)
+  {
+    if ((threadIdx.x % (2 * k)) == 0 && threadIdx.x + k < LMALF_BLOCK)
+    {
+      shared[threadIdx.x] += shared[threadIdx.x + k];
+    }
+    __syncthreads();
+  }
+
+  if (threadIdx.x == 0)
+  {
+    atomicAdd(global, shared[0]);
+  }
+}
+
+// LMALF energy kernel: compute bias energy from parameters and lambda
+__global__ void lmalf_energykernel(struct_lmalf lm, double *x, double *lambda, double *energy)
+{
+  int b = blockIdx.x * blockDim.x + threadIdx.x;
+  int s1, s2, i1, i2, k;
+  double q1, q2, E;
+
+  if (b >= lm.B) return;
+
+  double *lam = lambda + lm.nblocks * b;
+
+  k = 0;
+  E = 0;
+  for (s1 = 0; s1 < lm.nsites; s1++)
+  {
+    for (s2 = s1; s2 < lm.nsites; s2++)
+    {
+      if (s1 == s2)
+      {
+        // Same site
+        for (i1 = lm.block0_d[s1]; i1 < lm.block0_d[s1 + 1]; i1++)
+        {
+          q1 = lam[i1];
+          E += x[k] * q1;  // b term
+          k++;
+          for (i2 = i1 + 1; i2 < lm.block0_d[s1 + 1]; i2++)
+          {
+            q2 = lam[i2];
+            E += x[k] * q1 * q2;                        // c term
+            k++;
+            E += x[k] * q2 * (1 - exp(-q1 / 0.18));     // x term 1
+            k++;
+            E += x[k] * q1 * (1 - exp(-q2 / 0.18));     // x term 2
+            k++;
+            E += x[k] * q2 * (1 - 1 / (q1 / 0.017 + 1)); // s term 1
+            k++;
+            E += x[k] * q1 * (1 - 1 / (q2 / 0.017 + 1)); // s term 2
+            k++;
+          }
+        }
+      }
+      else if (lm.ms)
+      {
+        // Different sites
+        for (i1 = lm.block0_d[s1]; i1 < lm.block0_d[s1 + 1]; i1++)
+        {
+          q1 = lam[i1];
+          for (i2 = lm.block0_d[s2]; i2 < lm.block0_d[s2 + 1]; i2++)
+          {
+            q2 = lam[i2];
+            E += x[k] * q1 * q2;  // c term
+            k++;
+            if (lm.ms == 1)
+            {
+              E += x[k] * q2 * (1 - exp(-q1 / 0.18));     // x term 1
+              k++;
+              E += x[k] * q1 * (1 - exp(-q2 / 0.18));     // x term 2
+              k++;
+              E += x[k] * q2 * (1 - 1 / (q1 / 0.017 + 1)); // s term 1
+              k++;
+              E += x[k] * q1 * (1 - 1 / (q2 / 0.017 + 1)); // s term 2
+              k++;
+            }
+          }
+        }
+      }
+    }
+  }
+  energy[b] = E;
+}
+
+// LMALF weighted energy kernel: compute gradient contributions
+__global__ void lmalf_weightedenergykernel(struct_lmalf lm, double sign, double *lambda, double *weight, double *dEdx)
+{
+  int b = blockIdx.x * blockDim.x + threadIdx.x;
+  int s1, s2, i1, i2, k;
+  double q1, q2, w, E;
+  __shared__ double Eloc[LMALF_BLOCK];
+
+  if (b < lm.B)
+  {
+    w = sign * weight[b];
+  }
+  else
+  {
+    w = 0;
+    q1 = 0;
+    q2 = 0;
+  }
+
+  double *lam = lambda + lm.nblocks * b;
+
+  k = 0;
+  for (s1 = 0; s1 < lm.nsites; s1++)
+  {
+    for (s2 = s1; s2 < lm.nsites; s2++)
+    {
+      if (s1 == s2)
+      {
+        for (i1 = lm.block0_d[s1]; i1 < lm.block0_d[s1 + 1]; i1++)
+        {
+          if (b < lm.B) q1 = lam[i1];
+          E = w * q1;
+          lmalf_reduce(E, Eloc, &dEdx[k]);
+          k++;
+          for (i2 = i1 + 1; i2 < lm.block0_d[s1 + 1]; i2++)
+          {
+            if (b < lm.B) q2 = lam[i2];
+            E = w * q1 * q2;
+            lmalf_reduce(E, Eloc, &dEdx[k]);
+            k++;
+            E = w * q2 * (1 - exp(-q1 / 0.18));
+            lmalf_reduce(E, Eloc, &dEdx[k]);
+            k++;
+            E = w * q1 * (1 - exp(-q2 / 0.18));
+            lmalf_reduce(E, Eloc, &dEdx[k]);
+            k++;
+            E = w * q2 * (1 - 1 / (q1 / 0.017 + 1));
+            lmalf_reduce(E, Eloc, &dEdx[k]);
+            k++;
+            E = w * q1 * (1 - 1 / (q2 / 0.017 + 1));
+            lmalf_reduce(E, Eloc, &dEdx[k]);
+            k++;
+          }
+        }
+      }
+      else if (lm.ms)
+      {
+        for (i1 = lm.block0_d[s1]; i1 < lm.block0_d[s1 + 1]; i1++)
+        {
+          if (b < lm.B) q1 = lam[i1];
+          for (i2 = lm.block0_d[s2]; i2 < lm.block0_d[s2 + 1]; i2++)
+          {
+            if (b < lm.B) q2 = lam[i2];
+            E = w * q1 * q2;
+            lmalf_reduce(E, Eloc, &dEdx[k]);
+            k++;
+            if (lm.ms == 1)
+            {
+              E = w * q2 * (1 - exp(-q1 / 0.18));
+              lmalf_reduce(E, Eloc, &dEdx[k]);
+              k++;
+              E = w * q1 * (1 - exp(-q2 / 0.18));
+              lmalf_reduce(E, Eloc, &dEdx[k]);
+              k++;
+              E = w * q2 * (1 - 1 / (q1 / 0.017 + 1));
+              lmalf_reduce(E, Eloc, &dEdx[k]);
+              k++;
+              E = w * q1 * (1 - 1 / (q2 / 0.017 + 1));
+              lmalf_reduce(E, Eloc, &dEdx[k]);
+              k++;
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+// LMALF dot product kernel
+__global__ void lmalf_dotenergykernel(struct_lmalf lm, double sign, double *x, double *y, double *z)
+{
+  int b = blockIdx.x * blockDim.x + threadIdx.x;
+  double xtmp;
+  __shared__ double xloc[LMALF_BLOCK];
+
+  if (b < lm.B)
+  {
+    xtmp = sign * x[b] * y[b];
+  }
+  else
+  {
+    xtmp = 0;
+  }
+  lmalf_reduce(xtmp, xloc, z);
+}
+
+// LMALF Boltzmann weighting kernel
+__global__ void lmalf_boltzmannkernel(struct_lmalf lm, double sign, double *energy, double s, double *denergyds,
+                                      double *inweight, double *outweight, double *Z)
+{
+  int b = blockIdx.x * blockDim.x + threadIdx.x;
+  double E, w;
+  __shared__ double Zloc[LMALF_BLOCK];
+
+  if (b < lm.B)
+  {
+    w = inweight[b];
+    E = energy[b];
+    if (s != 0 && denergyds)
+    {
+      E += s * denergyds[b];
+    }
+    w *= exp(-sign * E / lm.kT);
+    outweight[b] = w;
+  }
+  else
+  {
+    w = 0;
+  }
+
+  if (Z)
+  {
+    __syncthreads();
+    lmalf_reduce(w, Zloc, Z);
+  }
+}
+
+// LMALF regularization likelihood kernel
+__global__ void lmalf_regularizeLkernel(struct_lmalf lm)
+{
+  int i = blockIdx.x * blockDim.x + threadIdx.x;
+  double deltax, L;
+  __shared__ double Lloc[LMALF_BLOCK];
+
+  if (i < lm.nx)
+  {
+    deltax = lm.x_d[i] - lm.xr_d[i];
+    L = 0.5 * lm.kx_d[i] * deltax * deltax;
+  }
+  else
+  {
+    L = 0;
+  }
+
+  lmalf_reduce(L, Lloc, lm.L_d);
+}
+
+// LMALF regularization gradient kernel
+__global__ void lmalf_regularizedLdxkernel(struct_lmalf lm)
+{
+  int i = blockIdx.x * blockDim.x + threadIdx.x;
+
+  if (i < lm.nx)
+  {
+    lm.dLdx_d[i] = lm.kx_d[i] * (lm.x_d[i] - lm.xr_d[i]);
+  }
+}
+
+// LMALF gradient likelihood kernel (for moment matching)
+__global__ void lmalf_gradientlikelihoodkernel(struct_lmalf lm, double *norm, double *dLdxin)
+{
+  int i = blockIdx.x * blockDim.x + threadIdx.x;
+
+  if (i < lm.nbias)
+  {
+    atomicAdd(&lm.dLdx_d[i], -dLdxin[i] / (norm[0] * lm.kT));
+  }
+}
+
+// LMALF likelihood kernel
+__global__ void lmalf_likelihoodkernel(struct_lmalf lm, double s, double *L, double *dLds)
+{
+  if (L)
+  {
+    atomicAdd(L, lm.Esum_d[0] / (lm.sumensweight_d[0] * lm.kT));
+    if (s != 0)
+      atomicAdd(L, s * lm.dEdssum_d[0] / (lm.sumensweight_d[0] * lm.kT));
+    atomicAdd(L, log(lm.mc_Z_d[0]));
+  }
+  if (dLds)
+  {
+    atomicAdd(dLds, lm.dEdssum_d[0] / (lm.sumensweight_d[0] * lm.kT));
+    atomicAdd(dLds, -lm.mc_dEdssum_d[0] / (lm.mc_Z_d[0] * lm.kT));
+  }
+}
+
+// LMALF line search regularization kernel
+__global__ void lmalf_regularizelinekernel(struct_lmalf lm, double s)
+{
+  int i = blockIdx.x * blockDim.x + threadIdx.x;
+  double deltax, dxds, L, dLds;
+  __shared__ double Lloc[LMALF_BLOCK];
+
+  if (i < lm.nx)
+  {
+    dxds = lm.dxds_d[i];
+    deltax = lm.x_d[i] + s * dxds - lm.xr_d[i];
+    L = 0.5 * lm.kx_d[i] * deltax * deltax;
+    dLds = lm.kx_d[i] * deltax * dxds;
+  }
+  else
+  {
+    L = 0;
+    dLds = 0;
+  }
+
+  lmalf_reduce(L, Lloc, lm.L_d);
+  lmalf_reduce(dLds, Lloc, lm.dLds_d);
+}
+
+// Setup LMALF data structure
+struct_lmalf *lmalf_setup(int nf, double temp, int ms, int msprof)
+{
+  struct_lmalf *lm = (struct_lmalf *)malloc(sizeof(struct_lmalf));
+  FILE *fp;
+  char fnm[MAXLENGTH], line[MAXLENGTH];
+  int i, j, k, si, sj;
+  double kp, k0;
+
+  // Read nsubs configuration
+  fp = fopen("../prep/nsubs", "r");
+  if (!fp)
+  {
+    fprintf(stderr, "Error: ../prep/nsubs does not exist\n");
+    exit(1);
+  }
+
+  lm->nsites = 0;
+  while (fscanf(fp, "%d", &i) == 1)
+    lm->nsites++;
+  fclose(fp);
+
+  lm->nsubs = (int *)calloc(lm->nsites, sizeof(int));
+  lm->block0 = (int *)calloc(lm->nsites + 1, sizeof(int));
+
+  fp = fopen("../prep/nsubs", "r");
+  lm->nblocks = 0;
+  for (i = 0; i < lm->nsites; i++)
+  {
+    fscanf(fp, "%d", &lm->nsubs[i]);
+    lm->block0[i] = lm->nblocks;
+    lm->nblocks += lm->nsubs[i];
+  }
+  lm->block0[lm->nsites] = lm->nblocks;
+  fclose(fp);
+
+  CUDA_CHECK(cudaMalloc(&lm->block0_d, (lm->nsites + 1) * sizeof(int)));
+  CUDA_CHECK(cudaMemcpy(lm->block0_d, lm->block0, (lm->nsites + 1) * sizeof(int), cudaMemcpyHostToDevice));
+
+  lm->ms = ms;
+  lm->msprof = msprof;
+  lm->kT = kB * temp;
+
+  // Count frames from lambda file
+  fp = fopen("Lambda.dat", "r");
+  if (!fp)
+  {
+    fprintf(stderr, "Error: Lambda.dat does not exist\n");
+    exit(1);
+  }
+  lm->B = 0;
+  while (fgets(line, MAXLENGTH, fp) != NULL)
+    lm->B++;
+  fclose(fp);
+  fprintf(stdout, "LMALF: %d frames\n", lm->B);
+
+  // Allocate and read lambda trajectories
+  lm->lambda_h = (double *)calloc(lm->B * lm->nblocks, sizeof(double));
+  lm->ensweight_h = (double *)calloc(lm->B, sizeof(double));
+  lm->mc_lambda_h = (double *)calloc(lm->B * lm->nblocks, sizeof(double));
+  lm->mc_ensweight_h = (double *)calloc(lm->B, sizeof(double));
+
+  fp = fopen("Lambda.dat", "r");
+  for (i = 0; i < lm->B; i++)
+  {
+    for (j = 0; j < lm->nblocks; j++)
+    {
+      double buffer;
+      fscanf(fp, "%lf", &buffer);
+      lm->lambda_h[i * lm->nblocks + j] = buffer;
+    }
+  }
+  fclose(fp);
+
+  // Read ensemble weights
+  fp = fopen("ensweight.dat", "r");
+  if (!fp)
+  {
+    // Default: all weights = 1
+    for (i = 0; i < lm->B; i++)
+    {
+      lm->ensweight_h[i] = 1.0;
+      lm->mc_ensweight_h[i] = 1.0;
+    }
+  }
+  else
+  {
+    for (i = 0; i < lm->B; i++)
+    {
+      double buffer;
+      fscanf(fp, "%lf", &buffer);
+      lm->ensweight_h[i] = buffer;
+      lm->mc_ensweight_h[i] = 1.0;
+    }
+    fclose(fp);
+  }
+
+  // Generate Monte Carlo reference (simplified - use same lambda with uniform weights)
+  for (i = 0; i < lm->B * lm->nblocks; i++)
+  {
+    lm->mc_lambda_h[i] = lm->lambda_h[i];
+  }
+
+  CUDA_CHECK(cudaMalloc(&lm->lambda_d, lm->B * lm->nblocks * sizeof(double)));
+  CUDA_CHECK(cudaMalloc(&lm->mc_lambda_d, lm->B * lm->nblocks * sizeof(double)));
+  CUDA_CHECK(cudaMalloc(&lm->ensweight_d, lm->B * sizeof(double)));
+  CUDA_CHECK(cudaMalloc(&lm->mc_ensweight_d, lm->B * sizeof(double)));
+  CUDA_CHECK(cudaMemcpy(lm->lambda_d, lm->lambda_h, lm->B * lm->nblocks * sizeof(double), cudaMemcpyHostToDevice));
+  CUDA_CHECK(cudaMemcpy(lm->mc_lambda_d, lm->mc_lambda_h, lm->B * lm->nblocks * sizeof(double), cudaMemcpyHostToDevice));
+  CUDA_CHECK(cudaMemcpy(lm->ensweight_d, lm->ensweight_h, lm->B * sizeof(double), cudaMemcpyHostToDevice));
+  CUDA_CHECK(cudaMemcpy(lm->mc_ensweight_d, lm->mc_ensweight_h, lm->B * sizeof(double), cudaMemcpyHostToDevice));
+
+  // Count bias parameters
+  lm->nbias = 0;
+  for (i = 0; i < lm->nsites; i++)
+  {
+    for (j = i; j < lm->nsites; j++)
+    {
+      if (i == j)
+      {
+        lm->nbias += lm->nsubs[i] + (5 * lm->nsubs[i] * (lm->nsubs[i] - 1)) / 2;
+      }
+      else if (lm->ms == 1)
+      {
+        lm->nbias += 5 * lm->nsubs[i] * lm->nsubs[j];
+      }
+      else if (lm->ms == 2)
+      {
+        lm->nbias += lm->nsubs[i] * lm->nsubs[j];
+      }
+    }
+  }
+
+  // Count profile types
+  lm->nprof = 0;
+  for (i = 0; i < lm->nsites; i++)
+  {
+    for (j = i; j < lm->nsites; j++)
+    {
+      if (i == j)
+      {
+        if (lm->nsubs[i] == 2)
+        {
+          lm->nprof += lm->nsubs[i] + lm->nsubs[i] * (lm->nsubs[i] - 1) / 2;
+        }
+        else
+        {
+          lm->nprof += lm->nsubs[i] + 2 * lm->nsubs[i] * (lm->nsubs[i] - 1) / 2;
+        }
+      }
+      else if (msprof)
+      {
+        lm->nprof += lm->nsubs[i] * lm->nsubs[j];
+      }
+    }
+  }
+
+  lm->nx = lm->nbias;
+
+  // Setup regularization
+  kp = 1.0 / (lm->kT * lm->kT);
+  k0 = kp / 400;
+
+  lm->kx_h = (double *)calloc(lm->nx, sizeof(double));
+  lm->xr_h = (double *)calloc(lm->nx, sizeof(double));
+
+  // Load previous x/s values if ms==1
+  double *xr_x = NULL, *xr_s = NULL;
+  if (lm->ms == 1)
+  {
+    xr_x = (double *)calloc(lm->nblocks * lm->nblocks, sizeof(double));
+    xr_s = (double *)calloc(lm->nblocks * lm->nblocks, sizeof(double));
+    FILE *fpx = fopen("x_prev.dat", "r");
+    FILE *fps = fopen("s_prev.dat", "r");
+    if (fpx && fps)
+    {
+      for (i = 0; i < lm->nblocks; i++)
+      {
+        for (j = 0; j < lm->nblocks; j++)
+        {
+          double buffer;
+          fscanf(fpx, "%lf", &buffer);
+          xr_x[i * lm->nblocks + j] = buffer;
+          fscanf(fps, "%lf", &buffer);
+          xr_s[i * lm->nblocks + j] = buffer;
+        }
+      }
+      fclose(fpx);
+      fclose(fps);
+    }
+    else
+    {
+      if (fpx) fclose(fpx);
+      if (fps) fclose(fps);
+    }
+  }
+
+  // Set regularization constants
+  k = 0;
+  for (si = 0; si < lm->nsites; si++)
+  {
+    for (sj = si; sj < lm->nsites; sj++)
+    {
+      if (si == sj)
+      {
+        for (i = 0; i < lm->nsubs[si]; i++)
+        {
+          lm->kx_h[k++] = k0 / 4;  // b
+          for (j = i + 1; j < lm->nsubs[sj]; j++)
+          {
+            lm->kx_h[k++] = k0 / 64; // c
+            lm->kx_h[k++] = k0 / 4;  // x
+            lm->kx_h[k++] = k0 / 4;  // x
+            lm->kx_h[k++] = k0 / 1;  // s
+            lm->kx_h[k++] = k0 / 1;  // s
+          }
+        }
+      }
+      else if (lm->ms)
+      {
+        for (i = 0; i < lm->nsubs[si]; i++)
+        {
+          for (j = 0; j < lm->nsubs[sj]; j++)
+          {
+            lm->kx_h[k++] = k0 / 4;  // c
+            if (lm->ms == 1)
+            {
+              if (xr_x)
+                lm->xr_h[k] = xr_x[(lm->block0[si] + i) * lm->nblocks + lm->block0[sj] + j];
+              lm->kx_h[k++] = k0 / 0.25; // x
+              if (xr_x)
+                lm->xr_h[k] = xr_x[(lm->block0[sj] + j) * lm->nblocks + lm->block0[si] + i];
+              lm->kx_h[k++] = k0 / 0.25; // x
+              if (xr_s)
+                lm->xr_h[k] = xr_s[(lm->block0[si] + i) * lm->nblocks + lm->block0[sj] + j];
+              lm->kx_h[k++] = k0 / 0.25; // s
+              if (xr_s)
+                lm->xr_h[k] = xr_s[(lm->block0[sj] + j) * lm->nblocks + lm->block0[si] + i];
+              lm->kx_h[k++] = k0 / 0.25; // s
+            }
+          }
+        }
+      }
+    }
+  }
+
+  if (xr_x) free(xr_x);
+  if (xr_s) free(xr_s);
+
+  CUDA_CHECK(cudaMalloc(&lm->kx_d, lm->nx * sizeof(double)));
+  CUDA_CHECK(cudaMemcpy(lm->kx_d, lm->kx_h, lm->nx * sizeof(double), cudaMemcpyHostToDevice));
+  CUDA_CHECK(cudaMalloc(&lm->xr_d, lm->nx * sizeof(double)));
+  CUDA_CHECK(cudaMemcpy(lm->xr_d, lm->xr_h, lm->nx * sizeof(double), cudaMemcpyHostToDevice));
+
+  // Allocate calculation arrays
+  lm->L_h = (double *)calloc(1, sizeof(double));
+  lm->dLds_h = (double *)calloc(1, sizeof(double));
+  CUDA_CHECK(cudaMalloc(&lm->L_d, sizeof(double)));
+  CUDA_CHECK(cudaMalloc(&lm->dLds_d, sizeof(double)));
+
+  lm->x_h = (double *)calloc(lm->nx, sizeof(double));
+  lm->dLdx_h = (double *)calloc(lm->nx, sizeof(double));
+  CUDA_CHECK(cudaMalloc(&lm->dLdx_d, lm->nx * sizeof(double)));
+
+  // L-BFGS memory
+  lm->Nmemax = 50;
+  lm->Nmem = 0;
+  lm->d_x = (double *)calloc(lm->nx * lm->Nmemax, sizeof(double));
+  lm->d_dLdx = (double *)calloc(lm->nx * lm->Nmemax, sizeof(double));
+  lm->rho = (double *)calloc(lm->Nmemax, sizeof(double));
+  lm->alpha = (double *)calloc(lm->Nmemax, sizeof(double));
+  lm->beta = (double *)calloc(lm->Nmemax, sizeof(double));
+  lm->hi_h = (double *)calloc(lm->nx, sizeof(double));
+  lm->x0_h = (double *)calloc(lm->nx, sizeof(double));
+  lm->dLdx0_h = (double *)calloc(lm->nx, sizeof(double));
+
+  CUDA_CHECK(cudaMalloc(&lm->E_d, lm->B * sizeof(double)));
+  CUDA_CHECK(cudaMalloc(&lm->dEds_d, lm->B * sizeof(double)));
+  CUDA_CHECK(cudaMalloc(&lm->mc_E_d, lm->B * sizeof(double)));
+  CUDA_CHECK(cudaMalloc(&lm->mc_dEds_d, lm->B * sizeof(double)));
+  CUDA_CHECK(cudaMalloc(&lm->weight_d, lm->B * sizeof(double)));
+  CUDA_CHECK(cudaMalloc(&lm->mc_weight_d, lm->B * sizeof(double)));
+  CUDA_CHECK(cudaMalloc(&lm->x_d, lm->nx * sizeof(double)));
+  CUDA_CHECK(cudaMalloc(&lm->dxds_d, lm->nx * sizeof(double)));
+  CUDA_CHECK(cudaMalloc(&lm->Z_d, sizeof(double)));
+  CUDA_CHECK(cudaMalloc(&lm->mc_Z_d, sizeof(double)));
+  CUDA_CHECK(cudaMalloc(&lm->Esum_d, sizeof(double)));
+  CUDA_CHECK(cudaMalloc(&lm->dEdssum_d, sizeof(double)));
+  CUDA_CHECK(cudaMalloc(&lm->mc_dEdssum_d, sizeof(double)));
+  CUDA_CHECK(cudaMalloc(&lm->moments_d, lm->nbias * sizeof(double)));
+  CUDA_CHECK(cudaMalloc(&lm->mc_moments_d, lm->nbias * sizeof(double)));
+  CUDA_CHECK(cudaMalloc(&lm->sumensweight_d, sizeof(double)));
+
+  // Convergence settings
+  lm->criteria = 1.25e-3;
+  lm->max_iter = 250;
+  lm->done = 0;
+  lm->doneCount = 0;
+
+  return lm;
+}
+
+// Evaluate likelihood function
+void lmalf_evaluateL(struct_lmalf *lm)
+{
+  CUDA_CHECK(cudaMemcpy(lm->x_d, lm->x_h, lm->nx * sizeof(double), cudaMemcpyHostToDevice));
+  CUDA_CHECK(cudaMemset(lm->L_d, 0, sizeof(double)));
+
+  // Regularization contribution
+  lmalf_regularizeLkernel<<<(lm->nx + LMALF_BLOCK - 1) / LMALF_BLOCK, LMALF_BLOCK>>>(*lm);
+  CUDA_CHECK(cudaGetLastError());
+
+  // Compute energies
+  lmalf_energykernel<<<(lm->B + LMALF_BLOCK - 1) / LMALF_BLOCK, LMALF_BLOCK>>>(*lm, lm->x_d, lm->lambda_d, lm->E_d);
+  CUDA_CHECK(cudaGetLastError());
+
+  // Moment matching contribution
+  lmalf_energykernel<<<(lm->B + LMALF_BLOCK - 1) / LMALF_BLOCK, LMALF_BLOCK>>>(*lm, lm->x_d, lm->mc_lambda_d, lm->mc_E_d);
+  CUDA_CHECK(cudaGetLastError());
+
+  CUDA_CHECK(cudaMemset(lm->Esum_d, 0, sizeof(double)));
+  lmalf_dotenergykernel<<<(lm->B + LMALF_BLOCK - 1) / LMALF_BLOCK, LMALF_BLOCK>>>(*lm, 1, lm->ensweight_d, lm->E_d, lm->Esum_d);
+  CUDA_CHECK(cudaGetLastError());
+
+  CUDA_CHECK(cudaMemset(lm->mc_Z_d, 0, sizeof(double)));
+  lmalf_boltzmannkernel<<<(lm->B + LMALF_BLOCK - 1) / LMALF_BLOCK, LMALF_BLOCK>>>(
+      *lm, 1, lm->mc_E_d, 0, NULL, lm->mc_ensweight_d, lm->mc_weight_d, lm->mc_Z_d);
+  CUDA_CHECK(cudaGetLastError());
+
+  lmalf_likelihoodkernel<<<1, 1>>>(*lm, 0, lm->L_d, NULL);
+  CUDA_CHECK(cudaGetLastError());
+
+  CUDA_CHECK(cudaMemcpy(lm->L_h, lm->L_d, sizeof(double), cudaMemcpyDeviceToHost));
+
+  fprintf(stdout, "New      L=%lg\n", lm->L_h[0]);
+}
+
+// Evaluate likelihood along line search direction
+void lmalf_evaluateL_line(double s, struct_lmalf *lm)
+{
+  CUDA_CHECK(cudaMemset(lm->L_d, 0, sizeof(double)));
+  CUDA_CHECK(cudaMemset(lm->dLds_d, 0, sizeof(double)));
+
+  lmalf_regularizelinekernel<<<(lm->nx + LMALF_BLOCK - 1) / LMALF_BLOCK, LMALF_BLOCK>>>(*lm, s);
+  CUDA_CHECK(cudaGetLastError());
+
+  // Moment matching
+  CUDA_CHECK(cudaMemset(lm->mc_Z_d, 0, sizeof(double)));
+  lmalf_boltzmannkernel<<<(lm->B + LMALF_BLOCK - 1) / LMALF_BLOCK, LMALF_BLOCK>>>(
+      *lm, 1, lm->mc_E_d, s, lm->mc_dEds_d, lm->mc_ensweight_d, lm->mc_weight_d, lm->mc_Z_d);
+  CUDA_CHECK(cudaGetLastError());
+
+  CUDA_CHECK(cudaMemset(lm->mc_dEdssum_d, 0, sizeof(double)));
+  lmalf_dotenergykernel<<<(lm->B + LMALF_BLOCK - 1) / LMALF_BLOCK, LMALF_BLOCK>>>(*lm, 1, lm->mc_dEds_d, lm->mc_weight_d, lm->mc_dEdssum_d);
+  CUDA_CHECK(cudaGetLastError());
+
+  lmalf_likelihoodkernel<<<1, 1>>>(*lm, s, lm->L_d, lm->dLds_d);
+  CUDA_CHECK(cudaGetLastError());
+
+  CUDA_CHECK(cudaMemcpy(lm->L_h, lm->L_d, sizeof(double), cudaMemcpyDeviceToHost));
+  CUDA_CHECK(cudaMemcpy(lm->dLds_h, lm->dLds_d, sizeof(double), cudaMemcpyDeviceToHost));
+}
+
+// Evaluate gradient
+void lmalf_evaluatedLdx(struct_lmalf *lm)
+{
+  CUDA_CHECK(cudaMemset(lm->dLdx_d, 0, lm->nx * sizeof(double)));
+
+  lmalf_regularizedLdxkernel<<<(lm->nx + LMALF_BLOCK - 1) / LMALF_BLOCK, LMALF_BLOCK>>>(*lm);
+  CUDA_CHECK(cudaGetLastError());
+
+  // Moment gradient
+  CUDA_CHECK(cudaMemset(lm->mc_moments_d, 0, lm->nbias * sizeof(double)));
+  lmalf_weightedenergykernel<<<(lm->B + LMALF_BLOCK - 1) / LMALF_BLOCK, LMALF_BLOCK>>>(
+      *lm, 1, lm->mc_lambda_d, lm->mc_weight_d, lm->mc_moments_d);
+  CUDA_CHECK(cudaGetLastError());
+
+  lmalf_gradientlikelihoodkernel<<<(lm->nbias + LMALF_BLOCK - 1) / LMALF_BLOCK, LMALF_BLOCK>>>(
+      *lm, lm->sumensweight_d, lm->moments_d);
+  CUDA_CHECK(cudaGetLastError());
+
+  lmalf_gradientlikelihoodkernel<<<(lm->nbias + LMALF_BLOCK - 1) / LMALF_BLOCK, LMALF_BLOCK>>>(
+      *lm, lm->mc_Z_d, lm->mc_moments_d);
+  CUDA_CHECK(cudaGetLastError());
+
+  CUDA_CHECK(cudaMemcpy(lm->dLdx_h, lm->dLdx_d, lm->nx * sizeof(double), cudaMemcpyDeviceToHost));
+}
+
+// Reset L-BFGS inverse Hessian approximation
+void lmalf_resetHinv(struct_lmalf *lm)
+{
+  for (int i = 0; i < lm->nx; i++)
+  {
+    lm->x0_h[i] = lm->x_h[i];
+    lm->dLdx0_h[i] = lm->dLdx_h[i];
+  }
+}
+
+// Update L-BFGS memory
+void lmalf_updateHinv(struct_lmalf *lm)
+{
+  int i, j;
+
+  if (lm->Nmem < lm->Nmemax)
+  {
+    lm->Nmem++;
+  }
+
+  // Shift history
+  for (i = lm->Nmem - 1; i > 0; i--)
+  {
+    for (j = 0; j < lm->nx; j++)
+    {
+      lm->d_x[i * lm->nx + j] = lm->d_x[(i - 1) * lm->nx + j];
+      lm->d_dLdx[i * lm->nx + j] = lm->d_dLdx[(i - 1) * lm->nx + j];
+    }
+    lm->rho[i] = lm->rho[i - 1];
+  }
+
+  // Compute new history entry
+  lm->rho[0] = 0;
+  for (i = 0; i < lm->nx; i++)
+  {
+    lm->d_x[i] = lm->x_h[i] - lm->x0_h[i];
+    lm->d_dLdx[i] = lm->dLdx_h[i] - lm->dLdx0_h[i];
+    lm->rho[0] += lm->d_x[i] * lm->d_dLdx[i];
+  }
+  lm->rho[0] = 1.0 / lm->rho[0];
+
+  // Store current values as previous
+  for (i = 0; i < lm->nx; i++)
+  {
+    lm->x0_h[i] = lm->x_h[i];
+    lm->dLdx0_h[i] = lm->dLdx_h[i];
+  }
+}
+
+// Compute L-BFGS search direction
+void lmalf_projectHinv(struct_lmalf *lm)
+{
+  int i, j;
+
+  // Two-loop recursion for L-BFGS
+  for (i = 0; i < lm->nx; i++)
+  {
+    lm->hi_h[i] = lm->dLdx_h[i];
+  }
+
+  for (i = 0; i < lm->Nmem; i++)
+  {
+    lm->alpha[i] = 0;
+    for (j = 0; j < lm->nx; j++)
+    {
+      lm->alpha[i] += lm->d_x[i * lm->nx + j] * lm->hi_h[j];
+    }
+    lm->alpha[i] *= lm->rho[i];
+    for (j = 0; j < lm->nx; j++)
+    {
+      lm->hi_h[j] -= lm->alpha[i] * lm->d_dLdx[i * lm->nx + j];
+    }
+  }
+
+  for (i = lm->Nmem - 1; i >= 0; i--)
+  {
+    lm->beta[i] = 0;
+    for (j = 0; j < lm->nx; j++)
+    {
+      lm->beta[i] += lm->d_dLdx[i * lm->nx + j] * lm->hi_h[j];
+    }
+    lm->beta[i] *= lm->rho[i];
+    for (j = 0; j < lm->nx; j++)
+    {
+      lm->hi_h[j] += (lm->alpha[i] - lm->beta[i]) * lm->d_x[i * lm->nx + j];
+    }
+  }
+
+  // Negate for descent direction
+  for (i = 0; i < lm->nx; i++)
+  {
+    lm->hi_h[i] *= -1;
+  }
+
+  // Upload search direction and compute energy derivatives
+  CUDA_CHECK(cudaMemcpy(lm->dxds_d, lm->hi_h, lm->nx * sizeof(double), cudaMemcpyHostToDevice));
+
+  lmalf_energykernel<<<(lm->B + LMALF_BLOCK - 1) / LMALF_BLOCK, LMALF_BLOCK>>>(*lm, lm->dxds_d, lm->lambda_d, lm->dEds_d);
+  CUDA_CHECK(cudaGetLastError());
+
+  lmalf_energykernel<<<(lm->B + LMALF_BLOCK - 1) / LMALF_BLOCK, LMALF_BLOCK>>>(*lm, lm->dxds_d, lm->mc_lambda_d, lm->mc_dEds_d);
+  CUDA_CHECK(cudaGetLastError());
+
+  CUDA_CHECK(cudaMemset(lm->dEdssum_d, 0, sizeof(double)));
+  lmalf_dotenergykernel<<<(lm->B + LMALF_BLOCK - 1) / LMALF_BLOCK, LMALF_BLOCK>>>(*lm, 1, lm->ensweight_d, lm->dEds_d, lm->dEdssum_d);
+  CUDA_CHECK(cudaGetLastError());
+}
+
+// Line search update
+void lmalf_update_line(int step, struct_lmalf *lm)
+{
+  int i;
+  double a, b, c, s;
+  double s1, s2, s3;
+  double L1, L2, L3;
+  double dLds1, dLds2, dLds3;
+  double L0;
+
+  for (i = 0; i < lm->nx; i++)
+  {
+    lm->x0_h[i] = lm->x_h[i];
+    lm->dLdx0_h[i] = lm->dLdx_h[i];
+  }
+
+  L0 = lm->L_h[0];
+
+  s1 = 0.0;
+  lmalf_evaluateL_line(s1, lm);
+  L1 = lm->L_h[0];
+  dLds1 = lm->dLds_h[0];
+
+  if (dLds1 > 0)
+  {
+    fprintf(stdout, "Error, hi is pointing wrong way - halting\n");
+    lm->done = 1;
+    return;
+  }
+
+  s3 = 1.0;
+  lmalf_evaluateL_line(s3, lm);
+  L3 = lm->L_h[0];
+  dLds3 = lm->dLds_h[0];
+
+  // Expand step size until we bracket minimum
+  while (dLds3 < 0 && s3 < 1e+8)
+  {
+    fprintf(stdout, "Seek %4d s=%lg %lg\n          L=%lg %lg\n       dLds=%lg %lg\n",
+            step, s1, s3, L1, L3, dLds1, dLds3);
+    s2 = s1 - dLds1 * (s3 - s1) / (dLds3 - dLds1);
+    s3 = ((1.5 * s2 > 8 * s3 || 1.5 * s2 <= 0) ? 8 * s3 : 1.5 * s2);
+    lmalf_evaluateL_line(s3, lm);
+    L3 = lm->L_h[0];
+    dLds3 = lm->dLds_h[0];
+  }
+
+  // Handle overshooting
+  while (!isfinite(dLds3) && s3 > 1e-8)
+  {
+    fprintf(stdout, "Warning, overshot bound\n");
+    s3 = 0.95 * s3;
+    lmalf_evaluateL_line(s3, lm);
+    L3 = lm->L_h[0];
+    dLds3 = lm->dLds_h[0];
+  }
+
+  if (!(dLds3 > 0))
+  {
+    fprintf(stdout, "Warning: Step %4d unsuccessful, halting minimization\n", step);
+    lm->done = 1;
+    return;
+  }
+
+  // Initial secant interpolation
+  s2 = s1 - dLds1 * (s3 - s1) / (dLds3 - dLds1);
+  lmalf_evaluateL_line(s2, lm);
+  L2 = lm->L_h[0];
+  dLds2 = lm->dLds_h[0];
+
+  fprintf(stdout, "Step %4d s=%lg %lg %lg\n          L=%lg %lg %lg\n       dLds=%lg %lg %lg\n",
+          step, s1, s2, s3, L1, L2, L3, dLds1, dLds2, dLds3);
+
+  // Refine with quadratic interpolation
+  for (i = 0; i < 15; i++)
+  {
+    if ((s2 - s1) / s2 < 5e-7 || (s3 - s2) / s2 < 5e-7 || dLds2 == 0)
+      break;
+
+    // Quadratic interpolation
+    a = dLds1 / ((s1 - s2) * (s1 - s3));
+    a += dLds2 / ((s2 - s1) * (s2 - s3));
+    a += dLds3 / ((s3 - s1) * (s3 - s2));
+    b = -dLds1 * (s2 + s3) / ((s1 - s2) * (s1 - s3));
+    b += -dLds2 * (s1 + s3) / ((s2 - s1) * (s2 - s3));
+    b += -dLds3 * (s1 + s2) / ((s3 - s1) * (s3 - s2));
+    c = dLds1 * s2 * s3 / ((s1 - s2) * (s1 - s3));
+    c += dLds2 * s1 * s3 / ((s2 - s1) * (s2 - s3));
+    c += dLds3 * s1 * s2 / ((s3 - s1) * (s3 - s2));
+
+    s = (-b + sqrt(b * b - 4 * a * c)) / (2 * a);
+
+    if (dLds2 < 0)
+    {
+      s1 = s2;
+      L1 = L2;
+      dLds1 = dLds2;
+    }
+    else
+    {
+      s3 = s2;
+      L3 = L2;
+      dLds3 = dLds2;
+    }
+
+    if (s > s1 && s < s3)
+    {
+      s2 = s;
+    }
+    else
+    {
+      // Fall back to linear interpolation
+      fprintf(stdout, "Warning, fell back on linear interpolation\n");
+      s2 = s1 - dLds1 * (s3 - s1) / (dLds3 - dLds1);
+    }
+
+    lmalf_evaluateL_line(s2, lm);
+    L2 = lm->L_h[0];
+    dLds2 = lm->dLds_h[0];
+
+    fprintf(stdout, "Step %4d s=%lg %lg %lg\n          L=%lg %lg %lg\n       dLds=%lg %lg %lg\n",
+            step, s1, s2, s3, L1, L2, L3, dLds1, dLds2, dLds3);
+  }
+
+  // Apply step
+  double stepLength2 = 0;
+  double initGrad2 = 0;
+
+  for (i = 0; i < lm->nx; i++)
+  {
+    lm->x_h[i] = lm->x0_h[i] + s2 * lm->hi_h[i];
+    stepLength2 += (s2 * lm->hi_h[i]) * (s2 * lm->hi_h[i]);
+    initGrad2 += lm->dLdx_h[i] * lm->dLdx_h[i];
+  }
+
+  fprintf(stdout, "Step %4d L=%24.16lf -> L2=%24.16lf, dL=%lg, step length=%lg\n",
+          step, L0, L2, L2 - L0, sqrt(stepLength2));
+
+  // Check convergence
+  if (sqrt(stepLength2) < 5e-7)
+    lm->done = 1;
+  if (sqrt(stepLength2 / lm->nx) < lm->criteria)
+  {
+    lm->doneCount++;
+    if (lm->doneCount == 2)
+      lm->done = 1;
+  }
+  else
+  {
+    lm->doneCount = 0;
+  }
+}
+
+// Single optimization iteration
+void lmalf_iterate(int step, struct_lmalf *lm)
+{
+  lmalf_evaluateL(lm);
+  lmalf_evaluatedLdx(lm);
+
+  if (step == 0)
+  {
+    lmalf_resetHinv(lm);
+  }
+  else
+  {
+    lmalf_updateHinv(lm);
+  }
+
+  lmalf_projectHinv(lm);
+  lmalf_update_line(step, lm);
+}
+
+// Main LMALF optimization run
+void lmalf_run(struct_lmalf *lm)
+{
+  int s;
+  double sum;
+
+  // Compute sum of ensemble weights
+  sum = 0;
+  for (int i = 0; i < lm->B; i++)
+  {
+    sum += lm->ensweight_h[i];
+  }
+  CUDA_CHECK(cudaMemcpy(lm->sumensweight_d, &sum, sizeof(double), cudaMemcpyHostToDevice));
+
+  // Compute initial moments
+  CUDA_CHECK(cudaMemset(lm->moments_d, 0, lm->nbias * sizeof(double)));
+  lmalf_weightedenergykernel<<<(lm->B + LMALF_BLOCK - 1) / LMALF_BLOCK, LMALF_BLOCK>>>(
+      *lm, -1, lm->lambda_d, lm->ensweight_d, lm->moments_d);
+  CUDA_CHECK(cudaGetLastError());
+
+  lm->done = 0;
+  lm->doneCount = 0;
+
+  for (s = 0; s < lm->max_iter; s++)
+  {
+    lmalf_iterate(s, lm);
+    if (lm->done)
+      break;
+  }
+
+  fprintf(stdout, "LMALF optimization completed after %d iterations\n", s);
+}
+
+// Cleanup and write output
+void lmalf_finish(struct_lmalf *lm)
+{
+  FILE *fp;
+  int i;
+
+  // Write optimized parameters
+  fp = fopen("OUT.dat", "w");
+  for (i = 0; i < lm->nx; i++)
+  {
+    fprintf(fp, " %lg", lm->x_h[i]);
+  }
+  fclose(fp);
+
+  fprintf(stdout, "LMALF results written to OUT.dat\n");
+
+  // Free host memory
+  free(lm->nsubs);
+  free(lm->block0);
+  free(lm->lambda_h);
+  free(lm->ensweight_h);
+  free(lm->mc_lambda_h);
+  free(lm->mc_ensweight_h);
+  free(lm->kx_h);
+  free(lm->xr_h);
+  free(lm->L_h);
+  free(lm->dLds_h);
+  free(lm->x_h);
+  free(lm->dLdx_h);
+  free(lm->d_x);
+  free(lm->d_dLdx);
+  free(lm->rho);
+  free(lm->alpha);
+  free(lm->beta);
+  free(lm->hi_h);
+  free(lm->x0_h);
+  free(lm->dLdx0_h);
+
+  // Free device memory
+  cudaFree(lm->block0_d);
+  cudaFree(lm->lambda_d);
+  cudaFree(lm->mc_lambda_d);
+  cudaFree(lm->ensweight_d);
+  cudaFree(lm->mc_ensweight_d);
+  cudaFree(lm->kx_d);
+  cudaFree(lm->xr_d);
+  cudaFree(lm->L_d);
+  cudaFree(lm->dLds_d);
+  cudaFree(lm->dLdx_d);
+  cudaFree(lm->E_d);
+  cudaFree(lm->dEds_d);
+  cudaFree(lm->mc_E_d);
+  cudaFree(lm->mc_dEds_d);
+  cudaFree(lm->weight_d);
+  cudaFree(lm->mc_weight_d);
+  cudaFree(lm->x_d);
+  cudaFree(lm->dxds_d);
+  cudaFree(lm->Z_d);
+  cudaFree(lm->mc_Z_d);
+  cudaFree(lm->Esum_d);
+  cudaFree(lm->dEdssum_d);
+  cudaFree(lm->mc_dEdssum_d);
+  cudaFree(lm->moments_d);
+  cudaFree(lm->mc_moments_d);
+  cudaFree(lm->sumensweight_d);
+
+  free(lm);
+}
+
+/**
+ * LMALF main entry point (exported for Python ctypes)
+ *
+ * @param nf: Number of simulation files
+ * @param temp: Temperature in Kelvin
+ * @param ms: Multisite coupling flag (0, 1, or 2)
+ * @param msprof: Multisite profiles flag
+ * @param max_iter: Maximum L-BFGS iterations (0 = use default 250)
+ * @param tolerance: Convergence tolerance (0 = use default 1.25e-3)
+ *
+ * Expected input files (in current directory):
+ *   - Lambda.dat: Lambda trajectory values [B x nblocks]
+ *   - ensweight.dat: Ensemble weights [B] (optional, defaults to uniform)
+ *   - ../prep/nsubs: Number of subsites per site
+ *   - x_prev.dat, s_prev.dat: Previous parameters (optional, for ms==1)
+ *
+ * Output:
+ *   - OUT.dat: Optimized bias parameters
+ */
+extern "C" int lmalf(int nf, double temp, int ms, int msprof, int max_iter, double tolerance)
+{
+  fprintf(stdout, "LMALF: Likelihood Maximization ALF\n");
+  fprintf(stdout, "  nf=%d, temp=%.2f, ms=%d, msprof=%d\n", nf, temp, ms, msprof);
+  fprintf(stdout, "  max_iter=%d, tolerance=%g\n", max_iter, tolerance);
+
+  // Initialize and validate GPU
+  validate_and_setup_gpu();
+
+  struct_lmalf *lm = lmalf_setup(nf, temp, ms, msprof);
+  if (!lm)
+  {
+    fprintf(stderr, "Error: Failed to setup LMALF\n");
+    return -1;
+  }
+
+  // Override defaults if specified
+  if (max_iter > 0)
+    lm->max_iter = max_iter;
+  if (tolerance > 0)
+    lm->criteria = tolerance;
+
+  CUDA_CHECK(cudaDeviceSynchronize());
+
+  lmalf_run(lm);
+
+  CUDA_CHECK(cudaDeviceSynchronize());
+
+  lmalf_finish(lm);
+
+  CUDA_CHECK(cudaDeviceSynchronize());
+  CUDA_CHECK(cudaDeviceReset());
+
+  return 0;
 }

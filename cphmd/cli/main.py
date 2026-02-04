@@ -142,10 +142,14 @@ def alf(
     restrain_hydrogens: bool = typer.Option(False, "-H", "--hydrogens", help="Include hydrogens in restraints"),
     no_pka_bias: bool = typer.Option(False, "--no-pka-bias", help="Disable pKa-based bias shifts (use zero shifts)"),
     auto_phase: bool = typer.Option(False, "--auto-phase/--no-auto-phase", help="Enable automatic phase switching"),
+    auto_stop: bool = typer.Option(False, "--auto-stop/--no-auto-stop", help="Enable automatic stop when converged in Phase 3"),
     hh_plots: bool = typer.Option(False, "--hh-plots/--no-hh-plots", help="Generate Henderson-Hasselbalch plots"),
     cleanup: bool = typer.Option(True, "--cleanup/--no-cleanup", help="Remove old analysis directories"),
     elec_type: str = typer.Option("pmeex", "--elec", help="Electrostatics: pmeex, pmeon, pmenn, fshift, fswitch"),
     vdw_type: str = typer.Option("vswitch", "--vdw", help="VDW method: vswitch or vfswitch"),
+    analysis_method: str = typer.Option("wham", "--analysis-method", help="Analysis method: wham or lmalf"),
+    lmalf_max_iter: int = typer.Option(0, "--lmalf-max-iter", help="LMALF max iterations (0=default)"),
+    lmalf_tolerance: float = typer.Option(0.0, "--lmalf-tolerance", help="LMALF tolerance (0=default)"),
 ):
     """Run ALF simulation with optional CpHMD.
 
@@ -162,8 +166,12 @@ def alf(
         console.print(f"[yellow]pKa bias disabled (no PHMD pH, no TAG values)[/yellow]")
     if auto_phase:
         console.print(f"[green]Automatic phase switching enabled[/green]")
+    if auto_stop:
+        console.print(f"[green]Automatic stop on convergence enabled[/green]")
     if hh_plots:
         console.print(f"[green]Henderson-Hasselbalch plots enabled[/green]")
+    if analysis_method == "lmalf":
+        console.print(f"[cyan]Using LMALF analysis method[/cyan]")
 
     config = ALFConfig(
         input_folder=input_folder,
@@ -179,10 +187,14 @@ def alf(
         restrain_hydrogens=restrain_hydrogens,
         no_pka_bias=no_pka_bias,
         auto_phase_switch=auto_phase,
+        auto_stop=auto_stop,
         cleanup_old_analysis=cleanup,
         generate_hh_plots=hh_plots,
         elec_type=elec_type,  # type: ignore
         vdw_type=vdw_type,  # type: ignore
+        analysis_method=analysis_method,  # type: ignore
+        lmalf_max_iter=lmalf_max_iter,
+        lmalf_tolerance=lmalf_tolerance,
     )
 
     run_alf_simulation(config)
