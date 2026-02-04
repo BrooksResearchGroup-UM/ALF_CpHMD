@@ -1289,10 +1289,7 @@ class ALFSimulation:
     def _run_wham_analysis(
         self, nf: int, ms: int, msprof: int, cut_params: dict
     ) -> None:
-        """Run WHAM analysis using bundled GPU library with ALF fallback.
-
-        Prefers our bundled WHAM library (with G-shift support, enhanced
-        numerical stability) but falls back to ALF's WHAM if unavailable.
+        """Run WHAM analysis using bundled GPU library.
 
         Args:
             nf: Number of simulation files
@@ -1300,42 +1297,24 @@ class ALFSimulation:
             msprof: Multisite profile parameter
             cut_params: Cutoff parameters
         """
-        from cphmd.wham import check_wham_available
+        from cphmd.wham import run_wham
+        from alf.GetFreeEnergy5 import GetFreeEnergy5
 
-        if check_wham_available():
-            # Use our bundled WHAM with improved features
-            print("Using bundled WHAM library (cphmd.wham)")
-            from cphmd.wham import run_wham
-            from alf.GetFreeEnergy5 import GetFreeEnergy5
+        nsubs = self.state.alf_info["nsubs"]
 
-            # Get nsubs from alf_info
-            nsubs = self.state.alf_info["nsubs"]
-
-            # Bundled WHAM is called from analysis directory context
-            run_wham(
-                analysis_dir=Path.cwd(),
-                nf=nf,
-                temp=self.config.temperature,
-                nts0=ms,
-                nts1=msprof,
-                use_gshift=False,  # Legacy behavior by default
-                nsubs=nsubs,
-                g_imp_path="G_imp",  # Relative to analysis directory
-            )
-            # Use ALF's GetFreeEnergy5 to convert WHAM output to b/c/x/s
-            GetFreeEnergy5(
-                self.state.alf_info, ms=ms, msprof=msprof, **cut_params
-            )
-        else:
-            # Fall back to ALF's WHAM implementation
-            print("Using ALF WHAM library (fallback)")
-            from alf.GetFreeEnergy5 import GetFreeEnergy5
-            from alf.wham.RunWham import RunWham
-
-            RunWham(nf, self.config.temperature, ms, msprof)
-            GetFreeEnergy5(
-                self.state.alf_info, ms=ms, msprof=msprof, **cut_params
-            )
+        run_wham(
+            analysis_dir=Path.cwd(),
+            nf=nf,
+            temp=self.config.temperature,
+            nts0=ms,
+            nts1=msprof,
+            use_gshift=False,
+            nsubs=nsubs,
+            g_imp_path="../G_imp",
+        )
+        GetFreeEnergy5(
+            self.state.alf_info, ms=ms, msprof=msprof, **cut_params
+        )
 
     def _run_lmalf_analysis(
         self, nf: int, ms: int, msprof: int, cut_params: dict
@@ -1345,7 +1324,6 @@ class ALFSimulation:
         LMALF expects:
         - Lambda.dat: Combined lambda trajectory
         - ensweight.dat: Ensemble weights (optional)
-        - ../../prep/nsubs: System topology
 
         Args:
             nf: Number of simulation files
@@ -1391,7 +1369,7 @@ class ALFSimulation:
             max_iter=self.config.lmalf_max_iter,
             tolerance=self.config.lmalf_tolerance,
             nsubs=nsubs,
-            g_imp_path="G_imp",  # Relative to analysis directory
+            g_imp_path="../G_imp",
         )
         print("[LMALF] LMALF optimization finished")
 
@@ -1514,20 +1492,6 @@ class ALFSimulation:
                     if src.exists():
                         shutil.copy(src, dst)
 
-            # Link G_imp directory
-            g_imp_target = analysis_dir / "G_imp"
-            if not g_imp_target.exists():
-                g_imp_src = Path("G_imp")
-                if g_imp_src.exists():
-                    os.symlink(g_imp_src.resolve(), g_imp_target)
-
-            # Create ALF symlink for WHAM library compatibility
-            # WHAM expects ../ALF/G_imp/ path structure
-            # Note: We're already in input_folder after chdir above
-            alf_link = Path("ALF")
-            if not alf_link.exists():
-                os.symlink(Path.cwd(), alf_link)
-
             # Process lambda files
             os.chdir(analysis_dir)
             self.state.alf_info["nreps"] = self.config.nreps
@@ -1601,13 +1565,6 @@ class ALFSimulation:
                 cut_params["cutx"] = 0.0
             if self.config.no_s_bias:
                 cut_params["cuts"] = 0.0
-
-            # Create prep directory and copy nsubs for WHAM compatibility
-            prep_dir = Path("prep")
-            prep_dir.mkdir(exist_ok=True)
-            src_nsubs = Path("../prep/nsubs")
-            if src_nsubs.exists():
-                shutil.copy(src_nsubs, prep_dir / "nsubs")
 
             # Run WHAM with retry (3 attempts) and validation
             # Verbose output appended to analysis.log, summary message returned
