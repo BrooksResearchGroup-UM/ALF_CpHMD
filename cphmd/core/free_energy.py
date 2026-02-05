@@ -16,6 +16,8 @@ import numpy as np
 if TYPE_CHECKING:
     from .alf_utils import ALFInfo
 
+from .alf_utils import ensure_alf_info
+
 logger = logging.getLogger(__name__)
 
 
@@ -366,15 +368,11 @@ def _compute_free_energy(
     Returns:
         FreeEnergyResult with scaling and bias changes.
     """
-    # Extract parameters from alf_info
-    if hasattr(alf_info, "temp"):
-        temp = alf_info.temp
-        nsubs = np.array(alf_info.nsubs)
-        nblocks = alf_info.nblocks
-    else:
-        temp = alf_info["temp"]
-        nsubs = np.array(alf_info["nsubs"])
-        nblocks = alf_info["nblocks"]
+    # Normalize alf_info to ALFInfo dataclass
+    alf_info = ensure_alf_info(alf_info)
+    temp = alf_info.temp
+    nsubs = np.array(alf_info.nsubs)
+    nblocks = alf_info.nblocks
 
     kT = 0.001987 * temp
     krest = 1
@@ -594,11 +592,8 @@ def _compute_free_energy(
 
         # Get populations from Lambda files
         try:
-            # Try to get nreps from alf_info for ndupl
-            if hasattr(alf_info, "nreps"):
-                nreps = alf_info.nreps
-            else:
-                nreps = alf_info.get("nreps", 1)
+            # alf_info is normalized to ALFInfo at function start
+            nreps = alf_info.nreps if alf_info.nreps else 1
 
             populations = get_populations_from_lambda(analysis_dir, nsubs, ndupl=nreps)
             delta_b = fallback_bias_update(populations, temp, max_change=cutb)

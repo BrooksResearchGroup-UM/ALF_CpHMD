@@ -279,17 +279,48 @@ def _plot_rmsd_convergence(
     output_dir: Path,
     fmt: str
 ) -> Path:
-    """Plot RMSD convergence over iterations."""
+    """Plot RMSD convergence over iterations with semilog scale.
+
+    Energy decay is shown on log scale to visualize exponential convergence.
+    """
+    # Apply consistent styling
+    plt.rcParams['axes.linewidth'] = 0.5
+    plt.rcParams['xtick.direction'] = 'out'
+    plt.rcParams['ytick.direction'] = 'out'
+    plt.rcParams['xtick.major.size'] = 4
+    plt.rcParams['ytick.major.size'] = 4
+
+    colors = plt.cm.Set1.colors
+
     fig, ax = plt.subplots(figsize=(8, 5))
-    ax.plot(iterations, rmsd_values, 'o-', linewidth=2, markersize=6)
+    ax.semilogy(
+        iterations, rmsd_values,
+        marker='o', color=colors[0], linewidth=2, markersize=7,
+        markeredgecolor='black', markeredgewidth=0.5,
+    )
     ax.set_xlabel("Iteration", fontsize=12)
     ax.set_ylabel("RMSD (kcal/mol)", fontsize=12)
-    ax.set_yscale("log")
-    ax.set_title("Energy Profile RMSD Convergence", fontsize=14)
-    ax.grid(True, alpha=0.3)
+    ax.set_title("Energy Profile RMSD Convergence", fontsize=14, fontweight='bold')
+    ax.grid(True, which='both', linestyle='--', alpha=0.3)
 
+    # Annotate final value
+    if rmsd_values:
+        final_rmsd = rmsd_values[-1]
+        ax.annotate(
+            f"Final = {final_rmsd:.3f}",
+            xy=(0.97, 0.95), xycoords="axes fraction",
+            fontsize=11, ha="right", va="top",
+            bbox=dict(boxstyle="round,pad=0.3", facecolor="white",
+                      edgecolor=colors[0], alpha=0.9),
+        )
+
+    # Clean up spines
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+
+    plt.tight_layout()
     output_path = output_dir / f"rmsd_convergence.{fmt}"
-    fig.savefig(output_path, dpi=150, bbox_inches="tight")
+    fig.savefig(output_path, dpi=300, bbox_inches="tight", transparent=True)
     plt.close(fig)
 
     return output_path

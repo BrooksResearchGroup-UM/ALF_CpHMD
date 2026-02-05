@@ -721,6 +721,35 @@ def write_populations_file(
                     f"sum={pop_data['pop_strict_norm'].sum():.4f}\n")
 
 
+def _compute_worst_pka_deviation(
+    fit_results: dict,
+    patch_info: "pd.DataFrame",
+) -> float:
+    """Compute the worst pKa deviation from theoretical values.
+
+    Args:
+        fit_results: Dictionary of {site_id: FitResult} from check_pka_convergence.
+        patch_info: DataFrame with patch info including TAG column with theo pKa.
+
+    Returns:
+        Maximum absolute deviation across all sites.
+    """
+    worst_dev = 0.0
+    for site_id, result in fit_results.items():
+        site_patches = patch_info[patch_info["site"] == site_id]
+        for _, row in site_patches.iterrows():
+            tag = str(row.get("TAG", "NONE")).strip().upper()
+            parts = tag.split()
+            if len(parts) >= 2:
+                try:
+                    theo_pKa = float(parts[1])
+                    dev = abs(result.fitted_pKa - theo_pKa)
+                    worst_dev = max(worst_dev, dev)
+                except ValueError:
+                    pass
+    return worst_dev
+
+
 def check_phase_transition(
     current_phase: int,
     lambda_data: np.ndarray,
@@ -797,21 +826,7 @@ def check_phase_transition(
                 tolerance=config.pka_tolerance_1to2,
             )
             if not pka_ok:
-                # Find the worst deviation
-                worst_dev = 0.0
-                for site_id, result in fit_results.items():
-                    # Get theoretical from patch_info
-                    site_patches = patch_info[patch_info["site"] == site_id]
-                    for _, row in site_patches.iterrows():
-                        tag = str(row.get("TAG", "NONE")).strip().upper()
-                        parts = tag.split()
-                        if len(parts) >= 2:
-                            try:
-                                theo_pKa = float(parts[1])
-                                dev = abs(result.fitted_pKa - theo_pKa)
-                                worst_dev = max(worst_dev, dev)
-                            except ValueError:
-                                pass
+                worst_dev = _compute_worst_pka_deviation(fit_results, patch_info)
                 pka_reason = f"pKa_dev={worst_dev:.2f}>{config.pka_tolerance_1to2}"
 
         if overlap_ok and samples_ok and pka_ok:
@@ -844,19 +859,7 @@ def check_phase_transition(
                 tolerance=config.pka_tolerance_2to3,
             )
             if not pka_ok:
-                worst_dev = 0.0
-                for site_id, result in fit_results.items():
-                    site_patches = patch_info[patch_info["site"] == site_id]
-                    for _, row in site_patches.iterrows():
-                        tag = str(row.get("TAG", "NONE")).strip().upper()
-                        parts = tag.split()
-                        if len(parts) >= 2:
-                            try:
-                                theo_pKa = float(parts[1])
-                                dev = abs(result.fitted_pKa - theo_pKa)
-                                worst_dev = max(worst_dev, dev)
-                            except ValueError:
-                                pass
+                worst_dev = _compute_worst_pka_deviation(fit_results, patch_info)
                 pka_reason = f"pKa_dev={worst_dev:.2f}>{config.pka_tolerance_2to3}"
 
         # Check transition connectivity (prevents premature transition)
