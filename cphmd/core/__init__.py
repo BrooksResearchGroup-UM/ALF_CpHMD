@@ -1,6 +1,8 @@
 """Core module - main CpHMD workflow components."""
 
-from .patching import LigandPatchDef, PatchConfig, PatchParser, patch_system
+# Modules with pyCHARMM top-level imports are lazy-loaded via __getattr__
+# so that mpi4py can initialize MPI before pyCHARMM does.
+
 from .alf_runner import ALFConfig, ALFSimulation, run_alf_simulation
 from .cphmd_params import (
     CpHMDParameters,
@@ -45,7 +47,8 @@ from .alf_utils import (
     ALFInfo,
     init_vars,
     set_vars,
-    get_energy,
+    set_vars_from_analysis_dir,
+    get_energy_from_analysis_dir,
     compute_bias_energy,
     write_lambda_text,
     convert_lambda_binary_to_text,
@@ -71,6 +74,11 @@ from .transitions import (
     TransitionResult,
     get_transitions,
     summarize_transitions,
+    compute_transition_matrix,
+    transition_matrix_to_coupling_weights,
+    save_transition_matrix,
+    compute_connectivity_metric,
+    find_weakest_transitions,
 )
 from .phase_switcher import (
     PhaseTransitionConfig,
@@ -92,8 +100,23 @@ from .phase_switcher import (
     write_populations_file,
 )
 
+# Lazy-loaded names from .patching (has top-level pyCHARMM imports)
+_PATCHING_NAMES = {
+    "LigandPatchDef", "PatchConfig", "PatchParser", "patch_system",
+}
+
+
+def __getattr__(name):
+    if name in _PATCHING_NAMES:
+        from . import patching
+        for attr in _PATCHING_NAMES:
+            globals()[attr] = getattr(patching, attr)
+        return globals()[name]
+    raise AttributeError(f"module 'cphmd.core' has no attribute {name}")
+
+
 __all__ = [
-    # Patching
+    # Patching (lazy)
     "LigandPatchDef",
     "PatchConfig",
     "PatchParser",
@@ -139,7 +162,8 @@ __all__ = [
     "ALFInfo",
     "init_vars",
     "set_vars",
-    "get_energy",
+    "set_vars_from_analysis_dir",
+    "get_energy_from_analysis_dir",
     "compute_bias_energy",
     "write_lambda_text",
     "convert_lambda_binary_to_text",
