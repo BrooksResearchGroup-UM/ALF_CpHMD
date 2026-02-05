@@ -13,6 +13,17 @@ from pathlib import Path
 import numpy as np
 
 
+def _configure_plot_style():
+    """Apply consistent publication-quality plot styling."""
+    import matplotlib.pyplot as plt
+
+    plt.rcParams['axes.linewidth'] = 0.5
+    plt.rcParams['xtick.direction'] = 'out'
+    plt.rcParams['ytick.direction'] = 'out'
+    plt.rcParams['xtick.major.size'] = 4
+    plt.rcParams['ytick.major.size'] = 4
+
+
 def read_populations_from_runs(
     input_folder: Path,
     max_run: int,
@@ -111,29 +122,33 @@ def plot_population_convergence(
         print("matplotlib not available, skipping population convergence plots")
         return
 
+    _configure_plot_style()
+
     n_substates = site_pops.shape[1]
 
     fig, ax = plt.subplots(figsize=(8, 5))
 
-    cmap = plt.get_cmap("tab10")
-    markers = ["o", "s", "^", "D", "v", "<", ">", "p", "h", "*"]
+    colors = plt.cm.Set1.colors
+    markers = ["o", "s", "D", "^", "v", "<", ">", "p", "h", "*"]
 
     for s in range(n_substates):
-        color = cmap(s % 10)
+        color = colors[s % len(colors)]
         marker = markers[s % len(markers)]
         ax.plot(
             runs,
             site_pops[:, s],
             marker=marker,
             color=color,
-            linewidth=1.5,
-            markersize=5,
+            linewidth=2,
+            markersize=6,
+            markeredgecolor='black',
+            markeredgewidth=0.5,
             label=f"State {s}",
         )
 
     # Ideal equal-population line
     ideal = 1.0 / n_substates
-    ax.axhline(ideal, color="grey", linestyle="--", linewidth=1, alpha=0.7,
+    ax.axhline(ideal, color="black", linestyle="--", linewidth=1.5, alpha=0.6,
                label=f"Ideal (1/{n_substates})")
 
     # Final frac_diff annotation
@@ -143,27 +158,32 @@ def plot_population_convergence(
         f"Final diff = {frac_diff:.1f}%",
         xy=(0.97, 0.97),
         xycoords="axes fraction",
-        fontsize=10,
+        fontsize=11,
         ha="right",
         va="top",
-        bbox=dict(boxstyle="round,pad=0.3", facecolor="wheat", alpha=0.5),
+        bbox=dict(boxstyle="round,pad=0.3", facecolor="white",
+                  edgecolor="grey", alpha=0.9),
     )
 
-    title = f"Population convergence ({threshold_label})"
+    title = f"Population Convergence ({threshold_label})"
     if site_label:
         title += f" — {site_label}"
 
     ax.set_xlabel("Run", fontsize=12)
-    ax.set_ylabel("Normalized population", fontsize=12)
-    ax.set_title(title, fontsize=14)
+    ax.set_ylabel("Normalized Population", fontsize=12)
+    ax.set_title(title, fontsize=14, fontweight='bold')
     ax.legend(loc="best", fontsize=9, ncol=max(1, n_substates // 5))
-    ax.grid(True, alpha=0.3)
+    ax.grid(True, linestyle='--', alpha=0.3)
     ax.set_xlim(runs[0] - 0.5, runs[-1] + 0.5)
     ax.set_ylim(bottom=0)
 
+    # Clean up spines
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+
     plt.tight_layout()
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output_path, dpi=150)
+    fig.savefig(output_path, dpi=300, transparent=True)
     plt.close(fig)
 
 

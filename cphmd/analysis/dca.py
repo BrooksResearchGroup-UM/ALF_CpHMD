@@ -18,6 +18,8 @@ import numpy as np
 if TYPE_CHECKING:
     from cphmd.core.alf_utils import ALFInfo
 
+from cphmd.core.alf_utils import ensure_alf_info
+
 logger = logging.getLogger(__name__)
 
 
@@ -92,13 +94,10 @@ def _compute_model_dca(
     Returns:
         DCAResult with h_model and J_model.
     """
-    # Extract parameters
-    if hasattr(alf_info, "temp"):
-        temp = alf_info.temp
-        nsubs = np.array(alf_info.nsubs)
-    else:
-        temp = alf_info["temp"]
-        nsubs = np.array(alf_info["nsubs"])
+    # Normalize alf_info to ALFInfo dataclass
+    alf_info = ensure_alf_info(alf_info)
+    temp = alf_info.temp
+    nsubs = np.array(alf_info.nsubs)
 
     kT = 0.001987 * temp
     nsites = len(nsubs)
@@ -244,13 +243,10 @@ def _compute_variance_dca(
     Returns:
         DCAResult with free energy values and errors.
     """
-    # Extract parameters
-    if hasattr(alf_info, "temp"):
-        temp = alf_info.temp
-        nsubs = np.array(alf_info.nsubs) + 0  # Copy
-    else:
-        temp = alf_info["temp"]
-        nsubs = np.array(alf_info["nsubs"]) + 0  # Copy
+    # Normalize alf_info to ALFInfo dataclass
+    alf_info = ensure_alf_info(alf_info)
+    temp = alf_info.temp
+    nsubs = np.array(alf_info.nsubs) + 0  # Copy
 
     kT = 0.001987 * temp
 
@@ -445,11 +441,9 @@ def _compute_bootstrap_moments(
         nbs: Number of bootstrap samples.
         seed: Random seed.
     """
-    # Extract parameters
-    if hasattr(alf_info, "nsubs"):
-        nsubs = np.array(alf_info.nsubs) + 0  # Copy
-    else:
-        nsubs = np.array(alf_info["nsubs"]) + 0  # Copy
+    # Normalize alf_info to ALFInfo dataclass
+    alf_info = ensure_alf_info(alf_info)
+    nsubs = np.array(alf_info.nsubs) + 0  # Copy
 
     # Add gap states
     nsubs = nsubs + 1

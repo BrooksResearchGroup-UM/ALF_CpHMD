@@ -17,6 +17,17 @@ from pathlib import Path
 import numpy as np
 
 
+def _configure_plot_style():
+    """Apply consistent publication-quality plot styling."""
+    import matplotlib.pyplot as plt
+
+    plt.rcParams['axes.linewidth'] = 0.5
+    plt.rcParams['xtick.direction'] = 'out'
+    plt.rcParams['ytick.direction'] = 'out'
+    plt.rcParams['xtick.major.size'] = 4
+    plt.rcParams['ytick.major.size'] = 4
+
+
 def _collect_rmsd_from_dirs(
     input_folder: Path,
     max_run: int,
@@ -95,12 +106,14 @@ def plot_rmsd_convergence(
 ) -> None:
     """Create a per-site RMSD convergence plot.
 
+    Shows RMSD between consecutive runs (previous vs current comparison).
+
     Args:
         runs: 1-D array of run indices.
         rmsds: (n_runs, n_sites) per-site RMSD values.
         coverages: (n_runs, n_sites) per-site coverage fractions.
         nsubs: Number of substates per site.
-        lag: Lag used for RMSD computation.
+        lag: Lag used for RMSD computation (shown in label).
         output_path: Full path for the output PNG file.
     """
     try:
@@ -111,6 +124,8 @@ def plot_rmsd_convergence(
         print("matplotlib not available, skipping RMSD convergence plots")
         return
 
+    _configure_plot_style()
+
     n_sites = rmsds.shape[1]
     fig, axes = plt.subplots(
         n_sites, 1,
@@ -119,55 +134,68 @@ def plot_rmsd_convergence(
         squeeze=False,
     )
 
-    cmap = plt.get_cmap("tab10")
+    colors = plt.cm.Set1.colors
+    markers = ['o', 's', 'D', '^', 'v', '<', '>', 'p', 'h', '*']
 
     for s in range(n_sites):
         ax = axes[s, 0]
-        color = cmap(s % 10)
+        color = colors[s % len(colors)]
+        marker = markers[s % len(markers)]
 
         # Replace inf with NaN for plotting
         site_rmsd = rmsds[:, s].copy()
         site_rmsd[~np.isfinite(site_rmsd)] = np.nan
 
+        # Main RMSD line with markers
         ax.plot(
             runs, site_rmsd,
-            marker="o", color=color, linewidth=1.5, markersize=4,
-            label=f"RMSD (lag={lag})",
+            marker=marker, color=color, linewidth=2, markersize=6,
+            markeredgecolor='black', markeredgewidth=0.5,
+            label=f"RMSD vs run-{lag}",
         )
 
-        # Coverage on secondary axis
+        # Coverage on secondary axis (subtle fill)
         ax2 = ax.twinx()
         ax2.fill_between(
             runs, coverages[:, s],
-            alpha=0.15, color=color,
-            label="Coverage",
+            alpha=0.1, color=color,
         )
         ax2.set_ylim(0, 1.05)
-        ax2.set_ylabel("Coverage", fontsize=9, color="grey")
-        ax2.tick_params(axis="y", labelcolor="grey", labelsize=8)
+        ax2.set_ylabel("Coverage", fontsize=10, color="grey")
+        ax2.tick_params(axis="y", labelcolor="grey", labelsize=9)
+        ax2.spines['right'].set_visible(True)
+        ax2.spines['right'].set_color('grey')
+        ax2.spines['right'].set_linewidth(0.5)
 
         # Annotate final RMSD
         last_finite = site_rmsd[np.isfinite(site_rmsd)]
         if len(last_finite) > 0:
             ax.annotate(
-                f"Last = {last_finite[-1]:.2f}",
+                f"Final RMSD = {last_finite[-1]:.2f}",
                 xy=(0.97, 0.95), xycoords="axes fraction",
-                fontsize=9, ha="right", va="top",
-                bbox=dict(boxstyle="round,pad=0.3", facecolor="wheat", alpha=0.5),
+                fontsize=10, ha="right", va="top",
+                bbox=dict(boxstyle="round,pad=0.3", facecolor="white",
+                          edgecolor=color, alpha=0.9),
             )
 
-        site_label = f"Site {s} ({nsubs[s]} subs)"
-        ax.set_ylabel("RMSD (kcal/mol)", fontsize=10)
-        ax.set_title(site_label, fontsize=11, loc="left")
-        ax.legend(loc="upper left", fontsize=8)
-        ax.grid(True, alpha=0.3)
+        site_label = f"Site {s+1} ({nsubs[s]} substates)"
+        ax.set_ylabel("RMSD (kcal/mol)", fontsize=11)
+        ax.set_title(site_label, fontsize=12, fontweight='bold', loc="left")
+        ax.legend(loc="upper left", fontsize=9)
+        ax.grid(True, linestyle='--', alpha=0.3)
         ax.set_ylim(bottom=0)
 
-    axes[-1, 0].set_xlabel("Run", fontsize=11)
-    fig.suptitle(f"G-file RMSD convergence (lag={lag})", fontsize=13, y=1.01)
+        # Clean up spines
+        ax.spines['top'].set_visible(False)
+
+    axes[-1, 0].set_xlabel("Run", fontsize=12)
+    title = f"G-file RMSD Convergence (vs previous run)"
+    if lag != 1:
+        title = f"G-file RMSD Convergence (lag={lag})"
+    fig.suptitle(title, fontsize=14, fontweight='bold', y=1.01)
     plt.tight_layout()
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output_path, dpi=150, bbox_inches="tight")
+    fig.savefig(output_path, dpi=300, bbox_inches="tight", transparent=True)
     plt.close(fig)
 
 
@@ -204,6 +232,8 @@ def plot_pairwise_rmsd_convergence(
 
     if len(runs) < 2 or not pair_data:
         return
+
+    _configure_plot_style()
 
     n_sites = len(nsubs)
     fig, axes = plt.subplots(
@@ -265,8 +295,6 @@ def plot_pairwise_rmsd_convergence(
             n_colors = 20
             colors_20 = [hsv(i / n_colors) for i in range(n_colors)]
         linestyles = ["-", "--", "-.", ":"]
-        # Each pair gets: color from cycle, linestyle from cycle
-        # color cycles every len(colors_20), linestyle cycles every len(colors_20)
 
         # Plot all pair lines (i < j only — upper triangle)
         for k in range(n_pairs):
@@ -277,32 +305,34 @@ def plot_pairwise_rmsd_convergence(
                 runs, pair_rmsd[:, k],
                 color=color,
                 linestyle=ls if not is_worst else "-",
-                linewidth=2.0 if is_worst else 0.7,
-                alpha=1.0 if is_worst else 0.3,
+                linewidth=2.5 if is_worst else 0.8,
+                alpha=1.0 if is_worst else 0.35,
                 label=pair_labels[k] if is_worst else None,
             )
 
-        site_label = f"Site {s} ({ns} subs, {n_pairs} pairs)"
-        ax.set_ylabel("RMSD (kcal/mol)", fontsize=10)
-        ax.set_title(site_label, fontsize=11, loc="left")
-        ax.grid(True, alpha=0.3)
+        site_label = f"Site {s+1} ({ns} substates, {n_pairs} pairs)"
+        ax.set_ylabel("RMSD (kcal/mol)", fontsize=11)
+        ax.set_title(site_label, fontsize=12, fontweight='bold', loc="left")
+        ax.grid(True, linestyle='--', alpha=0.3)
         ax.set_ylim(bottom=0)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
 
         if highlight_set:
             ax.legend(
-                loc="upper right", fontsize=7,
-                title=f"Top {min(top_n, len(highlight_set))} worst",
-                title_fontsize=8,
+                loc="upper right", fontsize=8,
+                title=f"Top {min(top_n, len(highlight_set))} worst pairs",
+                title_fontsize=9,
             )
 
-    axes[-1, 0].set_xlabel("Run", fontsize=11)
-    fig.suptitle(
-        f"Per-pair G-file RMSD convergence (lag={lag})",
-        fontsize=13, y=1.01,
-    )
+    axes[-1, 0].set_xlabel("Run", fontsize=12)
+    title = f"Per-pair RMSD Convergence (vs previous run)"
+    if lag != 1:
+        title = f"Per-pair RMSD Convergence (lag={lag})"
+    fig.suptitle(title, fontsize=14, fontweight='bold', y=1.01)
     plt.tight_layout()
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output_path, dpi=150, bbox_inches="tight")
+    fig.savefig(output_path, dpi=300, bbox_inches="tight", transparent=True)
     plt.close(fig)
 
 
@@ -311,7 +341,7 @@ def generate_rmsd_convergence_plots(
     max_run: int,
     output_dir: Path,
     nsubs: list[int],
-    lag: int = 5,
+    lag: int = 1,
     rmsd_state: object | None = None,
 ) -> None:
     """Generate RMSD convergence plots from analysis directories or precomputed state.
@@ -320,12 +350,15 @@ def generate_rmsd_convergence_plots(
     1. ``rmsd_convergence.png`` — per-site summary (one line per site)
     2. ``rmsd_pairwise.png`` — per-pair detail (one line per lambda pair)
 
+    By default uses lag=1, showing RMSD between each run and its previous run
+    (previous vs current comparison).
+
     Args:
         input_folder: Parent directory containing analysisN/ subdirectories.
         max_run: Highest run index to consider.
         output_dir: Directory for output PNG files (created if needed).
         nsubs: Number of substates per site.
-        lag: Lag for RMSD computation (ignored if rmsd_state is provided).
+        lag: Lag for RMSD computation. Default 1 compares consecutive runs.
         rmsd_state: Optional RMSDState with precomputed history.
     """
     # --- Per-site summary plot ---
