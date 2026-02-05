@@ -17,7 +17,7 @@ AUTO ANGLE DIHE
 !----------------------------------------------------------------------------
 
 pres ASH1 0           ! od1 protonated species
-! pKA = 3.37
+! pKA = 3.67
 ! HB1M   OD1M-HD1
 !  |     /
 ! -CBM--CGM
@@ -43,7 +43,7 @@ ic hd1 od1 cg od2 0 0 0 0 0
 
 
 pres ASH2 0           ! od2 protonated species
-! pKA = 3.37
+! pKA = 3.67
 ! HB1P   OD1P
 !  |     //
 ! -CBP--CGP
