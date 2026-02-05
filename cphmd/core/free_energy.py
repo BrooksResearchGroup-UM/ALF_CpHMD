@@ -743,10 +743,11 @@ def _compute_free_energy(
         iblock += nsubs[isite]
 
     # Save output files to analysis directory
-    np.savetxt(analysis_dir / "b.dat", b, fmt=" %10.5f")
-    np.savetxt(analysis_dir / "c.dat", c, fmt=" %10.5f")
-    np.savetxt(analysis_dir / "x.dat", x, fmt=" %10.5f")
-    np.savetxt(analysis_dir / "s.dat", s, fmt=" %10.5f")
+    from .alf_utils import _clean_negzero
+    np.savetxt(analysis_dir / "b.dat", _clean_negzero(b), fmt=" %10.5f")
+    np.savetxt(analysis_dir / "c.dat", _clean_negzero(c), fmt=" %10.5f")
+    np.savetxt(analysis_dir / "x.dat", _clean_negzero(x), fmt=" %10.5f")
+    np.savetxt(analysis_dir / "s.dat", _clean_negzero(s), fmt=" %10.5f")
 
     return FreeEnergyResult(
         scaling=scaling,
