@@ -80,6 +80,15 @@ from .transitions import (
     compute_connectivity_metric,
     find_weakest_transitions,
 )
+from .rmsd_convergence import (
+    RMSDConvergenceConfig,
+    RMSDState,
+    PairwiseRMSD,
+    compute_site_rmsd,
+    compute_pairwise_rmsd,
+    check_rmsd_phase_transition,
+    check_rmsd_stop,
+)
 from .phase_switcher import (
     PhaseTransitionConfig,
     StopCriteriaConfig,
@@ -185,6 +194,14 @@ __all__ = [
     "TransitionResult",
     "get_transitions",
     "summarize_transitions",
+    # RMSD Convergence
+    "RMSDConvergenceConfig",
+    "RMSDState",
+    "PairwiseRMSD",
+    "compute_site_rmsd",
+    "compute_pairwise_rmsd",
+    "check_rmsd_phase_transition",
+    "check_rmsd_stop",
     # Phase Switching
     "PhaseTransitionConfig",
     "StopCriteriaConfig",

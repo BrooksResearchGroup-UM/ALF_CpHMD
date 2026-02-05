@@ -143,6 +143,7 @@ def alf(
     no_pka_bias: bool = typer.Option(False, "--no-pka-bias/--pka-bias", help="Disable pKa-based bias shifts (use zero shifts)"),
     auto_phase: bool = typer.Option(False, "--auto-phase/--no-auto-phase", help="Enable automatic phase switching"),
     auto_stop: bool = typer.Option(False, "--auto-stop/--no-auto-stop", help="Enable automatic stop when converged in Phase 3"),
+    convergence_mode: str = typer.Option("population", "--convergence-mode", help="Convergence mode: population or rmsd"),
     hh_plots: bool = typer.Option(False, "--hh-plots/--no-hh-plots", help="Generate Henderson-Hasselbalch plots"),
     cleanup: bool = typer.Option(True, "--cleanup/--no-cleanup", help="Remove old analysis directories"),
     elec_type: str = typer.Option("pmeex", "--elec", help="Electrostatics: pmeex, pmeon, pmenn, fshift, fswitch"),
@@ -178,6 +179,8 @@ def alf(
         console.print(f"[green]Henderson-Hasselbalch plots enabled[/green]")
     if coupling > 0:
         console.print(f"[cyan]Inter-site coupling: {'full' if coupling == 1 else 'c-only'} (profile: {coupling_profile})[/cyan]")
+    if convergence_mode == "rmsd":
+        console.print(f"[cyan]Using RMSD-based convergence (G-file profiles)[/cyan]")
     if analysis_method == "lmalf":
         console.print(f"[cyan]Using LMALF analysis method[/cyan]")
 
@@ -196,6 +199,7 @@ def alf(
         no_pka_bias=no_pka_bias,
         auto_phase_switch=auto_phase,
         auto_stop=auto_stop,
+        convergence_mode=convergence_mode,  # type: ignore
         cleanup_old_analysis=cleanup,
         generate_hh_plots=hh_plots,
         elec_type=elec_type,  # type: ignore
