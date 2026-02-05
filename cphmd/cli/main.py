@@ -147,6 +147,8 @@ def alf(
     cleanup: bool = typer.Option(True, "--cleanup/--no-cleanup", help="Remove old analysis directories"),
     elec_type: str = typer.Option("pmeex", "--elec", help="Electrostatics: pmeex, pmeon, pmenn, fshift, fswitch"),
     vdw_type: str = typer.Option("vswitch", "--vdw", help="VDW method: vswitch or vfswitch"),
+    coupling: int = typer.Option(0, "--coupling", help="Inter-site coupling: 0=none, 1=full, 2=c-only"),
+    coupling_profile: bool = typer.Option(None, "--coupling-profile/--no-coupling-profile", help="Inter-site profile monitoring (default: follows coupling)"),
     analysis_method: str = typer.Option("wham", "--analysis-method", help="Analysis method: wham or lmalf"),
     lmalf_max_iter: int = typer.Option(0, "--lmalf-max-iter", help="LMALF max iterations (0=default)"),
     lmalf_tolerance: float = typer.Option(0.0, "--lmalf-tolerance", help="LMALF tolerance (0=default)"),
@@ -174,6 +176,8 @@ def alf(
         console.print(f"[green]Automatic stop on convergence enabled[/green]")
     if hh_plots:
         console.print(f"[green]Henderson-Hasselbalch plots enabled[/green]")
+    if coupling > 0:
+        console.print(f"[cyan]Inter-site coupling: {'full' if coupling == 1 else 'c-only'} (profile: {coupling_profile})[/cyan]")
     if analysis_method == "lmalf":
         console.print(f"[cyan]Using LMALF analysis method[/cyan]")
 
@@ -196,6 +200,8 @@ def alf(
         generate_hh_plots=hh_plots,
         elec_type=elec_type,  # type: ignore
         vdw_type=vdw_type,  # type: ignore
+        coupling=coupling,  # type: ignore
+        coupling_profile=coupling_profile,
         analysis_method=analysis_method,  # type: ignore
         lmalf_max_iter=lmalf_max_iter,
         lmalf_tolerance=lmalf_tolerance,
