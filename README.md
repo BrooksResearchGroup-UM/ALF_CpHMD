@@ -6,6 +6,12 @@ Adaptive Landscape Flattening (ALF) with pyCHARMM and BLaDE GPU acceleration.
 Fully automates the ALF workflow: system preparation, iterative bias optimization,
 convergence monitoring, and pKa prediction — all from a single CLI command.
 
+> This project originally diverged from [RyanLeeHayes/ALF](https://github.com/RyanLeeHayes/ALF)
+> and has since been extensively rewritten with significant new features including
+> adaptive cutoffs, automatic phase switching, RMSD-based convergence, inter-site
+> coupling control, Henderson-Hasselbalch analysis, and a unified CLI — making it
+> a standalone package with no external ALF dependency.
+
 ## Key Features
 
 ### Automated System Preparation
