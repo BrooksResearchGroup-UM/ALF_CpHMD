@@ -17,6 +17,20 @@ from pathlib import Path
 import numpy as np
 
 
+_RMSD_YTICKS = [0.01, 0.1, 1, 10, 20, 30, 50, 100]
+
+
+def _apply_rmsd_yticks(ax):
+    """Set fixed y-axis ticks for semilog RMSD plots."""
+    from matplotlib.ticker import FixedLocator, FixedFormatter
+
+    ax.yaxis.set_major_locator(FixedLocator(_RMSD_YTICKS))
+    ax.yaxis.set_major_formatter(FixedFormatter(
+        [f"{v:g}" for v in _RMSD_YTICKS]
+    ))
+    ax.yaxis.set_minor_locator(FixedLocator([]))  # disable auto minor ticks
+
+
 def _configure_plot_style():
     """Apply consistent publication-quality plot styling."""
     import matplotlib.pyplot as plt
@@ -182,7 +196,8 @@ def plot_rmsd_convergence(
         ax.set_ylabel("RMSD (kcal/mol)", fontsize=11)
         ax.set_title(site_label, fontsize=12, fontweight='bold', loc="left")
         ax.legend(loc="upper left", fontsize=9)
-        ax.grid(True, which='both', linestyle='--', alpha=0.3)
+        _apply_rmsd_yticks(ax)
+        ax.grid(True, which='major', linestyle='--', alpha=0.3)
 
         # Clean up spines
         ax.spines['top'].set_visible(False)
@@ -312,7 +327,8 @@ def plot_pairwise_rmsd_convergence(
         site_label = f"Site {s+1} ({ns} substates, {n_pairs} pairs)"
         ax.set_ylabel("RMSD (kcal/mol)", fontsize=11)
         ax.set_title(site_label, fontsize=12, fontweight='bold', loc="left")
-        ax.grid(True, which='both', linestyle='--', alpha=0.3)
+        _apply_rmsd_yticks(ax)
+        ax.grid(True, which='major', linestyle='--', alpha=0.3)
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
 

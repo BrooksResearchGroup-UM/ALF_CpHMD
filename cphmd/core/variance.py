@@ -14,6 +14,8 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from .bias_constants import OMEGA_DECAY, CHI_OFFSET
+
 if TYPE_CHECKING:
     from .alf_utils import ALFInfo
 
@@ -189,16 +191,16 @@ def _compute_variance(
                 Eall[irep, itrial, j] = (
                     np.dot(LList, -b)
                     + np.dot(np.dot(LList, -c), LList)
-                    + np.dot(np.dot(1 - np.exp(-5.56 * LList), -x), LList)
-                    + np.dot(np.dot(LList / (LList + 0.017), -s), LList)
+                    + np.dot(np.dot(1 - np.exp(-OMEGA_DECAY * LList), -x), LList)
+                    + np.dot(np.dot(LList / (LList + CHI_OFFSET), -s), LList)
                 )
 
                 # Compute pH shift energy
                 Eshift[irep, itrial, j] = (irep - ncentral) * (
                     np.dot(LList, -b_shift)
                     + np.dot(np.dot(LList, -c_shift), LList)
-                    + np.dot(np.dot(1 - np.exp(-5.56 * LList), -x_shift), LList)
-                    + np.dot(np.dot(LList / (LList + 0.017), -s_shift), LList)
+                    + np.dot(np.dot(1 - np.exp(-OMEGA_DECAY * LList), -x_shift), LList)
+                    + np.dot(np.dot(LList / (LList + CHI_OFFSET), -s_shift), LList)
                 )
 
                 # Log denominator for WHAM reweighting

@@ -22,6 +22,8 @@ import os
 import numpy as np
 import matplotlib.pyplot as plt
 
+from cphmd.core.bias_constants import OMEGA_DECAY, CHI_OFFSET
+
 # Optional plotly import for interactive plots
 try:
     import plotly.graph_objects as go
@@ -106,7 +108,7 @@ def energy_E_c(lambda_vec: np.ndarray, c: np.ndarray) -> float:
     return E_c
 
 
-def energy_E_s(lambda_vec: np.ndarray, s: np.ndarray, epsilon: float = 0.017) -> float:
+def energy_E_s(lambda_vec: np.ndarray, s: np.ndarray, epsilon: float = CHI_OFFSET) -> float:
     """Compute endpoint bias energy E_s with regularization."""
     n = len(lambda_vec)
     E_s = 0.0
@@ -118,7 +120,7 @@ def energy_E_s(lambda_vec: np.ndarray, s: np.ndarray, epsilon: float = 0.017) ->
     return E_s
 
 
-def energy_E_x(lambda_vec: np.ndarray, x: np.ndarray, alpha: float = 5.56) -> float:
+def energy_E_x(lambda_vec: np.ndarray, x: np.ndarray, alpha: float = OMEGA_DECAY) -> float:
     """Compute skew bias energy E_x with exponential form."""
     n = len(lambda_vec)
     E_x = 0.0

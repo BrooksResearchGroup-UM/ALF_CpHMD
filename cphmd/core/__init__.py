@@ -43,6 +43,14 @@ from .generate_block import (
     BlockGeneratorResult,
     generate_block_files,
 )
+from .bias_constants import (
+    BiasConstants,
+    derive_bias_constants,
+    DEFAULT_FNEX,
+    OMEGA_DECAY,
+    CHI_OFFSET,
+    CHI_SCALE,
+)
 from .alf_utils import (
     ALFInfo,
     init_vars,
@@ -167,6 +175,13 @@ __all__ = [
     "BlockGeneratorConfig",
     "BlockGeneratorResult",
     "generate_block_files",
+    # Bias Constants
+    "BiasConstants",
+    "derive_bias_constants",
+    "DEFAULT_FNEX",
+    "OMEGA_DECAY",
+    "CHI_OFFSET",
+    "CHI_SCALE",
     # ALF Utilities
     "ALFInfo",
     "init_vars",

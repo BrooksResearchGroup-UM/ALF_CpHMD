@@ -112,6 +112,9 @@ class ALFConfig:
     coupling: Literal[0, 1, 2] = 0  # 0=none, 1=full c/x/s, 2=c-only
     coupling_profile: bool | None = None  # None=follow coupling, True/False=override
 
+    # FNEX softmax constraint parameter (controls bias potential shape)
+    fnex: float = 5.5
+
     # Analysis method configuration
     analysis_method: AnalysisMethod = "wham"  # "wham" or "lmalf"
     lmalf_max_iter: int = 0  # Maximum L-BFGS iterations (0 = use default)
@@ -479,6 +482,7 @@ class ALFSimulation:
             "temp": self.config.temperature,
             "engine": "charmm",
             "ntersite": self._ntersite(),  # Intersite biases [ms, msprof]
+            "fnex": self.config.fnex,
         }
 
         # Count blocks and subsites per site
@@ -538,6 +542,7 @@ class ALFSimulation:
         alf_info.setdefault("nnodes", 1)
         alf_info.setdefault("temp", self.config.temperature)
         alf_info.setdefault("ntersite", self._ntersite())
+        alf_info.setdefault("fnex", self.config.fnex)
 
         # Override nreps from config if user specified it
         if self.config.nreps is not None:
@@ -1811,6 +1816,7 @@ class ALFSimulation:
             nsubs=nsubs,
             g_imp_path="../G_imp",
             log_file="analysis.log",
+            fnex=self.config.fnex,
         )
         get_free_energy5(
             self.state.alf_info, ms=ms, msprof=msprof, **cut_params
@@ -1871,6 +1877,7 @@ class ALFSimulation:
             nsubs=nsubs,
             g_imp_path="../G_imp",
             log_file="analysis.log",
+            fnex=self.config.fnex,
         )
         print("[LMALF] LMALF optimization finished")
 
@@ -1932,6 +1939,7 @@ class ALFSimulation:
                     nsubs=nsubs,
                     g_imp_path="../G_imp",
                     log_file="analysis.log",
+                    fnex=self.config.fnex,
                 )
                 # Check if LMALF produced valid output before overwriting WHAM result
                 out_file = Path("OUT.dat")
@@ -2462,15 +2470,28 @@ class ALFSimulation:
                 )
 
                 # Generate RMSD convergence plot (works with both convergence modes)
-                if (Path("..") / f"analysis{run_idx}" / "multisite").is_dir():
-                    from cphmd.analysis.rmsd_convergence_plot import generate_rmsd_convergence_plots
-                    generate_rmsd_convergence_plots(
-                        input_folder=Path(".."),
-                        max_run=run_idx,
-                        output_dir=Path(home_path) / "plots",
+                try:
+                    if (Path("..") / f"analysis{run_idx}" / "multisite").is_dir():
+                        from cphmd.analysis.rmsd_convergence_plot import generate_rmsd_convergence_plots
+                        generate_rmsd_convergence_plots(
+                            input_folder=Path(".."),
+                            max_run=run_idx,
+                            output_dir=Path(home_path) / "plots",
+                            nsubs=list(nsubs),
+                            rmsd_state=getattr(self.state, "rmsd_state", None),
+                        )
+                except Exception as e:
+                    print(f"Warning: RMSD convergence plots failed: {e}")
+
+                # Generate 1D energy profile plots in current analysis dir
+                try:
+                    from cphmd.analysis.energy_profiles import plot_1d_profiles
+                    plot_1d_profiles(
+                        analysis_dir=Path.cwd(),
                         nsubs=list(nsubs),
-                        rmsd_state=getattr(self.state, "rmsd_state", None),
                     )
+                except Exception as e:
+                    print(f"Warning: 1D energy profile plots failed: {e}")
 
             # --- RMSD-based convergence check ---
             if (self.config.convergence_mode == "rmsd"
