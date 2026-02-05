@@ -16,12 +16,8 @@ from typing import Literal
 
 import pandas as pd
 
-# pyCHARMM imports (available at runtime)
-import pycharmm
-import pycharmm.read as read
-import pycharmm.lingo as lingo
-import pycharmm.settings as settings
-import pycharmm.crystal as crystal
+# pyCHARMM imports are deferred to function bodies so that mpi4py can
+# initialize MPI first (pyCHARMM also calls MPI_Init on import).
 
 
 @dataclass
@@ -186,6 +182,10 @@ def read_topology_files(
         topology_files: List of file names relative to toppar_dir
         verbose: Whether to print verbose output
     """
+    import pycharmm.read as read
+    import pycharmm.lingo as lingo
+    import pycharmm.settings as settings
+
     toppar_dir = Path(toppar_dir)
 
     if not verbose:
@@ -235,6 +235,7 @@ def read_structure(
         psf_file: Path to PSF file
         crd_file: Path to CRD file
     """
+    import pycharmm.read as read
     read.psf_card(str(psf_file))
     read.coor_card(str(crd_file))
 
@@ -251,6 +252,9 @@ def setup_crystal(
         nb_config: Non-bonded configuration
         use_image_centering: Apply image centering for solvent/ions
     """
+    import pycharmm.lingo as lingo
+    import pycharmm.crystal as crystal
+
     # Define crystal
     dim_str = " ".join(map(str, box_params.dimensions))
     ang_str = " ".join(map(str, box_params.angles))
@@ -271,6 +275,7 @@ def setup_nonbonded(nb_config: NonBondedConfig) -> None:
     Args:
         nb_config: Non-bonded configuration
     """
+    import pycharmm
     params = nb_config.to_dict()
     pycharmm.NonBondedScript(**params).run()
 
@@ -285,6 +290,7 @@ def define_selections(patch_info: pd.DataFrame) -> None:
         patch_info: DataFrame from patches.dat with columns:
             SELECT, SEGID, RESID, PATCH, ATOMS
     """
+    import pycharmm.lingo as lingo
     for _, row in patch_info.iterrows():
         name = row["SELECT"]
         segid = row["SEGID"]
@@ -311,21 +317,25 @@ def execute_block_command(block_cmd: str) -> None:
     Args:
         block_cmd: Complete BLOCK command string
     """
+    import pycharmm
     pycharmm.charmm_script(block_cmd)
 
 
 def clear_block() -> None:
     """Clear existing BLOCK setup."""
+    import pycharmm.lingo as lingo
     lingo.charmm_script("BLOCK\n CLEAR\n END")
 
 
 def clear_crystal() -> None:
     """Free crystal setup."""
+    import pycharmm.lingo as lingo
     lingo.charmm_script("CRYSTAL FREE")
 
 
 def clear_noe() -> None:
     """Reset NOE restraints."""
+    import pycharmm.lingo as lingo
     lingo.charmm_script("NOE\n RESET\n END")
 
 
@@ -359,6 +369,7 @@ def enable_blade(gpuid: int = 0) -> None:
     Args:
         gpuid: GPU device ID
     """
+    import pycharmm.lingo as lingo
     lingo.charmm_script("faster on")
     lingo.charmm_script(f"blade on gpuid {gpuid}")
 

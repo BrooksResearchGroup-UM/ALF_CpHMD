@@ -139,8 +139,8 @@ def alf(
     phase: int = typer.Option(1, "-p", "--phase", help="Initial phase (1, 2, or 3)"),
     nreps: int = typer.Option(None, "-n", "--nreps", help="Number of replicas (default: MPI size)"),
     restrains: str = typer.Option("SCAT", "-r", "--restrains", help="Restraint type: SCAT or NOE"),
-    restrain_hydrogens: bool = typer.Option(False, "-H", "--hydrogens", help="Include hydrogens in restraints"),
-    no_pka_bias: bool = typer.Option(False, "--no-pka-bias", help="Disable pKa-based bias shifts (use zero shifts)"),
+    restrain_hydrogens: bool = typer.Option(False, "--hydrogens/--no-hydrogens", help="Include hydrogens in restraints"),
+    no_pka_bias: bool = typer.Option(False, "--no-pka-bias/--pka-bias", help="Disable pKa-based bias shifts (use zero shifts)"),
     auto_phase: bool = typer.Option(False, "--auto-phase/--no-auto-phase", help="Enable automatic phase switching"),
     auto_stop: bool = typer.Option(False, "--auto-stop/--no-auto-stop", help="Enable automatic stop when converged in Phase 3"),
     hh_plots: bool = typer.Option(False, "--hh-plots/--no-hh-plots", help="Generate Henderson-Hasselbalch plots"),
@@ -156,6 +156,10 @@ def alf(
     This command requires MPI execution:
         mpirun -np <nprocs> cphmd run alf -i <folder> [options]
     """
+    # Initialize MPI via mpi4py BEFORE importing pyCHARMM (triggered by cphmd.core).
+    # pyCHARMM detects MPI is already initialized and skips its own MPI_Init.
+    from mpi4py import MPI
+
     from cphmd.core import ALFConfig, run_alf_simulation
 
     console.print(f"[cyan]Starting ALF simulation for {input_folder}/[/cyan]")
@@ -286,7 +290,7 @@ def energy_profiles_cmd(
 def block(
     input_folder: str = typer.Option(..., "-i", "--input", help="Input folder with prep/patches.dat"),
     restrain_type: str = typer.Option("SCAT", "--restrain-type", help="SCAT or NOE"),
-    hydrogens: bool = typer.Option(False, "-H", "--hydrogens", help="Include hydrogens in restraints"),
+    hydrogens: bool = typer.Option(False, "--hydrogens/--no-hydrogens", help="Include hydrogens in restraints"),
     electrostatics: str = typer.Option("pmeex", "-e", "--elec", help="PME method: pmeex, pmeon, pmenn"),
     variables_dir: str = typer.Option("variables", "-v", "--var-dir", help="Variables directory"),
 ):
