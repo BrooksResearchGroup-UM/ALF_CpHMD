@@ -137,9 +137,6 @@ def _ensure_directories(work_dir: Path) -> dict[str, Path]:
         Dictionary with paths to standard directories.
     """
     dirs = {
-        "runs": work_dir / "runs",
-        "analysis": work_dir / "analysis",
-        "variables": work_dir / "variables",
         "nbshift": work_dir / "nbshift",
     }
 
@@ -241,8 +238,8 @@ def init_vars(
 ) -> Path:
     """Initialize ALF analysis directory with biases.
 
-    Creates analysis/0/ directory with initial bias parameter files
-    and generates variables/1.py for the first ALF cycle.
+    Creates analysis0/ directory (flat, at work_dir level) with initial bias
+    parameter files and generates variables1.inp for the first ALF cycle.
 
     Args:
         work_dir: Working directory for ALF simulation.
@@ -255,13 +252,13 @@ def init_vars(
             If None, uses default ("scat_noh").
 
     Returns:
-        Path to analysis/0/ directory.
+        Path to analysis0/ directory.
     """
     work_dir = Path(work_dir)
     alf_info = ensure_alf_info(alf_info)
     nblocks = alf_info.nblocks
 
-    # Ensure directory structure exists
+    # Ensure nbshift directory exists
     dirs = _ensure_directories(work_dir)
 
     # Create initial bias arrays
@@ -274,8 +271,8 @@ def init_vars(
         x = np.zeros([nblocks, nblocks])
         s = np.zeros([nblocks, nblocks])
 
-    # Create analysis/0 directory (initial state)
-    analysis0 = dirs["analysis"] / "0"
+    # Create analysis0 directory (flat, matching external ALF convention)
+    analysis0 = work_dir / "analysis0"
     analysis0.mkdir(exist_ok=True)
 
     # Write initial bias files
@@ -296,8 +293,8 @@ def init_vars(
         np.savetxt(nbshift / "x_shift.dat", c)
         np.savetxt(nbshift / "s_shift.dat", c)
 
-    # Generate variables/1.py
-    set_vars(work_dir, alf_info, step=1, minimize=minimize)
+    # Generate variables1.inp from inside analysis0 (matching external ALF convention)
+    set_vars_from_analysis_dir(analysis0, alf_info, step=1, minimize=minimize)
 
     return analysis0
 
@@ -491,131 +488,385 @@ def set_vars(
     return output_file
 
 
-def get_energy(
-    work_dir: str | Path,
+def set_vars_from_analysis_dir(
+    analysis_dir: str | Path,
     alf_info: ALFInfo | dict,
-    start_iter: int,
-    end_iter: int,
-    skip_frames: int = 1
-) -> dict[str, np.ndarray]:
-    """Compute bias energies from lambda trajectories for WHAM.
+    step: int,
+    minimize: bool = False,
+) -> Path:
+    """Generate variables file from inside an analysis directory.
 
-    Reads lambda trajectories from multiple ALF iterations and computes
-    the bias energies needed for WHAM reweighting.
+    This matches the external ALF SetVars convention: called from inside
+    an analysis directory (e.g., analysis0/ or analysis5/), reads bias
+    files from the current directory, and writes variables{step}.inp
+    one level up (i.e., at the work_dir level).
+
+    The engine type in alf_info determines the output format:
+    - "charmm"/"bladelib": CHARMM .inp format with 'set' commands
+    - "pycharmm": Python .py format with yaml bias dictionary
 
     Args:
-        work_dir: Working directory for ALF simulation.
+        analysis_dir: Path to analysis directory (e.g., work_dir/analysis5/).
         alf_info: ALF simulation information.
-        start_iter: First iteration to include (inclusive).
-        end_iter: Last iteration to include (inclusive).
-        skip_frames: Only analyze every Nth frame.
+        step: ALF cycle number for which biases are being written.
+        minimize: Whether to run minimization this cycle.
 
     Returns:
-        Dictionary with:
-            - 'Lambda': Concatenated lambda trajectories
-            - 'Energy': Bias energy matrix for WHAM
-            - 'b', 'c', 'x', 's': Bias parameters per iteration
+        Path to generated variables file.
     """
-    work_dir = Path(work_dir)
+    analysis_dir = Path(analysis_dir)
     alf_info = ensure_alf_info(alf_info)
+    work_dir = analysis_dir.parent
 
     nblocks = alf_info.nblocks
     nsubs = alf_info.nsubs
     nreps = alf_info.nreps
+    ncentral = alf_info.ncentral
+    name = alf_info.name
+    nnodes = alf_info.nnodes
+    temp = alf_info.temp
+    engine = alf_info.engine
 
-    n_iters = end_iter - start_iter + 1
-    analysis_base = work_dir / "analysis"
+    # Load and accumulate bias parameters from analysis dir
+    b_prev = np.loadtxt(analysis_dir / "b_prev.dat")
+    b = np.loadtxt(analysis_dir / "b.dat")
+    b_sum = b_prev + b
+    b_sum = np.reshape(b_sum, (1, -1))
+    np.savetxt(analysis_dir / "b_sum.dat", b_sum, fmt=" %7.3f")
 
-    Lambda_all = []
-    b_all = []
-    c_all = []
-    x_all = []
-    s_all = []
+    c_prev = np.loadtxt(analysis_dir / "c_prev.dat")
+    c = np.loadtxt(analysis_dir / "c.dat")
+    c_sum = c_prev + c
+    np.savetxt(analysis_dir / "c_sum.dat", c_sum, fmt=" %7.3f")
 
-    for i in range(n_iters):
-        iter_idx = start_iter + i
-        analysis_dir = analysis_base / str(iter_idx)
-        data_dir = analysis_dir / "data"
+    x_prev = np.loadtxt(analysis_dir / "x_prev.dat")
+    x = np.loadtxt(analysis_dir / "x.dat")
+    x_sum = x_prev + x
+    np.savetxt(analysis_dir / "x_sum.dat", x_sum, fmt=" %7.3f")
 
-        if not data_dir.is_dir():
-            print(f"Warning: {data_dir} not found, skipping")
+    s_prev = np.loadtxt(analysis_dir / "s_prev.dat")
+    s = np.loadtxt(analysis_dir / "s.dat")
+    s_sum = s_prev + s
+    np.savetxt(analysis_dir / "s_sum.dat", s_sum, fmt=" %7.3f")
+
+    sub0 = np.cumsum(nsubs) - nsubs
+
+    if engine == "pycharmm":
+        # Write Python format: variables{step}.py
+        output_file = work_dir / f"variables{step}.py"
+        bias = {}
+
+        # Linear biases
+        for i in range(len(nsubs)):
+            for j in range(nsubs[i]):
+                key = f"lams{i+1}s{j+1}"
+                bias[key] = float(b_sum[0, sub0[i] + j])
+
+        # Quadratic psi coupling
+        for si in range(len(nsubs)):
+            for sj in range(si, len(nsubs)):
+                for i in range(nsubs[si]):
+                    j0 = (i + 1 if si == sj else 0)
+                    for j in range(j0, nsubs[sj]):
+                        key = f"cs{si+1}s{i+1}s{sj+1}s{j+1}"
+                        bias[key] = -float(c_sum[sub0[si] + i, sub0[sj] + j])
+
+        # Omega (x) coupling
+        for si in range(len(nsubs)):
+            for sj in range(len(nsubs)):
+                for i in range(nsubs[si]):
+                    for j in range(nsubs[sj]):
+                        if sub0[si] + i != sub0[sj] + j:
+                            key = f"xs{si+1}s{i+1}s{sj+1}s{j+1}"
+                            bias[key] = -float(x_sum[sub0[si] + i, sub0[sj] + j])
+
+        # Chi (s) coupling
+        for si in range(len(nsubs)):
+            for sj in range(len(nsubs)):
+                for i in range(nsubs[si]):
+                    for j in range(nsubs[sj]):
+                        if sub0[si] + i != sub0[sj] + j:
+                            key = f"ss{si+1}s{i+1}s{sj+1}s{j+1}"
+                            bias[key] = -float(s_sum[sub0[si] + i, sub0[sj] + j])
+
+        # Store full arrays
+        bias["b"] = b_sum.tolist()
+        bias["c"] = c_sum.tolist()
+        bias["x"] = x_sum.tolist()
+        bias["s"] = s_sum.tolist()
+
+        with open(output_file, "w") as fp:
+            fp.write("import yaml\n")
+            fp.write("import numpy as np\n\n")
+
+            fp.write('bias_string="""\n')
+            yaml.dump(bias, fp)
+            fp.write('"""\n')
+            fp.write("bias=yaml.load(bias_string,Loader=yaml.Loader)\n")
+            fp.write("bias['b']=np.array(bias['b'])\n")
+            fp.write("bias['c']=np.array(bias['c'])\n")
+            fp.write("bias['x']=np.array(bias['x'])\n")
+            fp.write("bias['s']=np.array(bias['s'])\n\n")
+
+            # Write alf_info
+            alf_info_dict = alf_info.to_dict()
+            fp.write('alf_info_string="""\n')
+            yaml.dump(alf_info_dict, fp)
+            fp.write('"""\n')
+            fp.write("alf_info=yaml.load(alf_info_string,Loader=yaml.Loader)\n")
+            fp.write("alf_info['nsubs']=np.array(alf_info['nsubs'])\n\n")
+
+            fp.write(f"sysname='{name}'\n")
+            fp.write(f"nnodes={nnodes}\n")
+            fp.write(f"nreps={nreps}\n")
+            fp.write(f"ncentral={ncentral}\n")
+            fp.write(f"nblocks={nblocks}\n")
+            fp.write(f"nsites={len(nsubs)}\n")
+            fp.write(f"nsubs={nsubs.tolist()}\n")
+            fp.write("nsubs=np.array(nsubs)\n")
+            for i in range(len(nsubs)):
+                fp.write(f"nsubs{i+1}={nsubs[i]}\n")
+            fp.write(f"temp={temp}\n\n")
+            fp.write(f"minimizeflag={minimize}\n")
+
+    else:
+        # Write CHARMM .inp format: variables{step}.inp
+        output_file = work_dir / f"variables{step}.inp"
+
+        with open(output_file, "w") as fp:
+            fp.write(f"* Variables from step {step} of ALF\n")
+            fp.write("*\n\n")
+
+            ibuff = 0
+            for i in range(len(nsubs)):
+                for j in range(nsubs[i]):
+                    fp.write(f"set lams{i+1}s{j+1} = {b_sum[0, ibuff+j]:8.3f}\n")
+                ibuff += nsubs[i]
+
+            ibuff = 0
+            for si in range(len(nsubs)):
+                jbuff = ibuff
+                for sj in range(si, len(nsubs)):
+                    for i in range(nsubs[si]):
+                        j0 = i + 1 if si == sj else 0
+                        for j in range(j0, nsubs[sj]):
+                            fp.write(f"set cs{si+1}s{i+1}s{sj+1}s{j+1} = "
+                                     f"{-c_sum[ibuff+i, jbuff+j]:8.3f}\n")
+                    jbuff += nsubs[sj]
+                ibuff += nsubs[si]
+
+            ibuff = 0
+            for si in range(len(nsubs)):
+                jbuff = 0
+                for sj in range(len(nsubs)):
+                    for i in range(nsubs[si]):
+                        for j in range(nsubs[sj]):
+                            if ibuff + i != jbuff + j:
+                                fp.write(f"set xs{si+1}s{i+1}s{sj+1}s{j+1} = "
+                                         f"{-x_sum[ibuff+i, jbuff+j]:8.3f}\n")
+                    jbuff += nsubs[sj]
+                ibuff += nsubs[si]
+
+            ibuff = 0
+            for si in range(len(nsubs)):
+                jbuff = 0
+                for sj in range(len(nsubs)):
+                    for i in range(nsubs[si]):
+                        for j in range(nsubs[sj]):
+                            if ibuff + i != jbuff + j:
+                                fp.write(f"set ss{si+1}s{i+1}s{sj+1}s{j+1} = "
+                                         f"{-s_sum[ibuff+i, jbuff+j]:8.3f}\n")
+                    jbuff += nsubs[sj]
+                ibuff += nsubs[si]
+
+            fp.write(f'set sysname = "{name}\n')
+            fp.write("trim sysname from 2\n")
+            fp.write(f"set nnodes = {nnodes}\n")
+            fp.write(f"set nreps = {nreps}\n")
+            fp.write(f"set ncentral = {ncentral}\n")
+            fp.write(f"set nblocks = {nblocks}\n")
+            fp.write(f"set nsites = {len(nsubs)}\n")
+            for i in range(len(nsubs)):
+                fp.write(f"set nsubs{i+1} = {nsubs[i]}\n")
+            fp.write(f"set temp = {temp}\n")
+            fp.write(f"set minimizeflag = {int(minimize)}\n\n")
+
+    return output_file
+
+
+def get_energy_from_analysis_dir(
+    alf_info: ALFInfo | dict,
+    start_cycle: int,
+    end_cycle: int,
+    skipE: int = 1,
+) -> int:
+    """Compute bias energies for WHAM from inside an analysis directory.
+
+    This matches the external ALF GetEnergy convention: called from inside
+    an analysis directory (e.g., analysis5/), reads lambda data from
+    ../analysis{i}/data/ and bias parameters from ../analysis{i}/,
+    and writes Lambda/ and Energy/ subdirectories in the current directory.
+
+    Supports shift files for replica exchange (nbshift):
+    - b_shift.dat, c_shift.dat, x_shift.dat, s_shift.dat
+    - b_fix_shift.dat, c_fix_shift.dat, x_fix_shift.dat, s_fix_shift.dat
+
+    Args:
+        alf_info: ALF simulation information.
+        start_cycle: First ALF cycle to include (inclusive).
+        end_cycle: Final ALF cycle to include (inclusive).
+        skipE: Subsample interval (only every Nth frame). Default 1 = all.
+
+    Returns:
+        Number of simulations (ESim files) created.
+    """
+    import os
+
+    alf_info = ensure_alf_info(alf_info)
+    nblocks = alf_info.nblocks
+    nsubs = alf_info.nsubs
+    nreps = alf_info.nreps
+    ncentral = alf_info.ncentral
+
+    NF = end_cycle - start_cycle + 1
+
+    def load_shift_file(analysis_dir: str, filename: str, default_value=0.0):
+        """Load shift file from analysis_dir/nbshift or ../nbshift."""
+        local_path = os.path.join(analysis_dir, "nbshift", filename)
+        if os.path.exists(local_path):
+            return np.loadtxt(local_path)
+        fallback_path = os.path.join("../nbshift", filename)
+        if os.path.exists(fallback_path):
+            return np.loadtxt(fallback_path)
+        return default_value
+
+    Lambda = []
+    b = []
+    c = []
+    x = []
+    s = []
+
+    for i in range(NF):
+        analysis_dir = f"../analysis{start_cycle + i}"
+        data_dir = os.path.join(analysis_dir, "data")
+
+        if not os.path.isdir(data_dir):
+            print(f"Warning: Directory {data_dir} not found")
             continue
 
-        # Load bias parameters
-        b_prev = np.loadtxt(analysis_dir / "b_prev.dat").reshape(1, -1)
-        c_prev = np.loadtxt(analysis_dir / "c_prev.dat")
-        x_prev = np.loadtxt(analysis_dir / "x_prev.dat")
-        s_prev = np.loadtxt(analysis_dir / "s_prev.dat")
+        # Load shift files
+        b_shift = load_shift_file(analysis_dir, "b_shift.dat")
+        c_shift = load_shift_file(analysis_dir, "c_shift.dat")
+        x_shift = load_shift_file(analysis_dir, "x_shift.dat")
+        s_shift = load_shift_file(analysis_dir, "s_shift.dat")
 
-        b_all.append(b_prev)
-        c_all.append(c_prev)
-        x_all.append(x_prev)
-        s_all.append(s_prev)
+        b_fix_shift = load_shift_file(analysis_dir, "b_fix_shift.dat", 0.0)
+        c_fix_shift = load_shift_file(analysis_dir, "c_fix_shift.dat", 0.0)
+        x_fix_shift = load_shift_file(analysis_dir, "x_fix_shift.dat", 0.0)
+        s_fix_shift = load_shift_file(analysis_dir, "s_fix_shift.dat", 0.0)
 
-        # Load lambda trajectories (files are Lambda.{kk}.{rep}.dat where kk=0 for phases 1-2)
-        for rep in range(nreps):
-            # Try phase 1/2 naming (Lambda.0.{rep}.dat) first
-            lambda_file = data_dir / f"Lambda.0.{rep}.dat"
-            if lambda_file.exists():
-                Lambda = np.loadtxt(lambda_file)
-                Lambda_all.append(Lambda[::skip_frames])
-            else:
-                # Fallback to phase 3 naming or other patterns
-                alt_file = data_dir / f"Lambda.{rep}.dat"
-                if alt_file.exists():
-                    Lambda = np.loadtxt(alt_file)
-                    Lambda_all.append(Lambda[::skip_frames])
-
-    if not Lambda_all:
-        raise ValueError("No lambda data found")
-
-    # Concatenate all lambda data
-    Lambda_concat = np.vstack(Lambda_all)
-
-    # Create output directories in current analysis dir
-    current_analysis = analysis_base / str(end_iter)
-    (current_analysis / "Lambda").mkdir(exist_ok=True)
-    (current_analysis / "Energy").mkdir(exist_ok=True)
-
-    # Save concatenated lambda (one file per iteration, 1-indexed for WHAM)
-    for i in range(n_iters):
-        if i < len(Lambda_all):
-            np.savetxt(
-                current_analysis / "Lambda" / f"Lambda{i + 1}.dat",
-                Lambda_all[i],
-                fmt="%10.6f"
-            )
-
-    # Compute and save cross-simulation bias energies for WHAM
-    # ESim{i+1}.dat contains the bias energy of ALL frames using biases from sim i
-    for sim_idx in range(len(b_all)):
-        b = b_all[sim_idx]
-        c = c_all[sim_idx]
-        x = x_all[sim_idx]
-        s = s_all[sim_idx]
-
-        # Compute energy for all frames using this simulation's biases
-        energies = []
-        for frame_lam in Lambda_concat:
-            # Skip first column (time) if lambda has more columns than nblocks
-            lam = frame_lam[1:] if len(frame_lam) > nblocks else frame_lam
-            E = compute_bias_energy(lam, b, c, x, s)
-            energies.append(E)
-
-        # WHAM expects ESim files numbered 1-N (not 0-indexed)
-        np.savetxt(
-            current_analysis / "Energy" / f"ESim{sim_idx + 1}.dat",
-            np.array(energies).reshape(-1, 1),
-            fmt="%12.6f"
+        lambda_files = sorted(
+            f for f in os.listdir(data_dir)
+            if f.startswith("Lambda.") and f.endswith(".dat")
         )
 
-    return {
-        "Lambda": Lambda_concat,
-        "b": b_all,
-        "c": c_all,
-        "x": x_all,
-        "s": s_all,
-    }
+        for lambda_file in lambda_files:
+            file_path = os.path.join(data_dir, lambda_file)
+            try:
+                # Column 0 is time; columns 1: are lambda values
+                Lambda.append(np.loadtxt(file_path)[(skipE - 1)::skipE, 1:])
+
+                # Extract j and k from filename (Lambda.j.k.dat)
+                j, k = map(int, lambda_file.split(".")[1:3])
+                b_old = np.loadtxt(os.path.join(analysis_dir, "b_prev.dat"))
+                b.append(b_old + b_shift * (k - ncentral) + b_fix_shift)
+                c_old = np.loadtxt(os.path.join(analysis_dir, "c_prev.dat"))
+                c.append(c_old + c_shift * (k - ncentral) + c_fix_shift)
+                x_old = np.loadtxt(os.path.join(analysis_dir, "x_prev.dat"))
+                x.append(x_old + x_shift * (k - ncentral) + x_fix_shift)
+                s_old = np.loadtxt(os.path.join(analysis_dir, "s_prev.dat"))
+                s.append(s_old + s_shift * (k - ncentral) + s_fix_shift)
+            except Exception as e:
+                print(f"Error loading file {file_path}: {e}")
+
+    os.makedirs("Lambda", exist_ok=True)
+    os.makedirs("Energy", exist_ok=True)
+
+    total_simulations = len(Lambda)
+    if total_simulations == 0:
+        print("Error: No Lambda files found.")
+        return 0
+
+    # Compute cross-simulation bias energies
+    E = [[] for _ in range(total_simulations)]
+    for i in range(total_simulations):
+        for j_idx in range(total_simulations):
+            bi, ci, xi, si = b[i], c[i], x[i], s[i]
+            Lj = Lambda[j_idx]
+            Eij = np.reshape(np.dot(Lj, -bi), (-1, 1))
+            Eij += np.sum(np.dot(Lj, -ci) * Lj, axis=1, keepdims=True)
+            Eij += np.sum(np.dot(1 - np.exp(-5.56 * Lj), -xi) * Lj, axis=1, keepdims=True)
+            Eij += np.sum(np.dot(Lj / (Lj + 0.017), -si) * Lj, axis=1, keepdims=True)
+            E[i].append(Eij)
+
+    for i in range(total_simulations):
+        Ei = E[total_simulations - 1][i]
+        for j_idx in range(total_simulations):
+            Ei = np.concatenate((Ei, E[j_idx][i]), axis=1)
+        np.savetxt(f"Energy/ESim{i + 1}.dat", Ei, fmt="%12.5f")
+
+    for i in range(total_simulations):
+        np.savetxt(f"Lambda/Lambda{i + 1}.dat", Lambda[i], fmt="%10.6f")
+
+    # Create G_imp shift information
+    os.makedirs("G_imp_shifts", exist_ok=True)
+
+    simulation_jk_map = {}
+    sim_idx = 0
+    for i in range(NF):
+        analysis_dir = f"../analysis{start_cycle + i}"
+        data_dir = os.path.join(analysis_dir, "data")
+        if not os.path.isdir(data_dir):
+            continue
+        lambda_files = sorted(
+            f for f in os.listdir(data_dir)
+            if f.startswith("Lambda.") and f.endswith(".dat")
+        )
+        for lambda_file in lambda_files:
+            try:
+                j, k = map(int, lambda_file.split(".")[1:3])
+                simulation_jk_map[sim_idx] = (j, k, i)
+                sim_idx += 1
+            except (ValueError, IndexError):
+                simulation_jk_map[sim_idx] = (1, sim_idx, i)
+                sim_idx += 1
+
+    for sim_idx in range(total_simulations):
+        if sim_idx not in simulation_jk_map:
+            continue
+        j, k, analysis_idx = simulation_jk_map[sim_idx]
+        analysis_dir = f"../analysis{start_cycle + analysis_idx}"
+        try:
+            b_shift_arr = np.atleast_1d(load_shift_file(analysis_dir, "b_shift.dat", 0.0))
+            b_fix_shift_arr = np.atleast_1d(load_shift_file(analysis_dir, "b_fix_shift.dat", 0.0))
+
+            if b_shift_arr.size > 1:
+                num_blocks = len(b_shift_arr)
+            else:
+                b_shift_arr = np.full(nblocks, float(b_shift_arr.flat[0]))
+                b_fix_shift_arr = np.full(nblocks, float(b_fix_shift_arr.flat[0]))
+                num_blocks = nblocks
+
+            with open(f"G_imp_shifts/shifts_sim{sim_idx + 1}.dat", "w") as f:
+                f.write(f"# G_imp shift information for simulation {sim_idx + 1}\n")
+                f.write(f"# j: {j}, k: {k}, ncentral: {ncentral}\n")
+                for block_idx in range(num_blocks):
+                    total_shift = float(b_fix_shift_arr[block_idx]) + float(b_shift_arr[block_idx]) * (k - ncentral)
+                    f.write(f"{total_shift:.6f}\n")
+        except Exception as e:
+            print(f"Warning: Could not create G_imp shifts for simulation {sim_idx + 1}: {e}")
+
+    return total_simulations
 
 
 def compute_bias_energy(
