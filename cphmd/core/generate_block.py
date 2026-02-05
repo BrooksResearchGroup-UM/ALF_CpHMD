@@ -113,7 +113,10 @@ def _load_variables(resname: str, variables_dir: Path) -> Dict[str, float]:
             var_file, sep=",", header=None, names=["variable", "value"]
         )
         df = df.apply(lambda x: x.str.strip() if x.dtype == "object" else x)
-        return dict(zip(df["variable"], df["value"].astype(float)))
+        # Filter to numeric values only (skip sysname, nnodes, etc.)
+        df["value"] = pd.to_numeric(df["value"], errors="coerce")
+        df = df.dropna(subset=["value"])
+        return dict(zip(df["variable"], df["value"]))
 
     raise FileNotFoundError(f"No variable file found for {resname} in {variables_dir}")
 
