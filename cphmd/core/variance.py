@@ -177,6 +177,8 @@ def _compute_variance(
         for itrial in range(nf):
             isim = itrial * nreps + irep
             L = np.loadtxt(data_dir / f"Lambda.{itrial}.{irep}.dat")
+            if L.ndim == 2 and L.shape[1] > 1:
+                L = L[:, 1:]  # Strip time column
             nframes[irep, itrial] = L.shape[0]
 
             for j in range(nlig):
@@ -216,6 +218,8 @@ def _compute_variance(
 
         for itrial in range(nf):
             L = np.loadtxt(data_dir / f"Lambda.{itrial}.{irep}.dat")
+            if L.ndim == 2 and L.shape[1] > 1:
+                L = L[:, 1:]  # Strip time column
 
             for j in range(nlig):
                 # Count frames where all site lambdas > cutoff

@@ -1613,6 +1613,14 @@ class ALFSimulation:
                     g_imp_path="../G_imp",
                     log_file="analysis.log",
                 )
+                # Check if LMALF produced valid output before overwriting WHAM result
+                out_file = Path("OUT.dat")
+                if out_file.exists():
+                    out_data = np.loadtxt(out_file)
+                    if np.all(out_data == 0):
+                        print("[Hybrid] LMALF produced all zeros - keeping WHAM output")
+                        return
+
                 # Re-run GetFreeEnergy on LMALF's output
                 lm_keys = {"cutb", "cutc", "cutx", "cuts", "cutc2", "cutx2", "cuts2"}
                 lm_params = {k: v for k, v in cut_params.items() if k in lm_keys}

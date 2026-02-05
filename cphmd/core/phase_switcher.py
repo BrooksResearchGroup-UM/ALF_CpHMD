@@ -260,6 +260,9 @@ def load_lambda_data(data_dir: Path) -> tuple[np.ndarray | None, list[str]]:
         replica_combined = None
         for fname in repeat_files:
             l = np.loadtxt(data_dir / fname)
+            # Strip time column (column 0) — keep only lambda values
+            if l.ndim == 2 and l.shape[1] > 1:
+                l = l[:, 1:]
             if replica_combined is None:
                 replica_combined = l
             else:
@@ -343,6 +346,9 @@ def load_lambda_data_per_replica(
                 data = np.loadtxt(fpath)
                 if data.ndim == 1:
                     data = data.reshape(1, -1)
+                # Strip time column (column 0) — keep only lambda values
+                if data.shape[1] > 1:
+                    data = data[:, 1:]
                 if replica_lambda is None:
                     replica_lambda = data
                 else:
