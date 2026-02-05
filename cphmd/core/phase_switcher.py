@@ -31,14 +31,17 @@ class PhaseTransitionConfig:
     # Lambda threshold for counting "occupied" states
     lambda_threshold: float = 0.8
 
-    # Spread tolerance for phase 1→2 transition
-    spread_1to2: float = 0.3
+    # Spread tolerance for phase 1→2 transition (relaxed: Phase 1 is rough equilibration)
+    spread_1to2: float = 0.5
 
     # Spread tolerance for phase 2→3 transition
     spread_2to3: float = 0.2
 
-    # Minimum sample count per state
-    min_hits: int = 1000
+    # Minimum sample count per state for phase 1→2
+    min_hits_1to2: int = 100
+
+    # Minimum sample count per state for phase 2→3
+    min_hits_2to3: int = 1000
 
     # pKa tolerance for phase 1→2 (relaxed)
     pka_tolerance_1to2: float = 1.5
@@ -779,7 +782,7 @@ def check_phase_transition(
     # Phase 1 → 2 transition
     if current_phase == 1:
         overlap_ok = good_overlap(col_fracs, config.spread_1to2, nsubs=nsubs)
-        samples_ok = enough_samples(mask, config.min_hits)
+        samples_ok = enough_samples(mask, config.min_hits_1to2)
 
         # Check pKa convergence if CpHMD
         pka_ok = True
@@ -818,7 +821,7 @@ def check_phase_transition(
             if not overlap_ok:
                 reasons.append(f"spread={spread:.3f}>{config.spread_1to2}")
             if not samples_ok:
-                reasons.append(f"min_hits={min_sample_count}<{config.min_hits}")
+                reasons.append(f"min_hits={min_sample_count}<{config.min_hits_1to2}")
             if not pka_ok:
                 reasons.append(pka_reason)
             return 1, f"Staying in phase 1: {', '.join(reasons)}"
@@ -826,7 +829,7 @@ def check_phase_transition(
     # Phase 2 → 3 transition
     elif current_phase == 2:
         overlap_ok = good_overlap(col_fracs, config.spread_2to3, nsubs=nsubs)
-        samples_ok = enough_samples(mask, config.min_hits)
+        samples_ok = enough_samples(mask, config.min_hits_2to3)
 
         # Check pKa convergence if CpHMD (stricter tolerance)
         pka_ok = True
@@ -872,7 +875,7 @@ def check_phase_transition(
             if not overlap_ok:
                 reasons.append(f"spread={spread:.3f}>{config.spread_2to3}")
             if not samples_ok:
-                reasons.append(f"min_hits={min_sample_count}<{config.min_hits}")
+                reasons.append(f"min_hits={min_sample_count}<{config.min_hits_2to3}")
             if not pka_ok:
                 reasons.append(pka_reason)
             if not conn_ok:
