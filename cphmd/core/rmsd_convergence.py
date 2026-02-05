@@ -58,14 +58,40 @@ class RMSDState:
         )
 
 
-def _rmsd_finite(a: np.ndarray, b: np.ndarray) -> tuple[float, float]:
+def _simplex_valid_count(data_size: int) -> int:
+    """Count grid points where λᵢ + λⱼ ≤ 1 on a square grid.
+
+    For a grid_size × grid_size grid with λ = k/(grid_size-1),
+    valid points satisfy i + j ≤ grid_size - 1.
+
+    Args:
+        data_size: Total number of grid points (grid_size²).
+
+    Returns:
+        Number of physically accessible points on the simplex.
+    """
+    gs = int(round(data_size ** 0.5))
+    return gs * (gs + 1) // 2
+
+
+def _rmsd_finite(
+    a: np.ndarray, b: np.ndarray, n_valid: int | None = None
+) -> tuple[float, float]:
     """RMSD over points finite in both arrays.
+
+    Args:
+        a: First array.
+        b: Second array.
+        n_valid: Denominator for coverage fraction. If None, uses len(a).
+            Use _simplex_valid_count() for pairwise profiles to exclude
+            physically inaccessible grid points (λᵢ + λⱼ > 1).
 
     Returns:
         (rmsd, coverage_fraction)
     """
     mask = np.isfinite(a) & np.isfinite(b)
-    coverage = mask.sum() / len(a) if len(a) > 0 else 0.0
+    denom = n_valid if n_valid is not None else len(a)
+    coverage = mask.sum() / denom if denom > 0 else 0.0
     if mask.sum() == 0:
         return float("inf"), coverage
     diff = a[mask] - b[mask]
@@ -104,15 +130,31 @@ def compute_site_rmsd(
         rmsds = []
         coverages = []
 
-        # Individual substituent profiles + pairwise profiles
-        n_profiles = ns + ns * (ns - 1) // 2
-        for _ in range(n_profiles):
+        # Individual substituent profiles
+        for _ in range(ns):
             g_curr_path = ms_curr / f"G{iG}.dat"
             g_ref_path = ms_ref / f"G{iG}.dat"
             if g_curr_path.exists() and g_ref_path.exists():
                 g_curr = np.loadtxt(g_curr_path)
                 g_ref = np.loadtxt(g_ref_path)
                 rmsd, cov = _rmsd_finite(g_curr, g_ref)
+                rmsds.append(rmsd)
+                coverages.append(cov)
+            else:
+                rmsds.append(float("inf"))
+                coverages.append(0.0)
+            iG += 1
+
+        # Pairwise profiles — use simplex-aware coverage denominator
+        n_pairs = ns * (ns - 1) // 2
+        for _ in range(n_pairs):
+            g_curr_path = ms_curr / f"G{iG}.dat"
+            g_ref_path = ms_ref / f"G{iG}.dat"
+            if g_curr_path.exists() and g_ref_path.exists():
+                g_curr = np.loadtxt(g_curr_path)
+                g_ref = np.loadtxt(g_ref_path)
+                n_valid = _simplex_valid_count(len(g_curr))
+                rmsd, cov = _rmsd_finite(g_curr, g_ref, n_valid)
                 rmsds.append(rmsd)
                 coverages.append(cov)
             else:
@@ -183,12 +225,16 @@ def compute_pairwise_rmsd(
             iG += 1
 
         # Pairwise profiles (upper triangle: i < j)
+        # Use simplex-aware coverage: only count grid points where λᵢ + λⱼ ≤ 1
         for i in range(ns):
             for j in range(i + 1, ns):
                 g_curr_path = ms_curr / f"G{iG}.dat"
                 g_ref_path = ms_ref / f"G{iG}.dat"
                 if g_curr_path.exists() and g_ref_path.exists():
-                    rmsd, cov = _rmsd_finite(np.loadtxt(g_curr_path), np.loadtxt(g_ref_path))
+                    g_curr = np.loadtxt(g_curr_path)
+                    g_ref = np.loadtxt(g_ref_path)
+                    n_valid = _simplex_valid_count(len(g_curr))
+                    rmsd, cov = _rmsd_finite(g_curr, g_ref, n_valid)
                 else:
                     rmsd, cov = float("inf"), 0.0
                 pairwise.append((i, j, rmsd, cov))

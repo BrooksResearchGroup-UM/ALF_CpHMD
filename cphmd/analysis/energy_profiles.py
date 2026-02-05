@@ -320,7 +320,7 @@ def _plot_rmsd_convergence(
 
     plt.tight_layout()
     output_path = output_dir / f"rmsd_convergence.{fmt}"
-    fig.savefig(output_path, dpi=300, bbox_inches="tight", transparent=True)
+    fig.savefig(output_path, dpi=300, bbox_inches="tight")
     plt.close(fig)
 
     return output_path
@@ -486,6 +486,198 @@ def _create_3d_interactive(
     )
 
     fig.write_html(output_dir / "energy_profile_3d.html")
+
+
+def _extract_site_params(
+    b_full: np.ndarray,
+    c_full: np.ndarray,
+    s_full: np.ndarray,
+    x_full: np.ndarray,
+    nsubs: list[int],
+    site_idx: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Extract bias parameters for a single site from the flat/full arrays.
+
+    Args:
+        b_full: Full b vector (nblocks,)
+        c_full: Full c matrix (nblocks, nblocks)
+        s_full: Full s matrix (nblocks, nblocks)
+        x_full: Full x matrix (nblocks, nblocks)
+        nsubs: Number of substates per site.
+        site_idx: Which site to extract.
+
+    Returns:
+        (b, c, s, x) sliced to the site's substate block.
+    """
+    offset = sum(nsubs[:site_idx])
+    ns = nsubs[site_idx]
+    sl = slice(offset, offset + ns)
+    return b_full[sl], c_full[sl, :][:, sl], s_full[sl, :][:, sl], x_full[sl, :][:, sl]
+
+
+def _site_energy_1d(
+    b: np.ndarray,
+    c: np.ndarray,
+    s: np.ndarray,
+    x: np.ndarray,
+    ns: int,
+    sub_from: int,
+    sub_to: int,
+    n_points: int = 200,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Compute total bias energy along a 1D transition coordinate.
+
+    Scans from pure state `sub_from` (t=0) to pure state `sub_to` (t=1):
+        lambda[sub_from] = 1 - t,  lambda[sub_to] = t,  others = 0.
+
+    Returns:
+        (t_values, energies)  both shape (n_points,)
+    """
+    t = np.linspace(0, 1, n_points)
+    energies = np.empty(n_points)
+    for k, tk in enumerate(t):
+        lam = np.zeros(ns)
+        lam[sub_from] = 1.0 - tk
+        lam[sub_to] = tk
+        energies[k] = total_energy(lam, b, c, s, x)
+    return t, energies
+
+
+def plot_1d_profiles(
+    analysis_dir: Path,
+    nsubs: list[int],
+    output_dir: Path | None = None,
+    n_points: int = 200,
+    fmt: str = "png",
+) -> list[Path]:
+    """Plot 1D bias energy profiles for each site in an analysis directory.
+
+    For each site, generates:
+    1. Overlay of all pairwise transition profiles (Energy vs reaction coord)
+    2. Heatmap of endpoint energy differences between substates
+
+    Args:
+        analysis_dir: Path to a single analysisN/ directory.
+        nsubs: Number of substates per site.
+        output_dir: Where to save plots. Defaults to analysis_dir / "plots".
+        n_points: Lambda grid resolution for 1D scans.
+        fmt: Image format (png, pdf, svg).
+
+    Returns:
+        List of output file paths.
+    """
+    if output_dir is None:
+        output_dir = analysis_dir / "plots"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    b_full, c_full, s_full, x_full = _load_bias_parameters(analysis_dir)
+
+    # Reshape c, s, x to square if they came in as 1D
+    nblocks = sum(nsubs)
+    if c_full.ndim == 1:
+        c_full = c_full.reshape(nblocks, nblocks)
+    if s_full.ndim == 1:
+        s_full = s_full.reshape(nblocks, nblocks)
+    if x_full.ndim == 1:
+        x_full = x_full.reshape(nblocks, nblocks)
+
+    plt.rcParams['axes.linewidth'] = 0.5
+    plt.rcParams['xtick.direction'] = 'out'
+    plt.rcParams['ytick.direction'] = 'out'
+    plt.rcParams['xtick.major.size'] = 4
+    plt.rcParams['ytick.major.size'] = 4
+
+    itt = analysis_dir.name.replace("analysis", "")
+    saved = []
+
+    for site_idx, ns in enumerate(nsubs):
+        b, c, s, x = _extract_site_params(b_full, c_full, s_full, x_full, nsubs, site_idx)
+
+        # --- 1D profile overlay ---
+        fig, ax = plt.subplots(figsize=(10, 6))
+        n_pairs = ns * (ns - 1) // 2
+
+        # Color map: tab20 for ≤20 pairs, hsv otherwise
+        if n_pairs <= 20:
+            cmap = plt.get_cmap("tab20")
+            colors = [cmap(k) for k in range(n_pairs)]
+        else:
+            cmap = plt.get_cmap("turbo")
+            colors = [cmap(k / max(n_pairs - 1, 1)) for k in range(n_pairs)]
+
+        pair_idx = 0
+        endpoint_diff = np.zeros((ns, ns))
+        for i in range(ns):
+            for j in range(i + 1, ns):
+                t, E = _site_energy_1d(b, c, s, x, ns, i, j, n_points)
+                # Shift so E(t=0) = 0 for readability
+                E_shifted = E - E[0]
+                endpoint_diff[i, j] = E[-1] - E[0]
+                endpoint_diff[j, i] = -(E[-1] - E[0])
+
+                ax.plot(
+                    t, E_shifted,
+                    color=colors[pair_idx % len(colors)],
+                    linewidth=1.0 if n_pairs > 10 else 1.5,
+                    alpha=0.6 if n_pairs > 10 else 0.8,
+                    label=f"{i}→{j}" if n_pairs <= 15 else None,
+                )
+                pair_idx += 1
+
+        ax.axhline(0, color="black", linewidth=0.5, alpha=0.3)
+        ax.set_xlabel("Reaction coordinate (λ)", fontsize=12)
+        ax.set_ylabel("ΔE (kcal/mol)", fontsize=12)
+        ax.set_title(
+            f"Site {site_idx} — 1D bias profiles (iter {itt})",
+            fontsize=13, fontweight="bold",
+        )
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+        ax.grid(True, linestyle="--", alpha=0.3)
+        if n_pairs <= 15:
+            ax.legend(fontsize=8, ncol=max(1, n_pairs // 7), loc="best")
+
+        plt.tight_layout()
+        out_1d = output_dir / f"profiles_site{site_idx}.{fmt}"
+        fig.savefig(out_1d, dpi=300, bbox_inches="tight")
+        plt.close(fig)
+        saved.append(out_1d)
+
+        # --- Endpoint energy heatmap ---
+        fig, ax = plt.subplots(figsize=(max(6, ns * 0.5 + 1), max(5, ns * 0.5 + 1)))
+        vmax = max(abs(endpoint_diff.min()), abs(endpoint_diff.max())) or 1.0
+        im = ax.imshow(
+            endpoint_diff, cmap="RdBu_r", vmin=-vmax, vmax=vmax,
+            aspect="equal", origin="upper",
+        )
+        ax.set_xticks(range(ns))
+        ax.set_yticks(range(ns))
+        ax.set_xlabel("To state", fontsize=11)
+        ax.set_ylabel("From state", fontsize=11)
+        ax.set_title(
+            f"Site {site_idx} — ΔE endpoint (iter {itt})",
+            fontsize=13, fontweight="bold",
+        )
+        plt.colorbar(im, ax=ax, label="ΔE (kcal/mol)", shrink=0.8)
+
+        # Annotate cells if not too many
+        if ns <= 12:
+            for r in range(ns):
+                for col in range(ns):
+                    if r != col:
+                        ax.text(
+                            col, r, f"{endpoint_diff[r, col]:.1f}",
+                            ha="center", va="center", fontsize=7 if ns > 8 else 8,
+                            color="white" if abs(endpoint_diff[r, col]) > 0.6 * vmax else "black",
+                        )
+
+        plt.tight_layout()
+        out_hm = output_dir / f"heatmap_site{site_idx}.{fmt}"
+        fig.savefig(out_hm, dpi=300, bbox_inches="tight")
+        plt.close(fig)
+        saved.append(out_hm)
+
+    return saved
 
 
 # CLI entry point

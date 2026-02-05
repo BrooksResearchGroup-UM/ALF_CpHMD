@@ -183,7 +183,7 @@ def plot_population_convergence(
 
     plt.tight_layout()
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output_path, dpi=300, transparent=True)
+    fig.savefig(output_path, dpi=300)
     plt.close(fig)
 
 
