@@ -55,6 +55,7 @@ RestrainType = Literal["SCAT", "NOE"]
 ElecType = Literal["pmeex", "pmeon", "pmenn", "fshift", "fswitch"]
 VdwType = Literal["vswitch", "vfswitch"]
 AnalysisMethod = Literal["wham", "lmalf", "hybrid"]
+PrepFormat = Literal["default", "legacy", "auto"]
 
 
 @dataclass
@@ -129,23 +130,69 @@ class ALFConfig:
     # Extra topology/parameter files (absolute paths for custom ligands)
     extra_files: list[str | Path] = field(default_factory=list)
 
+    # Prep format: "default" (CpHMD), "legacy" (msld-py-prep), or "auto" (detect)
+    prep_format: PrepFormat = "auto"
+    # Legacy setup script (auto-discovered from prep/*.inp if not set)
+    legacy_setup_script: str | None = None
+
     def __post_init__(self):
         """Validate configuration after initialization."""
         self.input_folder = Path(self.input_folder)
         self.toppar_dir = Path(self.toppar_dir)
 
-        # Validate required files exist
-        required_files = [
-            "prep/system.psf",
-            "prep/system.crd",
-            "prep/patches.dat",
-            "prep/box.dat",
-            "prep/fft.dat",
+        prep_dir = self.input_folder / "prep"
+
+        # Auto-detect prep format
+        if self.prep_format == "auto":
+            has_patches = (prep_dir / "patches.dat").exists()
+            has_alf_info = (prep_dir / "alf_info.py").exists()
+            if has_patches:
+                self.prep_format = "default"
+            elif has_alf_info:
+                self.prep_format = "legacy"
+            else:
+                raise FileNotFoundError(
+                    f"Cannot detect prep format in {prep_dir}: "
+                    f"expected patches.dat (default) or alf_info.py (legacy)"
+                )
+
+        # Validate based on format
+        if self.prep_format == "default":
+            for f in ["prep/system.psf", "prep/system.crd", "prep/patches.dat",
+                       "prep/box.dat", "prep/fft.dat"]:
+                path = self.input_folder / f
+                if not path.exists():
+                    raise FileNotFoundError(f"Required file not found: {path}")
+        elif self.prep_format == "legacy":
+            if not (prep_dir / "alf_info.py").exists():
+                raise FileNotFoundError(f"Required file not found: {prep_dir / 'alf_info.py'}")
+            # Auto-discover setup script if not specified
+            if self.legacy_setup_script is None:
+                self.legacy_setup_script = self._find_legacy_setup_script(prep_dir)
+
+    @staticmethod
+    def _find_legacy_setup_script(prep_dir: Path) -> str:
+        """Find the main MSLD setup .inp script in a legacy prep directory.
+
+        Excludes known helper files (lpsites.inp, toppar.str, etc.).
+        """
+        exclude = {"lpsites.inp", "toppar.str"}
+        candidates = [
+            f.name for f in prep_dir.glob("*.inp")
+            if f.name not in exclude
         ]
-        for f in required_files:
-            path = self.input_folder / f
-            if not path.exists():
-                raise FileNotFoundError(f"Required file not found: {path}")
+        if len(candidates) == 1:
+            return candidates[0]
+        elif len(candidates) == 0:
+            raise FileNotFoundError(
+                f"No .inp setup script found in {prep_dir}. "
+                f"Set legacy_setup_script in ALFConfig."
+            )
+        else:
+            raise FileNotFoundError(
+                f"Multiple .inp files in {prep_dir}: {candidates}. "
+                f"Set legacy_setup_script in ALFConfig to specify which one."
+            )
 
 
 @dataclass
@@ -409,6 +456,53 @@ class ALFSimulation:
         if self.state.rank == 0:
             init_vars(self.config.input_folder, alf_info)
 
+    def _init_alf_legacy(self):
+        """Initialize ALF from a legacy prep/alf_info.py file."""
+        prep_dir = self.config.input_folder / "prep"
+        alf_info_path = prep_dir / "alf_info.py"
+
+        # Execute alf_info.py to extract the dictionary
+        alf_info_ns = {"np": np}
+        exec(alf_info_path.read_text(), alf_info_ns)
+
+        if "alf_info" not in alf_info_ns:
+            raise ValueError(f"alf_info.py must define 'alf_info' dict: {alf_info_path}")
+
+        alf_info = alf_info_ns["alf_info"]
+
+        # Validate required key
+        if "box" not in alf_info:
+            raise ValueError(
+                f"Legacy prep format requires 'box' in alf_info.py "
+                f"(cubic box edge length). Add: alf_info['box'] = <value>"
+            )
+
+        # Ensure nsubs is numpy array
+        alf_info["nsubs"] = np.array(alf_info["nsubs"], dtype=int)
+        alf_info["nblocks"] = int(np.sum(alf_info["nsubs"]))
+
+        # Fill defaults for keys CpHMD expects
+        alf_info.setdefault("engine", "charmm")
+        alf_info.setdefault("nreps", self.config.nreps or 1)
+        alf_info.setdefault("ncentral", alf_info["nreps"] // 2)
+        alf_info.setdefault("nnodes", 1)
+        alf_info.setdefault("temp", self.config.temperature)
+        alf_info.setdefault("ntersite", [1, 1])
+
+        # Override nreps from config if user specified it
+        if self.config.nreps is not None:
+            alf_info["nreps"] = self.config.nreps
+
+        self.state.alf_info = alf_info
+
+        # Ensure G_imp entropy data is available
+        if self.state.rank == 0:
+            self._ensure_g_imp()
+
+        # Initialize ALF variables (creates analysis0/, variables1.inp)
+        if self.state.rank == 0:
+            init_vars(self.config.input_folder, alf_info)
+
     def _ensure_g_imp(self):
         """Ensure G_imp entropy data is available for WHAM.
 
@@ -452,10 +546,19 @@ class ALFSimulation:
         self._comm.Barrier()
 
         self._init_charmm()
-        self._load_patch_info()
+
+        if self.config.prep_format == "legacy":
+            pass  # Legacy mode: no patches.dat to load
+        else:
+            self._load_patch_info()
 
         self._comm.Barrier()
-        self._init_alf()
+
+        if self.config.prep_format == "legacy":
+            self._init_alf_legacy()
+        else:
+            self._init_alf()
+
         self._comm.Barrier()
 
         self._initialized = True
@@ -625,10 +728,13 @@ class ALFSimulation:
                 self._setup_run_directory(run_idx)
                 self._redirect_output(run_idx, k, replica_idx)
 
-                # Setup and run dynamics (all output goes to log.{k}.{replica_idx}.out)
-                self._setup_crystal(run_idx, letter, k, replica_idx)
-                self._build_block_commands(run_idx, letter, k, replica_idx)
-                self._apply_restraints(run_idx, k)
+                # Setup system (method depends on prep format)
+                if self.config.prep_format == "legacy":
+                    self._setup_legacy(run_idx, letter, k, replica_idx)
+                else:
+                    self._setup_crystal(run_idx, letter, k, replica_idx)
+                    self._build_block_commands(run_idx, letter, k, replica_idx)
+                    self._apply_restraints(run_idx, k)
 
                 # Run minimization on first runs if needed
                 if run_idx <= 5:
@@ -829,6 +935,108 @@ class ALFSimulation:
 
         # Setup non-bonded interactions
         setup_nonbonded(nb_config)
+
+    def _setup_legacy(self, run_idx: int, letter: str, k: int, replica_idx: int):
+        """Set up CHARMM session by streaming a legacy setup script.
+
+        For legacy (msld-py-prep) prep folders:
+        1. Stream variables file (sets bias CHARMM variables)
+        2. Pre-process and stream setup script (topology, patches, crystal, BLOCK)
+        3. Setup nonbonded parameters (not handled by setup script)
+        4. Apply restraints from prep/restrains.str (SCAT or NOE)
+        """
+        from .charmm_utils import (
+            NonBondedConfig,
+            setup_nonbonded,
+            clear_block,
+            clear_crystal,
+        )
+        import pycharmm.lingo as lingo
+        import pycharmm.settings as settings
+        import random
+
+        prep_dir = self.config.input_folder / "prep"
+        is_first_run = not self.state.structure_loaded and k == 0
+
+        # Skip setup for subsequent repeats (k > 0) within any run
+        if k > 0:
+            return
+
+        if not is_first_run:
+            # Clear previous CHARMM state before rebuilding
+            clear_block()
+            if self.config.restrains == "NOE":
+                from .charmm_utils import clear_noe
+                clear_noe()
+            clear_crystal()
+
+        # Determine restart run for coordinate loading
+        if run_idx > 5:
+            self.state.restart_run = random.randint(run_idx - 5, run_idx - 1)
+        else:
+            self.state.restart_run = 1
+
+        # 1. Stream variables file (sets @lam*, @c*, @x*, @s* CHARMM variables)
+        var_file = self.config.input_folder / f"variables{run_idx}.inp"
+        if not var_file.exists():
+            raise FileNotFoundError(f"Variables file not found: {var_file}")
+        lingo.charmm_script(f"stream {var_file}")
+
+        # 2. Pre-process setup script: replace placeholder values with actual ones
+        #    msld-py-prep generates "set box = ????" as a placeholder
+        setup_script = prep_dir / self.config.legacy_setup_script
+        script_text = setup_script.read_text()
+
+        box = self.state.alf_info["box"]
+        import re
+        script_text = re.sub(
+            r"(?i)set\s+box\s*=\s*\S+",
+            f"set box = {box}",
+            script_text,
+        )
+        script_text = re.sub(
+            r"(?i)set\s+builddir\s*=\s*\S+",
+            f"set builddir = {prep_dir}",
+            script_text,
+        )
+
+        # Write processed script to a temp file and stream it
+        processed_script = self.config.input_folder / f".setup_{run_idx}.inp"
+        processed_script.write_text(script_text)
+
+        # 3. Stream processed setup script (topology, patches, selections, crystal, BLOCK)
+        settings.set_bomb_level(-2)
+        lingo.charmm_script(f"stream {processed_script}")
+        settings.set_bomb_level(0)
+
+        # Clean up temp file
+        processed_script.unlink(missing_ok=True)
+
+        self.state.structure_loaded = True
+
+        # 4. Setup nonbonded parameters (setup script does not handle this)
+        nb_config = NonBondedConfig(
+            cutnb=self.config.cutnb,
+            cutim=self.config.cutnb,
+            ctofnb=self.config.ctofnb,
+            ctonnb=self.config.ctonnb,
+            elec_type=self.config.elec_type,
+            vdw_type=self.config.vdw_type,
+        )
+        setup_nonbonded(nb_config)
+
+        # 5. Apply restraints (SCAT or NOE) if a restraints file exists
+        restraint_file = prep_dir / "restrains.str"
+        if restraint_file.exists():
+            lingo.charmm_script(f"stream {restraint_file}")
+        else:
+            import logging
+            logging.getLogger(__name__).warning(
+                "No restraints file found at %s. "
+                "Legacy mode requires a pre-generated restrains.str "
+                "containing SCAT (BLOCK/CATS) or NOE commands.",
+                restraint_file,
+            )
 
     def _build_block_commands(self, run_idx: int, letter: str, k: int, replica_idx: int):
         """Build and execute BLOCK/MSLD commands for lambda dynamics."""
@@ -1787,13 +1995,58 @@ class ALFSimulation:
                 shutil.copytree(nbshift_src, nbshift_dst)
 
             # Determine cutoff parameters based on phase
+            # Coupling cutoffs scale with system size: sqrt(2/max_nsubs)
+            # Reference = 2 substates (typical titratable residue)
+            max_nsubs = max(nsubs) if nsubs else 2
+            coupling_scale = (2.0 / max(max_nsubs, 2)) ** 0.5
+
             if self.state.phase == 1:
                 # Adaptive cutoffs: reads previous scaling.dat, auto-tunes
                 cut_params = self._adapt_cutoffs(run_idx)
             elif self.state.phase == 2:
-                cut_params = {"cutb": 0.05, "cutc": 0.5, "cutx": 0.5, "cuts": 0.5}
+                cut_params = {
+                    "cutb": 0.05,
+                    "cutc": 0.5 * coupling_scale,
+                    "cutx": 0.5 * coupling_scale,
+                    "cuts": 0.5 * coupling_scale,
+                }
             else:  # phase 3
-                cut_params = {"cutb": 0.02, "cutc": 0.2, "cutx": 0.1, "cuts": 0.1}
+                # Check if system needs recovery (very skewed populations)
+                phase3_recovery = False
+                prev_pop_file = (self.config.input_folder
+                                 / f"analysis{run_idx - 1}" / "pop_strict.dat")
+                if prev_pop_file.exists():
+                    try:
+                        prev_pops = np.loadtxt(prev_pop_file)
+                        nsubs_check = self.state.alf_info.get("nsubs", [len(prev_pops)])
+                        col = 0
+                        for n in nsubs_check:
+                            site_pops = prev_pops[col:col + n]
+                            if len(site_pops) > 0:
+                                diff = site_pops.max() - site_pops.min()
+                                if diff > 0.7:
+                                    phase3_recovery = True
+                                    break
+                            col += n
+                    except Exception:
+                        pass
+
+                if phase3_recovery:
+                    # Use Phase 2 cutoffs to recover
+                    cut_params = {
+                        "cutb": 0.05,
+                        "cutc": 0.5 * coupling_scale,
+                        "cutx": 0.5 * coupling_scale,
+                        "cuts": 0.5 * coupling_scale,
+                    }
+                    print(f"  Phase 3 recovery: pop diff > 70% → using Phase 2 cutoffs")
+                else:
+                    cut_params = {
+                        "cutb": 0.02,
+                        "cutc": 0.2 * coupling_scale,
+                        "cutx": 0.1 * coupling_scale,
+                        "cuts": 0.1 * coupling_scale,
+                    }
 
             # Apply exclusion flags for phases 2/3
             if self.state.phase != 1:
@@ -1850,10 +2103,10 @@ class ALFSimulation:
 
             if not wham_success:
                 print("All WHAM attempts failed, using zero bias updates")
-                np.savetxt("b.dat", np.zeros((1, nblocks)), fmt=" %7.2f")
-                np.savetxt("c.dat", np.zeros((nblocks, nblocks)), fmt=" %7.2f")
-                np.savetxt("x.dat", np.zeros((nblocks, nblocks)), fmt=" %7.2f")
-                np.savetxt("s.dat", np.zeros((nblocks, nblocks)), fmt=" %7.2f")
+                np.savetxt("b.dat", np.zeros((1, nblocks)), fmt=" %10.5f")
+                np.savetxt("c.dat", np.zeros((nblocks, nblocks)), fmt=" %10.5f")
+                np.savetxt("x.dat", np.zeros((nblocks, nblocks)), fmt=" %10.5f")
+                np.savetxt("s.dat", np.zeros((nblocks, nblocks)), fmt=" %10.5f")
 
             # Load lambda data for phase checking and population stats
             data_dir = Path("data")
@@ -1887,7 +2140,10 @@ class ALFSimulation:
 
                         # Detect unsampled states using last 5 runs of population history
                         # A state must be consistently unsampled to trigger biased Dirichlet
-                        sites = list(self.state.patch_info["site"].unique())
+                        if self.state.patch_info is not None:
+                            sites = list(self.state.patch_info["site"].unique())
+                        else:
+                            sites = list(range(1, len(nsubs_eff) + 1))
                         nsubs_eff = nsubs if nsubs is not None else [len(pop_strict)]
 
                         # Collect population history from last 5 analysis dirs
@@ -2076,7 +2332,8 @@ class ALFSimulation:
 
                 # Build CpHMD parameters if pH is set
                 cphmd_kwargs = {}
-                if self.config.pH is not None and self.config.nreps > 3:
+                if (self.config.pH is not None and self.config.nreps > 3
+                        and self.state.patch_info is not None):
                     from .cphmd_params import compute_all_site_parameters
                     cphmd_params = compute_all_site_parameters(
                         self.state.patch_info,
@@ -2096,6 +2353,7 @@ class ALFSimulation:
                     lambda_data,
                     **cphmd_kwargs,
                     nsubs=nsubs,
+                    connectivity=cut_params.get("connectivity"),
                 )
 
                 if new_phase != self.state.phase:
@@ -2169,7 +2427,8 @@ class ALFSimulation:
             # Guard: require nreps > 3 for meaningful multi-point HH fitting
             if (self.config.generate_hh_plots and
                 self.config.pH is not None and
-                self.config.nreps > 3):
+                self.config.nreps > 3 and
+                self.state.patch_info is not None):
                 from cphmd.analysis.henderson_hasselbalch import generate_hh_analysis
                 from .cphmd_params import compute_all_site_parameters
 

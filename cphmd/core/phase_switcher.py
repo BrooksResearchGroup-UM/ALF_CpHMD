@@ -46,6 +46,10 @@ class PhaseTransitionConfig:
     # pKa tolerance for phase 2→3 (strict)
     pka_tolerance_2to3: float = 0.3
 
+    # Minimum transition connectivity for phase 2→3 transition
+    # Prevents premature transition when sampling is poor
+    min_connectivity_2to3: float = 0.2
+
 
 @dataclass
 class StopCriteriaConfig:
@@ -726,13 +730,15 @@ def check_phase_transition(
     delta_pKa: float | None = None,
     nreps: int | None = None,
     nsubs: list[int] | None = None,
+    connectivity: float | None = None,
 ) -> tuple[int, str]:
     """Check if phase transition criteria are met.
 
-    For phase transitions, three criteria must be satisfied:
+    For phase transitions, these criteria must be satisfied:
     1. Good overlap (spread within tolerance) — checked per site
     2. Enough samples per state
     3. pKa convergence (if CpHMD parameters provided)
+    4. Minimum transition connectivity (for 2→3, if provided)
 
     Args:
         current_phase: Current simulation phase (1, 2, or 3)
@@ -850,7 +856,16 @@ def check_phase_transition(
                                 pass
                 pka_reason = f"pKa_dev={worst_dev:.2f}>{config.pka_tolerance_2to3}"
 
-        if overlap_ok and samples_ok and pka_ok:
+        # Check transition connectivity (prevents premature transition)
+        conn_ok = True
+        conn_reason = ""
+        if connectivity is not None:
+            conn_ok = connectivity >= config.min_connectivity_2to3
+            if not conn_ok:
+                conn_reason = (f"connectivity={connectivity:.2f}"
+                               f"<{config.min_connectivity_2to3}")
+
+        if overlap_ok and samples_ok and pka_ok and conn_ok:
             return 3, f"Phase 2→3: spread={spread:.3f}, min_hits={min_sample_count}"
         else:
             reasons = []
@@ -860,6 +875,8 @@ def check_phase_transition(
                 reasons.append(f"min_hits={min_sample_count}<{config.min_hits}")
             if not pka_ok:
                 reasons.append(pka_reason)
+            if not conn_ok:
+                reasons.append(conn_reason)
             return 2, f"Staying in phase 2: {', '.join(reasons)}"
 
     # Phase 3 - no further transitions

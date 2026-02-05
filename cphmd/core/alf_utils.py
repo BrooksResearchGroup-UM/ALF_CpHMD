@@ -356,7 +356,7 @@ def set_vars(
             logger.warning(f"NaN/Inf in b_sum at step {step}, using previous values")
             b_sum = b_prev.copy()
         b_sum = np.reshape(b_sum, (1, -1))
-        np.savetxt(analysis_dir / "b_sum.dat", b_sum, fmt=" %7.3f")
+        np.savetxt(analysis_dir / "b_sum.dat", b_sum, fmt=" %10.5f")
 
         # Linear biases per site/subsite
         for i in range(len(nsubs)):
@@ -372,7 +372,7 @@ def set_vars(
         if not np.all(np.isfinite(c_sum)):
             logger.warning(f"NaN/Inf in c_sum at step {step}, using previous values")
             c_sum = c_prev.copy()
-        np.savetxt(analysis_dir / "c_sum.dat", c_sum, fmt=" %7.3f")
+        np.savetxt(analysis_dir / "c_sum.dat", c_sum, fmt=" %10.5f")
 
         for si in range(len(nsubs)):
             for sj in range(si, len(nsubs)):
@@ -390,7 +390,7 @@ def set_vars(
         if not np.all(np.isfinite(x_sum)):
             logger.warning(f"NaN/Inf in x_sum at step {step}, using previous values")
             x_sum = x_prev.copy()
-        np.savetxt(analysis_dir / "x_sum.dat", x_sum, fmt=" %7.3f")
+        np.savetxt(analysis_dir / "x_sum.dat", x_sum, fmt=" %10.5f")
 
         for si in range(len(nsubs)):
             for sj in range(len(nsubs)):
@@ -408,7 +408,7 @@ def set_vars(
         if not np.all(np.isfinite(s_sum)):
             logger.warning(f"NaN/Inf in s_sum at step {step}, using previous values")
             s_sum = s_prev.copy()
-        np.savetxt(analysis_dir / "s_sum.dat", s_sum, fmt=" %7.3f")
+        np.savetxt(analysis_dir / "s_sum.dat", s_sum, fmt=" %10.5f")
 
         for si in range(len(nsubs)):
             for sj in range(len(nsubs)):
@@ -471,7 +471,7 @@ def set_vars(
                 if not np.isfinite(value):
                     logger.warning(f"Invalid value for {key}: {value}, replacing with 0.0")
                     value = 0.0
-                fp.write(f"set {key} = {value:10.3f}\n")
+                fp.write(f"set {key} = {value:12.5f}\n")
 
         fp.write("\n")
         fp.write(f'set sysname = "{name}"\n')
@@ -532,22 +532,22 @@ def set_vars_from_analysis_dir(
     b = np.loadtxt(analysis_dir / "b.dat")
     b_sum = b_prev + b
     b_sum = np.reshape(b_sum, (1, -1))
-    np.savetxt(analysis_dir / "b_sum.dat", b_sum, fmt=" %7.3f")
+    np.savetxt(analysis_dir / "b_sum.dat", b_sum, fmt=" %10.5f")
 
     c_prev = np.loadtxt(analysis_dir / "c_prev.dat")
     c = np.loadtxt(analysis_dir / "c.dat")
     c_sum = c_prev + c
-    np.savetxt(analysis_dir / "c_sum.dat", c_sum, fmt=" %7.3f")
+    np.savetxt(analysis_dir / "c_sum.dat", c_sum, fmt=" %10.5f")
 
     x_prev = np.loadtxt(analysis_dir / "x_prev.dat")
     x = np.loadtxt(analysis_dir / "x.dat")
     x_sum = x_prev + x
-    np.savetxt(analysis_dir / "x_sum.dat", x_sum, fmt=" %7.3f")
+    np.savetxt(analysis_dir / "x_sum.dat", x_sum, fmt=" %10.5f")
 
     s_prev = np.loadtxt(analysis_dir / "s_prev.dat")
     s = np.loadtxt(analysis_dir / "s.dat")
     s_sum = s_prev + s
-    np.savetxt(analysis_dir / "s_sum.dat", s_sum, fmt=" %7.3f")
+    np.savetxt(analysis_dir / "s_sum.dat", s_sum, fmt=" %10.5f")
 
     sub0 = np.cumsum(nsubs) - nsubs
 
@@ -640,7 +640,7 @@ def set_vars_from_analysis_dir(
             ibuff = 0
             for i in range(len(nsubs)):
                 for j in range(nsubs[i]):
-                    fp.write(f"set lams{i+1}s{j+1} = {b_sum[0, ibuff+j]:8.3f}\n")
+                    fp.write(f"set lams{i+1}s{j+1} = {b_sum[0, ibuff+j]:12.5f}\n")
                 ibuff += nsubs[i]
 
             ibuff = 0
@@ -651,7 +651,7 @@ def set_vars_from_analysis_dir(
                         j0 = i + 1 if si == sj else 0
                         for j in range(j0, nsubs[sj]):
                             fp.write(f"set cs{si+1}s{i+1}s{sj+1}s{j+1} = "
-                                     f"{-c_sum[ibuff+i, jbuff+j]:8.3f}\n")
+                                     f"{-c_sum[ibuff+i, jbuff+j]:12.5f}\n")
                     jbuff += nsubs[sj]
                 ibuff += nsubs[si]
 
@@ -663,7 +663,7 @@ def set_vars_from_analysis_dir(
                         for j in range(nsubs[sj]):
                             if ibuff + i != jbuff + j:
                                 fp.write(f"set xs{si+1}s{i+1}s{sj+1}s{j+1} = "
-                                         f"{-x_sum[ibuff+i, jbuff+j]:8.3f}\n")
+                                         f"{-x_sum[ibuff+i, jbuff+j]:12.5f}\n")
                     jbuff += nsubs[sj]
                 ibuff += nsubs[si]
 
@@ -675,7 +675,7 @@ def set_vars_from_analysis_dir(
                         for j in range(nsubs[sj]):
                             if ibuff + i != jbuff + j:
                                 fp.write(f"set ss{si+1}s{i+1}s{sj+1}s{j+1} = "
-                                         f"{-s_sum[ibuff+i, jbuff+j]:8.3f}\n")
+                                         f"{-s_sum[ibuff+i, jbuff+j]:12.5f}\n")
                     jbuff += nsubs[sj]
                 ibuff += nsubs[si]
 
@@ -1150,10 +1150,10 @@ def get_free_energy_lm(
         iblock += nsubs[isite]
 
     # Write output files
-    np.savetxt("b.dat", b, fmt=" %7.2f")
-    np.savetxt("c.dat", c, fmt=" %7.2f")
-    np.savetxt("x.dat", x, fmt=" %7.2f")
-    np.savetxt("s.dat", s, fmt=" %7.2f")
+    np.savetxt("b.dat", b, fmt=" %10.5f")
+    np.savetxt("c.dat", c, fmt=" %10.5f")
+    np.savetxt("x.dat", x, fmt=" %10.5f")
+    np.savetxt("s.dat", s, fmt=" %10.5f")
 
     print(f"LMALF: Wrote b.dat, c.dat, x.dat, s.dat")
 

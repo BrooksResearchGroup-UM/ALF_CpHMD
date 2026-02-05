@@ -743,10 +743,10 @@ def _compute_free_energy(
         iblock += nsubs[isite]
 
     # Save output files to analysis directory
-    np.savetxt(analysis_dir / "b.dat", b, fmt=" %7.2f")
-    np.savetxt(analysis_dir / "c.dat", c, fmt=" %7.2f")
-    np.savetxt(analysis_dir / "x.dat", x, fmt=" %7.2f")
-    np.savetxt(analysis_dir / "s.dat", s, fmt=" %7.2f")
+    np.savetxt(analysis_dir / "b.dat", b, fmt=" %10.5f")
+    np.savetxt(analysis_dir / "c.dat", c, fmt=" %10.5f")
+    np.savetxt(analysis_dir / "x.dat", x, fmt=" %10.5f")
+    np.savetxt(analysis_dir / "s.dat", s, fmt=" %10.5f")
 
     return FreeEnergyResult(
         scaling=scaling,
