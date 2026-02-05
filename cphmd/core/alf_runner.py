@@ -106,6 +106,10 @@ class ALFConfig:
     generate_hh_plots: bool = False  # Generate Henderson-Hasselbalch plots
     cent_ncres: int | bool = False
 
+    # Inter-site coupling
+    coupling: Literal[0, 1, 2] = 0  # 0=none, 1=full c/x/s, 2=c-only
+    coupling_profile: bool | None = None  # None=follow coupling, True/False=override
+
     # Analysis method configuration
     analysis_method: AnalysisMethod = "wham"  # "wham" or "lmalf"
     lmalf_max_iter: int = 0  # Maximum L-BFGS iterations (0 = use default)
@@ -279,6 +283,15 @@ class ALFSimulation:
         self._initialized = False
         self._log_file = None  # Current CHARMM log file object
 
+    def _ntersite(self) -> list[int]:
+        """Compute [ms, msprof] from coupling config."""
+        ms = self.config.coupling
+        if self.config.coupling_profile is None:
+            msprof = int(ms > 0)
+        else:
+            msprof = int(self.config.coupling_profile)
+        return [ms, msprof]
+
     def _init_mpi(self):
         """Initialize MPI and determine rank/size."""
         from mpi4py import MPI
@@ -446,7 +459,7 @@ class ALFSimulation:
             "nnodes": 1,
             "temp": self.config.temperature,
             "engine": "charmm",
-            "ntersite": [1, 1],  # Enable intersite biases [ms, msprof]
+            "ntersite": self._ntersite(),  # Intersite biases [ms, msprof]
         }
 
         # Count blocks and subsites per site
@@ -505,7 +518,7 @@ class ALFSimulation:
         alf_info.setdefault("ncentral", alf_info["nreps"] // 2)
         alf_info.setdefault("nnodes", 1)
         alf_info.setdefault("temp", self.config.temperature)
-        alf_info.setdefault("ntersite", [1, 1])
+        alf_info.setdefault("ntersite", self._ntersite())
 
         # Override nreps from config if user specified it
         if self.config.nreps is not None:
@@ -2061,7 +2074,7 @@ class ALFSimulation:
             np.savetxt("nblocks", np.array([nblocks]), fmt=" %d")
 
             # Run free energy analysis
-            ntersite = self.state.alf_info.get("ntersite", [1, 1])
+            ntersite = self.state.alf_info.get("ntersite", self._ntersite())
             ms, msprof = ntersite[0], ntersite[1]
 
             # Copy nbshift folder to analysis directory (required for WHAM)
