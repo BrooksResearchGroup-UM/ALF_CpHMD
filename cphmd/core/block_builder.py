@@ -42,6 +42,7 @@ class BlockConfig:
     effective_pH: float | None = None
     delta_pKa: float = 0.0
     use_cphmd: bool = True
+    initial_lambdas: dict | None = None  # {site: [dirichlet_alphas]} biased sampling
 
 
 def read_variable_file(var_file: Path) -> dict[str, float]:
@@ -217,16 +218,19 @@ def generate_ldin_statements(
         "!----------------------------------------\n",
     ]
 
-    # Initialize l0 values - random Dirichlet distribution per site
+    # Initialize l0 values per site using Dirichlet distribution
+    # initial_lambdas dict provides per-site alpha weights (default: all ones)
     patch_info = patch_info.copy()
     patch_info["l0"] = 0.0
+    biased_alphas = config.initial_lambdas or {}
 
     for site in patch_info["site"].unique():
         site_mask = patch_info["site"] == site
         subsites = patch_info.loc[site_mask, "sub"].tolist()
 
-        # Generate random l0 values summing to 1
-        l0_values = np.random.dirichlet(np.ones(len(subsites)))
+        # Dirichlet alpha: uniform [1,1,...] or biased [1,1,10] for unsampled states
+        alpha = np.array(biased_alphas.get(site, np.ones(len(subsites))), dtype=float)
+        l0_values = np.random.dirichlet(alpha)
         l0_values = np.round(l0_values, 3)
         l0_values[-1] = np.round(1.0 - np.sum(l0_values[:-1]), 3)
 
