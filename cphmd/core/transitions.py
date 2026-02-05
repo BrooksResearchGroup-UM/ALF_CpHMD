@@ -219,12 +219,15 @@ def compute_transition_matrix(
         states = np.full(nframes, -1, dtype=int)
         states[any_above] = np.argmax(site_lambdas[any_above], axis=1)
 
-        # Count transitions between consecutive physical-state frames
+        # Count transitions using last-known physical state
+        # (intermediate frames with no lambda > threshold are skipped)
         T = np.zeros((n, n), dtype=int)
-        for t in range(nframes - 1):
-            si, sj = states[t], states[t + 1]
-            if si >= 0 and sj >= 0 and si != sj:
-                T[si, sj] += 1
+        last_state = -1
+        for t in range(nframes):
+            if states[t] >= 0:
+                if last_state >= 0 and states[t] != last_state:
+                    T[last_state, states[t]] += 1
+                last_state = states[t]
 
         results.append(T)
         col_offset += n
