@@ -146,8 +146,8 @@ def plot_rmsd_convergence(
         site_rmsd = rmsds[:, s].copy()
         site_rmsd[~np.isfinite(site_rmsd)] = np.nan
 
-        # Main RMSD line with markers
-        ax.plot(
+        # Main RMSD line with markers (semilog to resolve small values)
+        ax.semilogy(
             runs, site_rmsd,
             marker=marker, color=color, linewidth=2, markersize=6,
             markeredgecolor='black', markeredgewidth=0.5,
@@ -182,8 +182,7 @@ def plot_rmsd_convergence(
         ax.set_ylabel("RMSD (kcal/mol)", fontsize=11)
         ax.set_title(site_label, fontsize=12, fontweight='bold', loc="left")
         ax.legend(loc="upper left", fontsize=9)
-        ax.grid(True, linestyle='--', alpha=0.3)
-        ax.set_ylim(bottom=0)
+        ax.grid(True, which='both', linestyle='--', alpha=0.3)
 
         # Clean up spines
         ax.spines['top'].set_visible(False)
@@ -195,7 +194,7 @@ def plot_rmsd_convergence(
     fig.suptitle(title, fontsize=14, fontweight='bold', y=1.01)
     plt.tight_layout()
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output_path, dpi=300, bbox_inches="tight", transparent=True)
+    fig.savefig(output_path, dpi=300, bbox_inches="tight")
     plt.close(fig)
 
 
@@ -270,7 +269,7 @@ def plot_pairwise_rmsd_convergence(
 
         # Plot individual substate profiles as grey dashed background
         for k in range(ns):
-            ax.plot(
+            ax.semilogy(
                 runs, indiv_rmsd[:, k],
                 color="grey", linewidth=0.5, alpha=0.4, linestyle="--",
             )
@@ -301,7 +300,7 @@ def plot_pairwise_rmsd_convergence(
             is_worst = k in highlight_set
             color = colors_20[k % len(colors_20)]
             ls = linestyles[(k // len(colors_20)) % len(linestyles)]
-            ax.plot(
+            ax.semilogy(
                 runs, pair_rmsd[:, k],
                 color=color,
                 linestyle=ls if not is_worst else "-",
@@ -313,8 +312,7 @@ def plot_pairwise_rmsd_convergence(
         site_label = f"Site {s+1} ({ns} substates, {n_pairs} pairs)"
         ax.set_ylabel("RMSD (kcal/mol)", fontsize=11)
         ax.set_title(site_label, fontsize=12, fontweight='bold', loc="left")
-        ax.grid(True, linestyle='--', alpha=0.3)
-        ax.set_ylim(bottom=0)
+        ax.grid(True, which='both', linestyle='--', alpha=0.3)
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
 
@@ -332,7 +330,7 @@ def plot_pairwise_rmsd_convergence(
     fig.suptitle(title, fontsize=14, fontweight='bold', y=1.01)
     plt.tight_layout()
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output_path, dpi=300, bbox_inches="tight", transparent=True)
+    fig.savefig(output_path, dpi=300, bbox_inches="tight")
     plt.close(fig)
 
 
