@@ -236,6 +236,9 @@ class SimulationState:
     site_pKa_shifts: dict[str, dict] = field(default_factory=dict)
     delta_pKa: float = 0.0
 
+    # Phase transition tracking
+    phase2_start_run: int | None = None  # Run index when Phase 2 started
+
     # Stop criteria state
     converged: bool = False
     stop_reason: str = ""
@@ -697,6 +700,20 @@ class ALFSimulation:
         if detected_phase is not None:
             self.state.phase = detected_phase
 
+            # Detect when Phase 2 started (scan backwards for last Phase 1)
+            if detected_phase >= 2 and found_run is not None:
+                self.state.phase2_start_run = found_run  # conservative default
+                for j in range(found_run - 1, 0, -1):
+                    pf = self.config.input_folder / f"analysis{j}" / "phase.dat"
+                    if pf.exists():
+                        try:
+                            p = int(np.loadtxt(pf))
+                            if p == 1:
+                                self.state.phase2_start_run = j + 1
+                                break
+                        except Exception:
+                            pass
+
         return found_run if found_run else self.config.start
 
     def _cleanup_run(self, run_idx: int):
@@ -986,6 +1003,8 @@ class ALFSimulation:
                 from .charmm_utils import clear_noe
                 clear_noe()
             clear_crystal()
+            # Delete all atoms so the setup script can regenerate segments
+            lingo.charmm_script("delete atom sele all end")
 
         # Determine restart run for coordinate loading
         if run_idx > 5:
@@ -1616,8 +1635,11 @@ class ALFSimulation:
             else:
                 print(f"  Adaptive cutoffs: scaling={scaling:.2f} (in range, no change)")
 
-            # If previous analysis had very poor connectivity, dampen coupling cutoffs
-            if "connectivity" in prev_scaling and prev_scaling["connectivity"] < 0.3:
+            # If previous analysis had some transitions but poor connectivity,
+            # dampen coupling cutoffs. Skip when connectivity=0 (normal for
+            # Phase 1 short runs — no transitions expected at all).
+            if ("connectivity" in prev_scaling
+                    and 0 < prev_scaling["connectivity"] < 0.3):
                 cutc = max(cutc * 0.5, CUT_FLOOR)
                 cutx = max(cutx * 0.5, CUT_FLOOR)
                 cuts = max(cuts * 0.5, CUT_FLOOR)
@@ -2058,12 +2080,33 @@ class ALFSimulation:
                 # Adaptive cutoffs: reads previous scaling.dat, auto-tunes
                 cut_params = self._adapt_cutoffs(run_idx)
             elif self.state.phase == 2:
+                # Phase 2 warmup: exponential decay from start to target
+                # over ~20 runs to avoid the Phase 1→2 cutoff cliff.
+                warmup_runs = 20
+                p2_start = self.state.phase2_start_run or run_idx
+                runs_in_p2 = max(run_idx - p2_start, 0)
+                decay = min(runs_in_p2 / warmup_runs, 1.0)
+
+                # Start values (moderate) → Target values (tight)
+                cutb_start, cutb_target = 1.0, 0.05
+                cutc_start = 4.0 * coupling_scale
+                cutc_target = 0.5 * coupling_scale
+
+                # Log-space interpolation: start * (target/start)^decay
+                cutb = cutb_start * (cutb_target / cutb_start) ** decay
+                cutc = cutc_start * (cutc_target / cutc_start) ** decay
+                cutx = cutc  # same as cutc
+                cuts = cutc
+
                 cut_params = {
-                    "cutb": 0.05,
-                    "cutc": 0.5 * coupling_scale,
-                    "cutx": 0.5 * coupling_scale,
-                    "cuts": 0.5 * coupling_scale,
+                    "cutb": cutb,
+                    "cutc": cutc,
+                    "cutx": cutx,
+                    "cuts": cuts,
                 }
+                if runs_in_p2 < warmup_runs:
+                    print(f"  Phase 2 warmup ({runs_in_p2}/{warmup_runs}): "
+                          f"cutb={cutb:.3f} cutc={cutc:.3f}")
             else:  # phase 3
                 # Check if system needs recovery (very skewed populations)
                 phase3_recovery = False
@@ -2178,27 +2221,29 @@ class ALFSimulation:
                 if pop_data:
                     pop_strict = pop_data.get("pop_strict_norm", [])
                     if len(pop_strict) > 0:
-                        pop_str = ", ".join(f"{p:.1%}" for p in pop_strict)
                         if nsubs is not None and len(nsubs) > 1:
-                            # Per-site diff: report worst site
+                            # Per-site populations on separate lines
+                            print("Populations (λ>0.985):")
                             site_diffs = []
-                            for start, end in _per_site_ranges(nsubs):
+                            for si, (start, end) in enumerate(_per_site_ranges(nsubs)):
                                 s = pop_strict[start:end]
                                 site_diffs.append((max(s) - min(s)) * 100)
-                            worst_diff = max(site_diffs)
-                            print(f"Populations (λ>0.985): [{pop_str}] "
-                                  f"worst-site diff={worst_diff:.1f}%")
+                                site_str = ", ".join(f"{p:.1%}" for p in s)
+                                print(f"  Site {si+1} ({nsubs[si]} subs): [{site_str}] "
+                                      f"diff={site_diffs[-1]:.1f}%")
+                            print(f"  Worst-site diff={max(site_diffs):.1f}%")
                         else:
+                            pop_str = ", ".join(f"{p:.1%}" for p in pop_strict)
                             frac_diff = (max(pop_strict) - min(pop_strict)) * 100
                             print(f"Populations (λ>0.985): [{pop_str}] diff={frac_diff:.1f}%")
 
                         # Detect unsampled states using last 5 runs of population history
                         # A state must be consistently unsampled to trigger biased Dirichlet
+                        nsubs_eff = nsubs if nsubs is not None else [len(pop_strict)]
                         if self.state.patch_info is not None:
                             sites = list(self.state.patch_info["site"].unique())
                         else:
                             sites = list(range(1, len(nsubs_eff) + 1))
-                        nsubs_eff = nsubs if nsubs is not None else [len(pop_strict)]
 
                         # Collect population history from last 5 analysis dirs
                         pop_history = []  # list of pop_strict_norm arrays
@@ -2413,6 +2458,8 @@ class ALFSimulation:
                 if new_phase != self.state.phase:
                     print(f"PHASE TRANSITION: {self.state.phase} → {new_phase}")
                     print(f"  Reason: {reason}")
+                    if new_phase == 2 and self.state.phase2_start_run is None:
+                        self.state.phase2_start_run = run_idx
                     self.state.phase = new_phase
                 else:
                     print(f"Phase check: {reason}")
