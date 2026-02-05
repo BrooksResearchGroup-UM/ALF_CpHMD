@@ -2558,8 +2558,10 @@ class ALFSimulation:
                 )
 
             # Cleanup old analysis directories to save disk space
-            if self.config.cleanup_old_analysis and run_idx > 6:
-                old_analysis = Path(home_path) / f"analysis{run_idx - 6}"
+            # Keep enough history for the analysis window (15 for Phase 1, 5 for Phase 2/3)
+            keep_window = 15 if self.state.phase == 1 else 5
+            if self.config.cleanup_old_analysis and run_idx > keep_window:
+                old_analysis = Path(home_path) / f"analysis{run_idx - keep_window}"
                 if old_analysis.exists():
                     shutil.rmtree(old_analysis)
                     print(f"Cleaned up {old_analysis}")
