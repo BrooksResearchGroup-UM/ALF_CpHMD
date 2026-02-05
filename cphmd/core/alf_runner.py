@@ -67,7 +67,8 @@ class ALFConfig:
         toppar_dir: Path to topology/parameter files
         temperature: Simulation temperature in Kelvin
         pH: Target pH for CpHMD (None for standard ALF without pH coupling)
-        hmr: Whether to use hydrogen mass repartitioning (4fs timestep)
+        hmr: Whether to use hydrogen mass repartitioning (4fs timestep).
+             None = auto (True for default prep, False for legacy prep).
         start: Starting run number
         end: Ending run number
         phase: Initial simulation phase (1, 2, or 3)
@@ -78,13 +79,16 @@ class ALFConfig:
         no_s_bias: Disable endpoint bias updates
         cent_ncres: Number of residues for recentering (False to disable)
         elec_type: Electrostatics method (pmeex, pmeon, pmenn, fshift, fswitch)
-        vdw_type: VDW method (vswitch, vfswitch)
+        vdw_type: VDW method (vswitch, vfswitch).
+                  None = auto (vswitch for default, vfswitch for legacy).
+        gscale: Langevin friction coefficient (fbeta) applied to all atoms.
+                None = auto (10.0 for default, 0.1 for legacy).
     """
     input_folder: str | Path
     toppar_dir: str | Path = "toppar"
     temperature: float = 298.15
     pH: float | None = None
-    hmr: bool = True
+    hmr: bool | None = None
     start: int = 1
     end: int = 20
     phase: PhaseType = 1
@@ -112,7 +116,8 @@ class ALFConfig:
     ctofnb: float = 12.0
     ctonnb: float = 10.0
     elec_type: ElecType = "pmeex"
-    vdw_type: VdwType = "vswitch"
+    vdw_type: VdwType | None = None
+    gscale: float | None = None
 
     # Topology files (relative to toppar_dir)
     topology_files: list[str] = field(default_factory=lambda: [
@@ -169,6 +174,16 @@ class ALFConfig:
             # Auto-discover setup script if not specified
             if self.legacy_setup_script is None:
                 self.legacy_setup_script = self._find_legacy_setup_script(prep_dir)
+
+        # Resolve None sentinels based on prep format.
+        # Legacy (msld-py-prep) systems: no HMR PSF, use vfswitch, low friction.
+        is_legacy = self.prep_format == "legacy"
+        if self.hmr is None:
+            self.hmr = not is_legacy           # True for default, False for legacy
+        if self.vdw_type is None:
+            self.vdw_type = "vfswitch" if is_legacy else "vswitch"
+        if self.gscale is None:
+            self.gscale = 0.1 if is_legacy else 10.0
 
     @staticmethod
     def _find_legacy_setup_script(prep_dir: Path) -> str:
@@ -942,8 +957,10 @@ class ALFSimulation:
         For legacy (msld-py-prep) prep folders:
         1. Stream variables file (sets bias CHARMM variables)
         2. Pre-process and stream setup script (topology, patches, crystal, BLOCK)
-        3. Setup nonbonded parameters (not handled by setup script)
-        4. Apply restraints from prep/restrains.str (SCAT or NOE)
+        3. Stream setup script
+        4. Load minimized / restart coordinates
+        5. Setup nonbonded parameters
+        6. Stream user-provided restraints (prep/restrains.str)
         """
         from .charmm_utils import (
             NonBondedConfig,
@@ -1014,7 +1031,31 @@ class ALFSimulation:
 
         self.state.structure_loaded = True
 
-        # 4. Setup nonbonded parameters (setup script does not handle this)
+        # 4. Load minimized / restart coordinates (if available)
+        #    The setup script reads PDB fragments (un-minimized).
+        #    On run 1, _run_minimization() will create system_min.crd.
+        #    On run 2+, we must read it back to start from minimized state.
+        import pycharmm.read as pycharmm_read
+
+        min_crd = prep_dir / "system_min.crd"
+        if min_crd.exists():
+            pycharmm_read.coor_card(str(min_crd))
+
+        # Try restart coordinates from a previous run
+        if self.state.restart_run and self.state.restart_run != 1:
+            restart_candidates = [
+                f"run{self.state.restart_run}/prod.{k}.{replica_idx}.crd",
+                f"run{self.state.restart_run}/prod.crd{letter}",
+                f"run{self.state.restart_run}/prod.crd",
+            ]
+            for crd_name in restart_candidates:
+                crd_path = self.config.input_folder / crd_name
+                if crd_path.exists():
+                    pycharmm_read.coor_card(str(crd_path))
+                    break
+
+        # 5. Setup nonbonded parameters (setup script does not handle this)
+
         nb_config = NonBondedConfig(
             cutnb=self.config.cutnb,
             cutim=self.config.cutnb,
@@ -1025,17 +1066,36 @@ class ALFSimulation:
         )
         setup_nonbonded(nb_config)
 
-        # 5. Apply restraints (SCAT or NOE) if a restraints file exists
+        # 6. Apply restraints (SCAT or NOE) from user-provided file
+        #    Legacy (msld-py-prep) systems use globally unique atom names per
+        #    substituent, so auto-generation from shared atom names cannot work.
+        #    The user must provide prep/restrains.str with the restraint commands.
+        self._apply_legacy_restraints()
+
+    def _apply_legacy_restraints(self):
+        """Stream user-provided restraints for legacy mode.
+
+        msld-py-prep gives each atom a globally unique name (C164, C195, ...),
+        so the standard auto-generation (which relies on shared atom names across
+        subs) cannot produce valid restraints.  Instead, we stream the
+        user-provided prep/restrains.str file directly.
+        """
+        import pycharmm.lingo as lingo
+        import logging
+
+        prep_dir = self.config.input_folder / "prep"
         restraint_file = prep_dir / "restrains.str"
+
         if restraint_file.exists():
             lingo.charmm_script(f"stream {restraint_file}")
-        else:
-            import logging
+            return
+
+        if self.config.restrains:
             logging.getLogger(__name__).warning(
-                "No restraints file found at %s. "
-                "Legacy mode requires a pre-generated restrains.str "
-                "containing SCAT (BLOCK/CATS) or NOE commands.",
-                restraint_file,
+                "Restraints requested (restrains=%r) but prep/restrains.str not found. "
+                "Legacy (msld-py-prep) systems require a hand-written restraints file. "
+                "See the example in examples/88_marcella/prep/restrains.str.",
+                self.config.restrains,
             )
 
     def _build_block_commands(self, run_idx: int, letter: str, k: int, replica_idx: int):
@@ -1144,14 +1204,12 @@ class ALFSimulation:
     def _run_minimization(self, run_idx: int, replica_idx: int):
         """Run energy minimization before dynamics.
 
-        Only runs if no minimized coordinates exist. Uses steepest descent
-        followed by ABNR minimization with BLADE GPU acceleration.
+        Only runs if no minimized coordinates exist.  Uses steepest-descent
+        minimisation (BLADE supports SD but not ABNR).
         """
-        import pycharmm
         import pycharmm.minimize as minimize
         import pycharmm.shake as shake
         import pycharmm.write as write
-        import pycharmm.lingo as lingo
         import pycharmm.energy as energy
 
         min_crd = self.config.input_folder / "prep" / "system_min.crd"
@@ -1163,24 +1221,14 @@ class ALFSimulation:
         # Enable SHAKE for minimization
         shake.on(fast=True, bonh=True, param=True, tol=1e-7)
 
-        # Steepest descent (CPU)
-        minimize.run_sd(nstep=100)
-
-        # Enable FASTER and BLADE
-        lingo.charmm_script("faster on")
-        gpuid = replica_idx % 8
-        lingo.charmm_script(f"blade on gpuid {gpuid}")
-
-        # ABNR minimization (GPU)
-        minimize.run_abnr(nstep=1000, tolenr=1e-3, tolgrd=1e-3)
+        # Steepest descent (250 steps, CPU)
+        minimize.run_sd(nstep=250, nprint=50, step=0.005, tolenr=1e-3, tolgrd=1e-3)
 
         # Save minimized coordinates
         write.coor_card(str(min_crd))
         print(f"Minimized coordinates saved to {min_crd}")
 
-        # Show energy
         energy.show()
-        lingo.charmm_script("energy blade")
 
     def _run_dynamics(self, run_idx: int, letter: str, k: int, replica_idx: int):
         """Execute molecular dynamics with BLADE GPU acceleration.
@@ -1232,6 +1280,10 @@ class ALFSimulation:
             nsavl = max(nsavl, 1)
             timestep = 0.004
 
+        # Legacy mode: match classic ALF lambda-save frequency
+        if self.config.prep_format == "legacy":
+            nsavl = 10
+
         # Initialize dynamics: SHAKE, FASTER, BLADE
         import pycharmm.shake as shake
         import pycharmm.dynamics as dyn
@@ -1247,8 +1299,10 @@ class ALFSimulation:
         lingo.charmm_script(f"blade on gpuid {gpuid}")
 
         # Set friction coefficients for Langevin dynamics
-        gscale = 10.0
-        dyn.set_fbetas(np.full(psf.get_natom(), gscale, dtype=float))
+        dyn.set_fbetas(np.full(psf.get_natom(), self.config.gscale, dtype=float))
+
+        # Initialize BLADE energy calculation (required before first dynamics step)
+        lingo.charmm_script("energy blade")
 
         # Base dynamics parameters
         dyn_param = {
@@ -1270,9 +1324,9 @@ class ALFSimulation:
             "iasors": 1,  # Assign velocities during heating
             "iasvel": 1,  # Gaussian velocity distribution
             "iscvel": 0,
-            "inbfrq": 0,  # BLADE handles neighbor lists
+            "inbfrq": -1,  # Auto-update neighbor lists
             "ilbfrq": 0,
-            "imgfrq": 0,  # BLADE handles images
+            "imgfrq": -1,  # Auto-update images
             "ntrfrq": 0,
             "echeck": -1,  # Disable energy check
             "iunldm": lmd_unit,
@@ -1997,7 +2051,7 @@ class ALFSimulation:
             # Determine cutoff parameters based on phase
             # Coupling cutoffs scale with system size: sqrt(2/max_nsubs)
             # Reference = 2 substates (typical titratable residue)
-            max_nsubs = max(nsubs) if nsubs else 2
+            max_nsubs = max(nsubs) if len(nsubs) > 0 else 2
             coupling_scale = (2.0 / max(max_nsubs, 2)) ** 0.5
 
             if self.state.phase == 1:
@@ -2462,6 +2516,12 @@ class ALFSimulation:
                 if old_analysis.exists():
                     shutil.rmtree(old_analysis)
                     print(f"Cleaned up {old_analysis}")
+
+            # Clean up large intermediate files (ESim/Lambda consumed by WHAM)
+            for subdir in ("Energy", "Lambda"):
+                p = Path(subdir)
+                if p.exists():
+                    shutil.rmtree(p)
 
             print(f"ALF analysis complete for run {run_idx}")
 
