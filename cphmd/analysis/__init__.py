@@ -30,6 +30,11 @@ from .population_convergence import (
     plot_population_convergence,
     generate_population_plots,
 )
+from .rmsd_convergence_plot import (
+    plot_rmsd_convergence,
+    plot_pairwise_rmsd_convergence,
+    generate_rmsd_convergence_plots,
+)
 from .henderson_hasselbalch import (
     HHFitResult,
     SubstatePopulation,
@@ -67,6 +72,10 @@ __all__ = [
     "read_populations_from_runs",
     "plot_population_convergence",
     "generate_population_plots",
+    # RMSD convergence
+    "plot_rmsd_convergence",
+    "plot_pairwise_rmsd_convergence",
+    "generate_rmsd_convergence_plots",
     # Henderson-Hasselbalch
     "HHFitResult",
     "SubstatePopulation",

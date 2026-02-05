@@ -55,6 +55,7 @@ RestrainType = Literal["SCAT", "NOE"]
 ElecType = Literal["pmeex", "pmeon", "pmenn", "fshift", "fswitch"]
 VdwType = Literal["vswitch", "vfswitch"]
 AnalysisMethod = Literal["wham", "lmalf", "hybrid"]
+ConvergenceMode = Literal["population", "rmsd"]
 PrepFormat = Literal["default", "legacy", "auto"]
 
 
@@ -102,7 +103,8 @@ class ALFConfig:
     no_pka_bias: bool = False  # Disable pKa-based bias shifts
     auto_phase_switch: bool = False  # Enable automatic phase switching
     auto_stop: bool = False  # Enable automatic stop when converged in Phase 3
-    cleanup_old_analysis: bool = True  # Remove analysis directories older than 6 runs
+    convergence_mode: ConvergenceMode = "population"  # "population" or "rmsd"
+    cleanup_old_analysis: bool = False  # Remove old analysis directories to save disk space
     generate_hh_plots: bool = False  # Generate Henderson-Hasselbalch plots
     cent_ncres: int | bool = False
 
@@ -251,6 +253,9 @@ class SimulationState:
     # Forced initial lambdas for unsampled states (set by _alf_analysis)
     forced_initial_lambdas: dict | None = None
 
+    # RMSD convergence state (used when convergence_mode="rmsd")
+    rmsd_state: Any = None  # RMSDState instance, lazy-initialized
+
 
 class ALFSimulation:
     """Main ALF simulation orchestrator.
@@ -291,6 +296,20 @@ class ALFSimulation:
         else:
             msprof = int(self.config.coupling_profile)
         return [ms, msprof]
+
+    def _load_rmsd_state(self) -> None:
+        """Load RMSD convergence state from disk for resume support."""
+        from .rmsd_convergence import RMSDState
+        state_file = self.config.input_folder / "rmsd_state.json"
+        if state_file.exists():
+            try:
+                self.state.rmsd_state = RMSDState.load(state_file)
+                print(f"Loaded RMSD state: {len(self.state.rmsd_state.rmsd_history)} entries")
+            except Exception as e:
+                print(f"Warning: could not load rmsd_state.json: {e}")
+                self.state.rmsd_state = RMSDState()
+        else:
+            self.state.rmsd_state = RMSDState()
 
     def _init_mpi(self):
         """Initialize MPI and determine rank/size."""
@@ -609,6 +628,10 @@ class ALFSimulation:
         # Find last completed run and resume
         start_run = self._find_last_run()
         start_run = self._comm.bcast(start_run, root=0)
+
+        # Load RMSD convergence state if resuming with rmsd mode
+        if self.config.convergence_mode == "rmsd":
+            self._load_rmsd_state()
 
         print(f"Rank {self.state.rank}: Starting from run {start_run}, "
               f"phase {self.state.phase}, nreps {self.config.nreps}")
@@ -2123,7 +2146,7 @@ class ALFSimulation:
             else:  # phase 3
                 # Check if system needs recovery (very skewed populations)
                 phase3_recovery = False
-                prev_pop_file = (self.config.input_folder
+                prev_pop_file = (Path("..")
                                  / f"analysis{run_idx - 1}" / "pop_strict.dat")
                 if prev_pop_file.exists():
                     try:
@@ -2261,7 +2284,7 @@ class ALFSimulation:
                         # Collect population history from last 5 analysis dirs
                         pop_history = []  # list of pop_strict_norm arrays
                         for prev_r in range(max(run_idx - 4, 1), run_idx + 1):
-                            prev_pop_file = (self.config.input_folder
+                            prev_pop_file = (Path("..")
                                              / f"analysis{prev_r}" / "pop_strict.dat")
                             if prev_pop_file.exists():
                                 try:
@@ -2286,10 +2309,12 @@ class ALFSimulation:
                                 # Bias toward the least sampled state
                                 worst = low_indices[np.argmin(site_pops[low_indices])]
                                 alpha = np.ones(len(site_pops))
-                                alpha[worst] = 3.0
+                                # Stronger bias in Phase 2/3 (longer sims need harder push)
+                                alpha_val = 10.0 if self.state.phase >= 2 else 3.0
+                                alpha[worst] = alpha_val
                                 biased_alphas[sites[site_idx]] = alpha.tolist()
                                 print(f"  Biased Dirichlet site {sites[site_idx]}: "
-                                      f"alpha[{worst}]=3 (avg pop "
+                                      f"alpha[{worst}]={alpha_val:.0f} (avg pop "
                                       f"{site_pops[worst]:.1%} over {len(pop_history)} runs)")
                         # If no population-based Dirichlet, check transitions
                         if not biased_alphas and trans_matrices is not None:
@@ -2322,8 +2347,8 @@ class ALFSimulation:
                                 pop_strict, nsubs_eff
                             )
                             # Append max_pop_diff to scaling.dat
-                            analysis_dir = self.config.input_folder / f"analysis{run_idx}"
-                            scaling_file = analysis_dir / "scaling.dat"
+                            analysis_dir_local = Path("..") / f"analysis{run_idx}"
+                            scaling_file = analysis_dir_local / "scaling.dat"
                             if scaling_file.exists():
                                 content = scaling_file.read_text()
                                 if "max_pop_diff" not in content:
@@ -2344,7 +2369,7 @@ class ALFSimulation:
 
                             # Check for 2 consecutive increases in pop diff
                             prev_dir = (
-                                self.config.input_folder / f"analysis{run_idx - 1}"
+                                Path("..") / f"analysis{run_idx - 1}"
                             )
                             prev_scaling = self._read_scaling_dat(
                                 prev_dir / "scaling.dat"
@@ -2355,7 +2380,7 @@ class ALFSimulation:
                             ):
                                 prev_diff = prev_scaling["max_pop_diff"]
                                 prev2_dir = (
-                                    self.config.input_folder
+                                    Path("..")
                                     / f"analysis{run_idx - 2}"
                                 )
                                 prev2_scaling = self._read_scaling_dat(
@@ -2436,8 +2461,99 @@ class ALFSimulation:
                     nsubs=self.state.alf_info.get("nsubs"),
                 )
 
-            # Check for automatic phase transition
-            if self.config.auto_phase_switch and lambda_data is not None:
+                # Generate RMSD convergence plot (works with both convergence modes)
+                if (Path("..") / f"analysis{run_idx}" / "multisite").is_dir():
+                    from cphmd.analysis.rmsd_convergence_plot import generate_rmsd_convergence_plots
+                    generate_rmsd_convergence_plots(
+                        input_folder=Path(".."),
+                        max_run=run_idx,
+                        output_dir=Path(home_path) / "plots",
+                        nsubs=list(nsubs),
+                        rmsd_state=getattr(self.state, "rmsd_state", None),
+                    )
+
+            # --- RMSD-based convergence check ---
+            if (self.config.convergence_mode == "rmsd"
+                    and self.config.auto_phase_switch):
+                from .rmsd_convergence import (
+                    RMSDState, RMSDConvergenceConfig,
+                    compute_site_rmsd, check_rmsd_phase_transition,
+                    check_rmsd_stop,
+                )
+                if self.state.rmsd_state is None:
+                    self.state.rmsd_state = RMSDState()
+
+                rmsd_cfg = RMSDConvergenceConfig()
+                analysis_dir = Path(f"analysis{run_idx}")
+
+                # Find reference analysis directory (lag iterations ago)
+                ref_run = run_idx - rmsd_cfg.lag
+                ref_dir = Path(f"analysis{ref_run}")
+
+                if ref_dir.is_dir() and (ref_dir / "multisite").is_dir():
+                    site_rmsds, site_coverages = compute_site_rmsd(
+                        analysis_dir, ref_dir, list(nsubs),
+                    )
+                    self.state.rmsd_state.rmsd_history.append(site_rmsds)
+                    self.state.rmsd_state.coverage_history.append(site_coverages)
+                    self.state.rmsd_state.run_indices.append(run_idx)
+
+                    rmsd_label = ", ".join(
+                        f"s{i+1}={r:.2f}({c:.0%})"
+                        for i, (r, c) in enumerate(zip(site_rmsds, site_coverages))
+                    )
+                    print(f"RMSD (vs run {ref_run}): {rmsd_label}")
+
+                    # Phase transition check
+                    new_phase, reason = check_rmsd_phase_transition(
+                        self.state.phase, self.state.rmsd_state, rmsd_cfg,
+                    )
+                    if new_phase != self.state.phase:
+                        print(f"PHASE TRANSITION: {self.state.phase} → {new_phase}")
+                        print(f"  {reason}")
+                        if new_phase == 2 and self.state.phase2_start_run is None:
+                            self.state.phase2_start_run = run_idx
+                        self.state.phase = new_phase
+                    else:
+                        print(f"Phase check: {reason}")
+
+                    # Auto-stop check in Phase 3
+                    if self.config.auto_stop and self.state.phase == 3:
+                        should_stop, stop_reason = check_rmsd_stop(
+                            self.state.rmsd_state, rmsd_cfg,
+                        )
+                        if confirmation:
+                            if should_stop:
+                                self.state.converged = True
+                                self.state.stop_reason = stop_reason
+                                self.state.needs_confirmation = False
+                                print(f"\n{'='*60}")
+                                print(f"RMSD CONVERGENCE CONFIRMED at run {run_idx}")
+                                print(f"  {stop_reason}")
+                                print(f"{'='*60}\n")
+                                with open("CONVERGED", "w") as f:
+                                    f.write(f"RMSD converged at run {run_idx}\n")
+                                    f.write(f"{stop_reason}\n")
+                            else:
+                                self.state.needs_confirmation = False
+                                print(f"RMSD convergence NOT confirmed: {stop_reason}")
+                        elif should_stop:
+                            self.state.needs_confirmation = True
+                            print(f"\n{'='*60}")
+                            print(f"RMSD CONVERGENCE CANDIDATE at run {run_idx}")
+                            print(f"  {stop_reason}")
+                            print(f"  Triggering confirmation repeat...")
+                            print(f"{'='*60}\n")
+                        else:
+                            print(f"RMSD stop check: {stop_reason}")
+
+                    # Persist RMSD state
+                    self.state.rmsd_state.save(Path("..") / "rmsd_state.json")
+                else:
+                    print(f"RMSD: reference analysis{ref_run} not available yet (need {rmsd_cfg.lag} runs)")
+
+            # --- Population-based phase transition check (default) ---
+            elif self.config.auto_phase_switch and lambda_data is not None:
                 # Get delta_pKa for current phase
                 from .cphmd_params import get_delta_pKa_for_phase
                 delta_pKa = get_delta_pKa_for_phase(self.state.phase)
@@ -2480,8 +2596,10 @@ class ALFSimulation:
             # Always save current phase to file (for resumption)
             np.savetxt("phase.dat", np.array([self.state.phase]), fmt="%d")
 
-            # Check stop criteria if in Phase 3 and auto_stop is enabled
-            if self.config.auto_stop and self.state.phase == 3 and lambda_data is not None:
+            # Check stop criteria if in Phase 3 and auto_stop is enabled (population mode only)
+            if (self.config.auto_stop and self.state.phase == 3
+                    and lambda_data is not None
+                    and self.config.convergence_mode == "population"):
                 # Build stop criteria config (step5-style)
                 timestep_fs = 4.0 if self.config.hmr else 2.0
                 stop_config = StopCriteriaConfig(
