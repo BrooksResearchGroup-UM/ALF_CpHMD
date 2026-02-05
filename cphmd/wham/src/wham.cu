@@ -1063,7 +1063,7 @@ __global__ void reactioncoord_omega(struct_data data, int i1, int i2)
   {
     double q1 = data.D_d[t * data.Ndim + 1 + i1];
     double q2 = data.D_d[t * data.Ndim + 1 + i2];
-    data.D_d[t * data.Ndim + 1 + data.NL + data.Nsim + 1] = q2 * (1 - 1 / (q1 / 0.017 + 1));
+    data.D_d[t * data.Ndim + 1 + data.NL + data.Nsim + 1] = q2 * (1 - 1 / (q1 / data.chi_offset + 1));
   }
 }
 
@@ -1074,7 +1074,7 @@ __global__ void reactioncoord_chi(struct_data data, int i1, int i2)
   {
     double q1 = data.D_d[t * data.Ndim + 1 + i1];
     double q2 = data.D_d[t * data.Ndim + 1 + i2];
-    data.D_d[t * data.Ndim + 1 + data.NL + data.Nsim + 1] = q2 * (1 - exp(-q1 / 0.18));
+    data.D_d[t * data.Ndim + 1 + data.NL + data.Nsim + 1] = q2 * (1 - exp(-q1 / data.chi_scale));
   }
 }
 
@@ -1901,12 +1901,17 @@ void getfofq(struct_data *data, double beta)
 }
 
 extern "C" int wham(int arg1, double arg2, int arg3, int arg4, int use_gshift,
-                   int *nsubs, int nsites, const char *g_imp_path)
+                   int *nsubs, int nsites, const char *g_imp_path,
+                   double chi_offset, double chi_scale)
 {
   // Initialize and validate GPU
   validate_and_setup_gpu();
 
   struct_data *data = readdata(arg1, arg2, arg3, arg4, use_gshift, nsubs, nsites, g_imp_path);
+  if (data) {
+    data->chi_offset = chi_offset;
+    data->chi_scale = chi_scale;
+  }
   if (!data)
   {
     fprintf(stderr, "Error: Failed to read data\n");
@@ -2218,13 +2223,13 @@ __global__ void lmalf_energykernel(struct_lmalf lm, double *x, double *lambda, d
             q2 = lam[i2];
             E += x[k] * q1 * q2;                        // c term
             k++;
-            E += x[k] * q2 * (1 - exp(-q1 / 0.18));     // x term 1
+            E += x[k] * q2 * (1 - exp(-q1 / lm.chi_scale));     // x term 1
             k++;
-            E += x[k] * q1 * (1 - exp(-q2 / 0.18));     // x term 2
+            E += x[k] * q1 * (1 - exp(-q2 / lm.chi_scale));     // x term 2
             k++;
-            E += x[k] * q2 * (1 - 1 / (q1 / 0.017 + 1)); // s term 1
+            E += x[k] * q2 * (1 - 1 / (q1 / lm.chi_offset + 1)); // s term 1
             k++;
-            E += x[k] * q1 * (1 - 1 / (q2 / 0.017 + 1)); // s term 2
+            E += x[k] * q1 * (1 - 1 / (q2 / lm.chi_offset + 1)); // s term 2
             k++;
           }
         }
@@ -2242,13 +2247,13 @@ __global__ void lmalf_energykernel(struct_lmalf lm, double *x, double *lambda, d
             k++;
             if (lm.ms == 1)
             {
-              E += x[k] * q2 * (1 - exp(-q1 / 0.18));     // x term 1
+              E += x[k] * q2 * (1 - exp(-q1 / lm.chi_scale));     // x term 1
               k++;
-              E += x[k] * q1 * (1 - exp(-q2 / 0.18));     // x term 2
+              E += x[k] * q1 * (1 - exp(-q2 / lm.chi_scale));     // x term 2
               k++;
-              E += x[k] * q2 * (1 - 1 / (q1 / 0.017 + 1)); // s term 1
+              E += x[k] * q2 * (1 - 1 / (q1 / lm.chi_offset + 1)); // s term 1
               k++;
-              E += x[k] * q1 * (1 - 1 / (q2 / 0.017 + 1)); // s term 2
+              E += x[k] * q1 * (1 - 1 / (q2 / lm.chi_offset + 1)); // s term 2
               k++;
             }
           }
@@ -2299,16 +2304,16 @@ __global__ void lmalf_weightedenergykernel(struct_lmalf lm, double sign, double 
             E = w * q1 * q2;
             lmalf_reduce(E, Eloc, &dEdx[k]);
             k++;
-            E = w * q2 * (1 - exp(-q1 / 0.18));
+            E = w * q2 * (1 - exp(-q1 / lm.chi_scale));
             lmalf_reduce(E, Eloc, &dEdx[k]);
             k++;
-            E = w * q1 * (1 - exp(-q2 / 0.18));
+            E = w * q1 * (1 - exp(-q2 / lm.chi_scale));
             lmalf_reduce(E, Eloc, &dEdx[k]);
             k++;
-            E = w * q2 * (1 - 1 / (q1 / 0.017 + 1));
+            E = w * q2 * (1 - 1 / (q1 / lm.chi_offset + 1));
             lmalf_reduce(E, Eloc, &dEdx[k]);
             k++;
-            E = w * q1 * (1 - 1 / (q2 / 0.017 + 1));
+            E = w * q1 * (1 - 1 / (q2 / lm.chi_offset + 1));
             lmalf_reduce(E, Eloc, &dEdx[k]);
             k++;
           }
@@ -2327,16 +2332,16 @@ __global__ void lmalf_weightedenergykernel(struct_lmalf lm, double sign, double 
             k++;
             if (lm.ms == 1)
             {
-              E = w * q2 * (1 - exp(-q1 / 0.18));
+              E = w * q2 * (1 - exp(-q1 / lm.chi_scale));
               lmalf_reduce(E, Eloc, &dEdx[k]);
               k++;
-              E = w * q1 * (1 - exp(-q2 / 0.18));
+              E = w * q1 * (1 - exp(-q2 / lm.chi_scale));
               lmalf_reduce(E, Eloc, &dEdx[k]);
               k++;
-              E = w * q2 * (1 - 1 / (q1 / 0.017 + 1));
+              E = w * q2 * (1 - 1 / (q1 / lm.chi_offset + 1));
               lmalf_reduce(E, Eloc, &dEdx[k]);
               k++;
-              E = w * q1 * (1 - 1 / (q2 / 0.017 + 1));
+              E = w * q1 * (1 - 1 / (q2 / lm.chi_offset + 1));
               lmalf_reduce(E, Eloc, &dEdx[k]);
               k++;
             }
@@ -2556,11 +2561,11 @@ static void lmalf_monte_carlo_Z(struct_lmalf *lm)
         norm = 0;
         for (j = ibeg; j < iend; j++)
         {
-          norm += exp(5.5 * sin(theta[j]));
+          norm += exp(lm->fnex * sin(theta[j]));
         }
         for (j = ibeg; j < iend; j++)
         {
-          lm->mc_lambda_h[lm->nblocks * i + j] = exp(5.5 * sin(theta[j])) / norm;
+          lm->mc_lambda_h[lm->nblocks * i + j] = exp(lm->fnex * sin(theta[j])) / norm;
         }
       }
     }
@@ -3390,16 +3395,23 @@ void lmalf_finish(struct_lmalf *lm)
  *   - OUT.dat: Optimized bias parameters
  */
 extern "C" int lmalf(int nf, double temp, int ms, int msprof, int max_iter, double tolerance,
-                     int *nsubs, int nsites, const char *g_imp_path)
+                     int *nsubs, int nsites, const char *g_imp_path,
+                     double fnex, double chi_offset, double chi_scale)
 {
   fprintf(stdout, "LMALF: Likelihood Maximization ALF\n");
   fprintf(stdout, "  nf=%d, temp=%.2f, ms=%d, msprof=%d\n", nf, temp, ms, msprof);
   fprintf(stdout, "  max_iter=%d, tolerance=%g\n", max_iter, tolerance);
+  fprintf(stdout, "  fnex=%.4f, chi_offset=%.6f, chi_scale=%.6f\n", fnex, chi_offset, chi_scale);
 
   // Initialize and validate GPU
   validate_and_setup_gpu();
 
   struct_lmalf *lm = lmalf_setup(nf, temp, ms, msprof, nsubs, nsites, g_imp_path);
+  if (lm) {
+    lm->fnex = fnex;
+    lm->chi_offset = chi_offset;
+    lm->chi_scale = chi_scale;
+  }
   if (!lm)
   {
     fprintf(stderr, "Error: Failed to setup LMALF\n");

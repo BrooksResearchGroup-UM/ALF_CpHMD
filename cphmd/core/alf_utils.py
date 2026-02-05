@@ -43,9 +43,7 @@ def _fmtval(v: float) -> float:
     return 0.0 if abs(v) < 5e-6 else v
 
 
-# ALF bias potential constants
-OMEGA_DECAY = 5.56       # Exponential decay for omega bias term
-CHI_OFFSET = 0.017       # Offset for chi sigmoid bias term
+from .bias_constants import derive_bias_constants, OMEGA_DECAY, CHI_OFFSET, DEFAULT_FNEX
 
 
 @dataclass
@@ -820,8 +818,8 @@ def get_energy_from_analysis_dir(
             Lj = Lambda[j_idx]
             Eij = np.reshape(np.dot(Lj, -bi), (-1, 1))
             Eij += np.sum(np.dot(Lj, -ci) * Lj, axis=1, keepdims=True)
-            Eij += np.sum(np.dot(1 - np.exp(-5.56 * Lj), -xi) * Lj, axis=1, keepdims=True)
-            Eij += np.sum(np.dot(Lj / (Lj + 0.017), -si) * Lj, axis=1, keepdims=True)
+            Eij += np.sum(np.dot(1 - np.exp(-OMEGA_DECAY * Lj), -xi) * Lj, axis=1, keepdims=True)
+            Eij += np.sum(np.dot(Lj / (Lj + CHI_OFFSET), -si) * Lj, axis=1, keepdims=True)
             E[i].append(Eij)
 
     for i in range(total_simulations):
@@ -896,8 +894,10 @@ def compute_bias_energy(
     The bias energy has four components:
     - Linear (phi): -b·λ
     - Quadratic psi: -λᵀ·c·λ
-    - Omega: -λᵀ·(1-exp(-5.56λ))·x·λ
-    - Chi: -λᵀ·(λ/(λ+0.017))·s·λ
+    - Omega (x-term): -λᵀ·(1-exp(-OMEGA_DECAY·λ))·x·λ
+    - Chi (s-term): -λᵀ·(λ/(λ+CHI_OFFSET))·s·λ
+
+    Constants are derived from FNEX (see bias_constants module).
 
     Args:
         lambda_vec: Lambda coordinates (nblocks,).

@@ -331,21 +331,27 @@ def generate_rmla_msld(
 def generate_ldbv_statements(
     patch_info: pd.DataFrame,
     variables: dict[str, float],
+    fnex: float = 5.5,
 ) -> str:
     """Generate LDBI/LDBV statements for variable lambda potentials.
 
     Three types of potentials:
     1. Quadratic barriers (type 6) - prevent lambda from crossing site boundaries
-    2. Endpoint potentials (type 8) - bias toward physical endpoints
-    3. Skew potentials (type 10) - asymmetric bias between states
+    2. Endpoint potentials (type 8, REF=CHI_OFFSET) - bias toward physical endpoints
+    3. Skew potentials (type 10, REF=-OMEGA_DECAY) - asymmetric bias between states
+
+    The REF values for types 8 and 10 are derived from FNEX via bias_constants.
 
     Args:
         patch_info: DataFrame from patches.dat
         variables: Variables from ALF variable file
+        fnex: FNEX softmax constraint parameter (default 5.5)
 
     Returns:
         CHARMM LDBI/LDBV statements
     """
+    from .bias_constants import derive_bias_constants
+    constants = derive_bias_constants(fnex)
     # Build all LDBV statements first to count them
     ldbv_lines = []
     idx = 0
@@ -393,7 +399,7 @@ def generate_ldbv_statements(
                     var_key = f"s{row1['SELECT']}{row2['SELECT']}"
                     s_val = variables.get(var_key, 0.0)
                     endpoint_lines.append(
-                        f"ldbv {idx:<3} {block1:<2} {block2:<2} {8:<4} {0.017:<8} {s_val:<6} {0:<1}"
+                        f"ldbv {idx:<3} {block1:<2} {block2:<2} {8:<4} {constants.chi_offset:<8.5f} {s_val:<6} {0:<1}"
                     )
 
     ldbv_lines.extend(endpoint_lines)
@@ -417,7 +423,7 @@ def generate_ldbv_statements(
                     var_key = f"x{row1['SELECT']}{row2['SELECT']}"
                     x_val = variables.get(var_key, 0.0)
                     skew_lines.append(
-                        f"ldbv {idx:<3} {block1:<2} {block2:<2} {10:<4} {-5.56:<8} {x_val:<6} {0:<1}"
+                        f"ldbv {idx:<3} {block1:<2} {block2:<2} {10:<4} {-constants.omega_decay:<8} {x_val:<6} {0:<1}"
                     )
 
     ldbv_lines.extend(skew_lines)
@@ -471,7 +477,7 @@ def build_block_command(
             fpie_width=fpie_width,
             fpie_force=fpie_force,
         ),
-        generate_ldbv_statements(patch_info, variables),
+        generate_ldbv_statements(patch_info, variables, fnex=fnex),
         "END",
     ]
 

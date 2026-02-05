@@ -126,8 +126,11 @@ def _generate_block_str(
     variables_dir: Path,
     temperature: float,
     electrostatics: str,
+    fnex: float = 5.5,
 ) -> str:
     """Generate MSLD BLOCK command string."""
+    from .bias_constants import derive_bias_constants
+    constants = derive_bias_constants(fnex)
     lines = []
 
     # Initialize BLOCK components
@@ -236,7 +239,7 @@ def _generate_block_str(
             s_key = f"ss1s{s1}s1s{s2}"
             s_val = var_df.get(s_key, 0.0)
             ldbv_lines.append(
-                f"LDBV {{idx:<3}} {b1:>4} {b2:>4} {8:>4} {0.017:>8} {s_val:>10} {0:>5}"
+                f"LDBV {{idx:<3}} {b1:>4} {b2:>4} {8:>4} {constants.chi_offset:>8.5f} {s_val:>10} {0:>5}"
             )
 
         ldbv_lines.append("")
@@ -248,7 +251,7 @@ def _generate_block_str(
             x_key = f"xs1s{s1}s1s{s2}"
             x_val = var_df.get(x_key, 0.0)
             ldbv_lines.append(
-                f"LDBV {{idx:<3}} {b1:>4} {b2:>4} {10:>4} {-5.56:>8} {x_val:>10} {0:>5}"
+                f"LDBV {{idx:<3}} {b1:>4} {b2:>4} {10:>4} {-constants.omega_decay:>8} {x_val:>10} {0:>5}"
             )
 
         ldbv_lines.append("")

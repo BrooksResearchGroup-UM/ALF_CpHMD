@@ -121,6 +121,7 @@ def run_wham(
     nsubs: np.ndarray | list[int] | None = None,
     g_imp_path: str | Path | None = None,
     log_file: str | Path | None = None,
+    fnex: float = 5.5,
 ) -> None:
     """Run WHAM analysis using bundled GPU-accelerated library.
 
@@ -202,7 +203,10 @@ def run_wham(
     # WHAM expects files in current directory, so we must chdir temporarily
     with _chdir_context(analysis_dir):
         try:
-            logger.info(f"Running WHAM with nf={nf}, temp={temp}, use_gshift={use_gshift}")
+            from cphmd.core.bias_constants import derive_bias_constants
+            constants = derive_bias_constants(fnex)
+
+            logger.info(f"Running WHAM with nf={nf}, temp={temp}, use_gshift={use_gshift}, fnex={fnex}")
             if nsubs is not None:
                 logger.info(f"  nsubs={list(nsubs_arr)}, g_imp_path={g_imp_path}")
             whamlib = ctypes.CDLL(str(_WHAM_LIB_PATH))
@@ -216,11 +220,14 @@ def run_wham(
                 ctypes.POINTER(ctypes.c_int),     # nsubs
                 ctypes.c_int,                      # nsites
                 ctypes.c_char_p,                   # g_imp_path
+                ctypes.c_double,                   # chi_offset
+                ctypes.c_double,                   # chi_scale
             ]
             pywham.restype = ctypes.c_int
 
             with _redirect_c_output(log_path):
-                result = pywham(nf, temp, nts0, nts1, int(use_gshift), nsubs_ptr, nsites, g_imp_path_bytes)
+                result = pywham(nf, temp, nts0, nts1, int(use_gshift), nsubs_ptr, nsites, g_imp_path_bytes,
+                                constants.chi_offset, constants.chi_scale)
             if result != 0:
                 raise RuntimeError(f"WHAM returned error code: {result}")
 
@@ -388,6 +395,7 @@ def run_wham_with_g_imp(
         use_gshift=use_gshift,
         nsubs=alf_info.nsubs,
         g_imp_path=g_imp_dir,
+        fnex=alf_info.fnex,
     )
 
 
@@ -402,6 +410,7 @@ def run_lmalf(
     nsubs: np.ndarray | list[int] | None = None,
     g_imp_path: str | Path | None = None,
     log_file: str | Path | None = None,
+    fnex: float = 5.5,
 ) -> None:
     """Run LMALF (Likelihood Maximization ALF) analysis.
 
@@ -484,7 +493,10 @@ def run_lmalf(
     # Run LMALF in analysis directory context
     with _chdir_context(analysis_dir):
         try:
-            logger.info(f"Running LMALF with nf={nf}, temp={temp}, ms={ms}, msprof={msprof}")
+            from cphmd.core.bias_constants import derive_bias_constants
+            constants = derive_bias_constants(fnex)
+
+            logger.info(f"Running LMALF with nf={nf}, temp={temp}, ms={ms}, msprof={msprof}, fnex={fnex}")
             if nsubs is not None:
                 logger.info(f"  nsubs={list(nsubs_arr)}, g_imp_path={g_imp_path}")
             whamlib = ctypes.CDLL(str(_WHAM_LIB_PATH))
@@ -499,11 +511,15 @@ def run_lmalf(
                 ctypes.POINTER(ctypes.c_int),     # nsubs
                 ctypes.c_int,                      # nsites
                 ctypes.c_char_p,                   # g_imp_path
+                ctypes.c_double,                   # fnex
+                ctypes.c_double,                   # chi_offset
+                ctypes.c_double,                   # chi_scale
             ]
             pylmalf.restype = ctypes.c_int
 
             with _redirect_c_output(log_path):
-                result = pylmalf(nf, temp, ms, msprof, max_iter, tolerance, nsubs_ptr, nsites, g_imp_path_bytes)
+                result = pylmalf(nf, temp, ms, msprof, max_iter, tolerance, nsubs_ptr, nsites, g_imp_path_bytes,
+                                 constants.fnex, constants.chi_offset, constants.chi_scale)
             if result != 0:
                 raise RuntimeError(f"LMALF returned error code: {result}")
 
