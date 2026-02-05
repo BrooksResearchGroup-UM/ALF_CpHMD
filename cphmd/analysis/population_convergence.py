@@ -2,7 +2,8 @@
 
 Reads populations.dat from successive analysis directories and plots how
 normalized populations evolve, separately for the relaxed (λ > 0.8) and
-strict (λ > 0.985) thresholds.
+strict (λ > 0.985) thresholds.  For multi-site systems, each site gets
+its own plot with per-site normalization.
 """
 
 from __future__ import annotations
@@ -16,7 +17,7 @@ def read_populations_from_runs(
     input_folder: Path,
     max_run: int,
 ) -> dict[str, np.ndarray]:
-    """Read normalized populations from analysis1/ … analysisN/ directories.
+    """Read hit counts from analysis1/ … analysisN/ directories.
 
     Args:
         input_folder: Parent directory containing analysisN/ subdirectories.
@@ -25,12 +26,12 @@ def read_populations_from_runs(
     Returns:
         Dictionary with keys:
           - ``runs``: 1-D int array of run indices that had a valid file
-          - ``relaxed``: (n_runs, n_states) normalized populations at λ > 0.8
-          - ``strict``:  (n_runs, n_states) normalized populations at λ > 0.985
+          - ``hits_relaxed``: (n_runs, n_states) hit counts at λ > 0.8
+          - ``hits_strict``:  (n_runs, n_states) hit counts at λ > 0.985
     """
     runs: list[int] = []
-    relaxed_list: list[np.ndarray] = []
-    strict_list: list[np.ndarray] = []
+    hits_relaxed_list: list[np.ndarray] = []
+    hits_strict_list: list[np.ndarray] = []
 
     for run_idx in range(1, max_run + 1):
         pop_file = input_folder / f"analysis{run_idx}" / "populations.dat"
@@ -45,11 +46,11 @@ def read_populations_from_runs(
         if data.ndim == 1:
             data = data.reshape(1, -1)
 
-        # Column layout (0-indexed after State column):
+        # Column layout (0-indexed):
         #   0: State  1: Raw(>0.8)  2: Norm(>0.8)  3: Hits(>0.8)
         #   4: Raw(>0.985)  5: Norm(>0.985)  6: Hits(>0.985)
-        relaxed_list.append(data[:, 2])
-        strict_list.append(data[:, 5])
+        hits_relaxed_list.append(data[:, 3])
+        hits_strict_list.append(data[:, 6])
         runs.append(run_idx)
 
     if not runs:
@@ -57,23 +58,49 @@ def read_populations_from_runs(
 
     return {
         "runs": np.array(runs),
-        "relaxed": np.array(relaxed_list),   # (n_runs, n_states)
-        "strict": np.array(strict_list),
+        "hits_relaxed": np.array(hits_relaxed_list),  # (n_runs, n_states)
+        "hits_strict": np.array(hits_strict_list),
     }
 
 
-def plot_population_convergence(
-    run_data: dict[str, np.ndarray],
-    threshold_label: str,
-    key: str,
-    output_path: Path,
-) -> None:
-    """Create a single convergence plot for one threshold.
+def _normalize_per_site(
+    hits: np.ndarray, nsubs: list[int]
+) -> list[np.ndarray]:
+    """Normalize hit counts per site.
 
     Args:
-        run_data: Output of :func:`read_populations_from_runs`.
-        threshold_label: Human-readable threshold description, e.g. "λ > 0.8".
-        key: Which population array to use (``"relaxed"`` or ``"strict"``).
+        hits: (n_runs, n_states) hit count array.
+        nsubs: Number of substates per site, e.g. [2, 2].
+
+    Returns:
+        List of (n_runs, nsubs[i]) normalized population arrays, one per site.
+    """
+    site_pops = []
+    offset = 0
+    for ns in nsubs:
+        site_hits = hits[:, offset : offset + ns]
+        totals = site_hits.sum(axis=1, keepdims=True)
+        # Avoid division by zero
+        totals = np.where(totals > 0, totals, 1.0)
+        site_pops.append(site_hits / totals)
+        offset += ns
+    return site_pops
+
+
+def plot_population_convergence(
+    runs: np.ndarray,
+    site_pops: np.ndarray,
+    threshold_label: str,
+    site_label: str,
+    output_path: Path,
+) -> None:
+    """Create a single convergence plot for one site and threshold.
+
+    Args:
+        runs: 1-D array of run indices.
+        site_pops: (n_runs, n_substates) normalized populations for this site.
+        threshold_label: e.g. "λ > 0.8".
+        site_label: e.g. "Site 0" or "" for single-site systems.
         output_path: Full path for the output PNG file.
     """
     try:
@@ -84,36 +111,33 @@ def plot_population_convergence(
         print("matplotlib not available, skipping population convergence plots")
         return
 
-    runs = run_data["runs"]
-    pops = run_data[key]  # (n_runs, n_states)
-    n_states = pops.shape[1]
+    n_substates = site_pops.shape[1]
 
     fig, ax = plt.subplots(figsize=(8, 5))
 
-    # Distinct color cycle
     cmap = plt.get_cmap("tab10")
     markers = ["o", "s", "^", "D", "v", "<", ">", "p", "h", "*"]
 
-    for state_idx in range(n_states):
-        color = cmap(state_idx % 10)
-        marker = markers[state_idx % len(markers)]
+    for s in range(n_substates):
+        color = cmap(s % 10)
+        marker = markers[s % len(markers)]
         ax.plot(
             runs,
-            pops[:, state_idx],
+            site_pops[:, s],
             marker=marker,
             color=color,
             linewidth=1.5,
             markersize=5,
-            label=f"State {state_idx}",
+            label=f"State {s}",
         )
 
     # Ideal equal-population line
-    ideal = 1.0 / n_states
+    ideal = 1.0 / n_substates
     ax.axhline(ideal, color="grey", linestyle="--", linewidth=1, alpha=0.7,
-               label=f"Ideal (1/{n_states})")
+               label=f"Ideal (1/{n_substates})")
 
     # Final frac_diff annotation
-    final_pops = pops[-1]
+    final_pops = site_pops[-1]
     frac_diff = (final_pops.max() - final_pops.min()) * 100
     ax.annotate(
         f"Final diff = {frac_diff:.1f}%",
@@ -125,10 +149,14 @@ def plot_population_convergence(
         bbox=dict(boxstyle="round,pad=0.3", facecolor="wheat", alpha=0.5),
     )
 
+    title = f"Population convergence ({threshold_label})"
+    if site_label:
+        title += f" — {site_label}"
+
     ax.set_xlabel("Run", fontsize=12)
     ax.set_ylabel("Normalized population", fontsize=12)
-    ax.set_title(f"Population convergence ({threshold_label})", fontsize=14)
-    ax.legend(loc="best", fontsize=9, ncol=max(1, n_states // 5))
+    ax.set_title(title, fontsize=14)
+    ax.legend(loc="best", fontsize=9, ncol=max(1, n_substates // 5))
     ax.grid(True, alpha=0.3)
     ax.set_xlim(runs[0] - 0.5, runs[-1] + 0.5)
     ax.set_ylim(bottom=0)
@@ -143,13 +171,16 @@ def generate_population_plots(
     input_folder: Path,
     max_run: int,
     output_dir: Path,
+    nsubs: list[int] | np.ndarray | None = None,
 ) -> None:
-    """Generate both population convergence plots.
+    """Generate population convergence plots, one per site per threshold.
 
     Args:
         input_folder: Parent directory containing analysisN/ subdirectories.
         max_run: Highest run index to consider.
         output_dir: Directory for output PNG files (created if needed).
+        nsubs: Number of substates per site, e.g. [2, 2].
+            If None, treats all states as a single site.
     """
     run_data = read_populations_from_runs(input_folder, max_run)
     if not run_data:
@@ -159,16 +190,38 @@ def generate_population_plots(
     if len(run_data["runs"]) < 2:
         return
 
-    plot_population_convergence(
-        run_data,
-        threshold_label="λ > 0.8",
-        key="relaxed",
-        output_path=output_dir / "populations_relaxed.png",
-    )
-    plot_population_convergence(
-        run_data,
-        threshold_label="λ > 0.985",
-        key="strict",
-        output_path=output_dir / "populations_strict.png",
-    )
+    runs = run_data["runs"]
+    n_states = run_data["hits_relaxed"].shape[1]
+
+    # Default: single site with all states
+    if nsubs is None:
+        nsubs = [n_states]
+    nsubs = list(nsubs)
+
+    relaxed_per_site = _normalize_per_site(run_data["hits_relaxed"], nsubs)
+    strict_per_site = _normalize_per_site(run_data["hits_strict"], nsubs)
+
+    n_sites = len(nsubs)
+    multi_site = n_sites > 1
+
+    for thresh_key, thresh_label, site_pops_list in [
+        ("relaxed", "λ > 0.8", relaxed_per_site),
+        ("strict", "λ > 0.985", strict_per_site),
+    ]:
+        for site_idx, site_pops in enumerate(site_pops_list):
+            if multi_site:
+                site_label = f"Site {site_idx}"
+                fname = f"populations_{thresh_key}_site{site_idx}.png"
+            else:
+                site_label = ""
+                fname = f"populations_{thresh_key}.png"
+
+            plot_population_convergence(
+                runs=runs,
+                site_pops=site_pops,
+                threshold_label=thresh_label,
+                site_label=site_label,
+                output_path=output_dir / fname,
+            )
+
     print(f"Population convergence plots saved to {output_dir}")
