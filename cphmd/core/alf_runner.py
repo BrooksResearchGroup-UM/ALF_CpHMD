@@ -973,6 +973,7 @@ class ALFSimulation:
             self._comm.Barrier()
             elapsed = time.time() - start_time
             print(f"Run {run_idx}.{k} dynamics completed in {elapsed:.1f}s")
+            sys.stdout.flush()
 
         # ALF analysis (rank 0 only)
         if self.state.rank == 0:
@@ -980,6 +981,7 @@ class ALFSimulation:
             self._alf_analysis(run_idx, repeats)
             elapsed = time.time() - start_time
             print(f"Analysis completed in {elapsed:.1f}s")
+            sys.stdout.flush()
 
         self._comm.Barrier()
 
@@ -1009,10 +1011,12 @@ class ALFSimulation:
             self._comm.Barrier()
             elapsed = time.time() - start_time
             print(f"Run {run_idx}.{k} (confirmation) completed in {elapsed:.1f}s")
+            sys.stdout.flush()
 
             # Re-run analysis with additional data
             if self.state.rank == 0:
                 print("Re-analyzing with confirmation data...")
+                sys.stdout.flush()
                 self._alf_analysis(run_idx, repeats + 1, confirmation=True)
 
             self._comm.Barrier()
@@ -2196,10 +2200,10 @@ class ALFSimulation:
             os.chdir(self.config.input_folder)
 
             # Determine analysis window
-            # Phase 1: wider window (15 runs) — short simulations benefit from more history
+            # Phase 1: wider window (10 runs) — short simulations benefit from more history
             # Phase 2/3: narrower window (5 runs) — longer simulations are self-sufficient
             if self.state.phase == 1:
-                im5 = max(run_idx - 15, 1)
+                im5 = max(run_idx - 10, 1)
             else:
                 im5 = max(run_idx - 5, 1)
 
@@ -2885,6 +2889,7 @@ class ALFSimulation:
                     shutil.rmtree(p)
 
             print(f"ALF analysis complete for run {run_idx}")
+            sys.stdout.flush()
 
         finally:
             os.chdir(home_path)
