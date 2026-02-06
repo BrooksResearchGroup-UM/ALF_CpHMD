@@ -1089,7 +1089,7 @@ __global__ void reactioncoord_chi(struct_data data, int i1, int i2)
   {
     double q1 = data.D_d[t * data.Ndim + 1 + i1];
     double q2 = data.D_d[t * data.Ndim + 1 + i2];
-    data.D_d[t * data.Ndim + 1 + data.NL + data.Nsim + 1] = q2 * (1 - exp(-q1 / data.chi_scale));
+    data.D_d[t * data.Ndim + 1 + data.NL + data.Nsim + 1] = q2 * (1 - exp(-q1 / data.omega_scale));
   }
 }
 
@@ -1917,7 +1917,7 @@ void getfofq(struct_data *data, double beta)
 
 extern "C" int wham(int arg1, double arg2, int arg3, int arg4, int use_gshift,
                    int *nsubs, int nsites, const char *g_imp_path,
-                   double chi_offset, double chi_scale, double cutlsum)
+                   double chi_offset, double omega_scale, double cutlsum)
 {
   // Initialize and validate GPU
   validate_and_setup_gpu();
@@ -1925,7 +1925,7 @@ extern "C" int wham(int arg1, double arg2, int arg3, int arg4, int use_gshift,
   struct_data *data = readdata(arg1, arg2, arg3, arg4, use_gshift, nsubs, nsites, g_imp_path);
   if (data) {
     data->chi_offset = chi_offset;
-    data->chi_scale = chi_scale;
+    data->omega_scale = omega_scale;
     data->cutlsum = cutlsum;
   }
   if (!data)
@@ -2239,9 +2239,9 @@ __global__ void lmalf_energykernel(struct_lmalf lm, double *x, double *lambda, d
             q2 = lam[i2];
             E += x[k] * q1 * q2;                        // c term
             k++;
-            E += x[k] * q2 * (1 - exp(-q1 / lm.chi_scale));     // x term 1
+            E += x[k] * q2 * (1 - exp(-q1 / lm.omega_scale));     // x term 1
             k++;
-            E += x[k] * q1 * (1 - exp(-q2 / lm.chi_scale));     // x term 2
+            E += x[k] * q1 * (1 - exp(-q2 / lm.omega_scale));     // x term 2
             k++;
             E += x[k] * q2 * (1 - 1 / (q1 / lm.chi_offset + 1)); // s term 1
             k++;
@@ -2263,9 +2263,9 @@ __global__ void lmalf_energykernel(struct_lmalf lm, double *x, double *lambda, d
             k++;
             if (lm.ms == 1)
             {
-              E += x[k] * q2 * (1 - exp(-q1 / lm.chi_scale));     // x term 1
+              E += x[k] * q2 * (1 - exp(-q1 / lm.omega_scale));     // x term 1
               k++;
-              E += x[k] * q1 * (1 - exp(-q2 / lm.chi_scale));     // x term 2
+              E += x[k] * q1 * (1 - exp(-q2 / lm.omega_scale));     // x term 2
               k++;
               E += x[k] * q2 * (1 - 1 / (q1 / lm.chi_offset + 1)); // s term 1
               k++;
@@ -2320,10 +2320,10 @@ __global__ void lmalf_weightedenergykernel(struct_lmalf lm, double sign, double 
             E = w * q1 * q2;
             lmalf_reduce(E, Eloc, &dEdx[k]);
             k++;
-            E = w * q2 * (1 - exp(-q1 / lm.chi_scale));
+            E = w * q2 * (1 - exp(-q1 / lm.omega_scale));
             lmalf_reduce(E, Eloc, &dEdx[k]);
             k++;
-            E = w * q1 * (1 - exp(-q2 / lm.chi_scale));
+            E = w * q1 * (1 - exp(-q2 / lm.omega_scale));
             lmalf_reduce(E, Eloc, &dEdx[k]);
             k++;
             E = w * q2 * (1 - 1 / (q1 / lm.chi_offset + 1));
@@ -2348,10 +2348,10 @@ __global__ void lmalf_weightedenergykernel(struct_lmalf lm, double sign, double 
             k++;
             if (lm.ms == 1)
             {
-              E = w * q2 * (1 - exp(-q1 / lm.chi_scale));
+              E = w * q2 * (1 - exp(-q1 / lm.omega_scale));
               lmalf_reduce(E, Eloc, &dEdx[k]);
               k++;
-              E = w * q1 * (1 - exp(-q2 / lm.chi_scale));
+              E = w * q1 * (1 - exp(-q2 / lm.omega_scale));
               lmalf_reduce(E, Eloc, &dEdx[k]);
               k++;
               E = w * q2 * (1 - 1 / (q1 / lm.chi_offset + 1));
@@ -3412,12 +3412,12 @@ void lmalf_finish(struct_lmalf *lm)
  */
 extern "C" int lmalf(int nf, double temp, int ms, int msprof, int max_iter, double tolerance,
                      int *nsubs, int nsites, const char *g_imp_path,
-                     double fnex, double chi_offset, double chi_scale)
+                     double fnex, double chi_offset, double omega_scale)
 {
   fprintf(stdout, "LMALF: Likelihood Maximization ALF\n");
   fprintf(stdout, "  nf=%d, temp=%.2f, ms=%d, msprof=%d\n", nf, temp, ms, msprof);
   fprintf(stdout, "  max_iter=%d, tolerance=%g\n", max_iter, tolerance);
-  fprintf(stdout, "  fnex=%.4f, chi_offset=%.6f, chi_scale=%.6f\n", fnex, chi_offset, chi_scale);
+  fprintf(stdout, "  fnex=%.4f, chi_offset=%.6f, omega_scale=%.6f\n", fnex, chi_offset, omega_scale);
 
   // Initialize and validate GPU
   validate_and_setup_gpu();
@@ -3426,7 +3426,7 @@ extern "C" int lmalf(int nf, double temp, int ms, int msprof, int max_iter, doub
   if (lm) {
     lm->fnex = fnex;
     lm->chi_offset = chi_offset;
-    lm->chi_scale = chi_scale;
+    lm->omega_scale = omega_scale;
   }
   if (!lm)
   {

@@ -68,7 +68,7 @@ typedef struct struct_data
   int use_gshift;        // 0 = disabled (legacy), 1 = enabled (apply G_imp shifts)
   char g_imp_path[256];  // Path to G_imp directory
   double chi_offset;     // s-term sigmoid offset (derived from FNEX: 4*exp(-FNEX))
-  double chi_scale;      // x-term reciprocal decay (derived from FNEX: 1/FNEX)
+  double omega_scale;      // x-term reciprocal decay (derived from FNEX: 1/FNEX)
   double cutlsum;        // G12 conditional threshold (λ_i + λ_j > cutlsum)
 } struct_data;
 
@@ -183,7 +183,7 @@ typedef struct struct_lmalf
   // Bias constants (derived from FNEX)
   double fnex;           // FNEX softmax constraint parameter
   double chi_offset;     // s-term sigmoid offset (4*exp(-FNEX))
-  double chi_scale;      // x-term reciprocal decay (1/FNEX)
+  double omega_scale;      // x-term reciprocal decay (1/FNEX)
 } struct_lmalf;
 
 // LMALF bin size constants (matching original lmalf.cu)

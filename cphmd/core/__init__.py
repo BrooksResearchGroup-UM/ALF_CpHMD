@@ -49,7 +49,7 @@ from .bias_constants import (
     DEFAULT_FNEX,
     OMEGA_DECAY,
     CHI_OFFSET,
-    CHI_SCALE,
+    OMEGA_SCALE,
 )
 from .alf_utils import (
     ALFInfo,
@@ -181,7 +181,7 @@ __all__ = [
     "DEFAULT_FNEX",
     "OMEGA_DECAY",
     "CHI_OFFSET",
-    "CHI_SCALE",
+    "OMEGA_SCALE",
     # ALF Utilities
     "ALFInfo",
     "init_vars",

@@ -6,10 +6,10 @@ shape parameters that are physically determined by FNEX:
 
     OMEGA_DECAY = FNEX           (x-term exponential decay rate)
     CHI_OFFSET  = 4 * exp(-FNEX) (s-term sigmoid offset)
-    CHI_SCALE   = 1 / FNEX      (reciprocal for CUDA kernels)
+    OMEGA_SCALE   = 1 / FNEX      (reciprocal for CUDA kernels)
 
 For the default FNEX=5.5 (matching CHARMM BLOCK FNEX):
-    OMEGA_DECAY = 5.5, CHI_OFFSET = 0.01634, CHI_SCALE = 0.18182
+    OMEGA_DECAY = 5.5, CHI_OFFSET = 0.01634, OMEGA_SCALE = 0.18182
 
 Historical note: These were previously hardcoded as 5.56, 0.017, and 0.18 —
 approximations that drifted from the exact FNEX-derived values.
@@ -37,13 +37,13 @@ class BiasConstants(NamedTuple):
         fnex: The FNEX softmax constraint parameter.
         omega_decay: Exponential decay for x-term LDBV class 10 REF.
         chi_offset: Sigmoid offset for s-term LDBV class 8 REF.
-        chi_scale: Reciprocal of omega_decay (1/FNEX), used in CUDA.
+        omega_scale: Reciprocal of omega_decay (1/FNEX), used in CUDA.
     """
 
     fnex: float
     omega_decay: float
     chi_offset: float
-    chi_scale: float
+    omega_scale: float
 
 
 def derive_bias_constants(fnex: float = DEFAULT_FNEX) -> BiasConstants:
@@ -59,7 +59,7 @@ def derive_bias_constants(fnex: float = DEFAULT_FNEX) -> BiasConstants:
         fnex=fnex,
         omega_decay=fnex,
         chi_offset=4.0 * np.exp(-fnex),
-        chi_scale=1.0 / fnex,
+        omega_scale=1.0 / fnex,
     )
 
 
@@ -67,4 +67,4 @@ def derive_bias_constants(fnex: float = DEFAULT_FNEX) -> BiasConstants:
 _DEFAULT = derive_bias_constants()
 OMEGA_DECAY = _DEFAULT.omega_decay
 CHI_OFFSET = _DEFAULT.chi_offset
-CHI_SCALE = _DEFAULT.chi_scale
+OMEGA_SCALE = _DEFAULT.omega_scale
