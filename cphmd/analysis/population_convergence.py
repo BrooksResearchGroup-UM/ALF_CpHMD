@@ -9,8 +9,35 @@ its own plot with per-site normalization.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Sequence
 
 import numpy as np
+
+
+# Phase → alpha mapping for visual emphasis:
+# Phase 1 (exploration) is faint, Phase 3 (production) is fully opaque
+_PHASE_ALPHA = {1: 0.5, 2: 0.8, 3: 1.0}
+
+
+def _read_phases_from_runs(
+    input_folder: Path,
+    runs: np.ndarray,
+) -> np.ndarray:
+    """Read phase.dat from each analysisN/ directory.
+
+    Returns:
+        1-D int array of phase values (1, 2, or 3) per run.
+        Defaults to 1 if phase.dat is missing.
+    """
+    phases = np.ones(len(runs), dtype=int)
+    for i, run_idx in enumerate(runs):
+        phase_file = input_folder / f"analysis{run_idx}" / "phase.dat"
+        if phase_file.exists():
+            try:
+                phases[i] = int(np.loadtxt(phase_file))
+            except Exception:
+                pass
+    return phases
 
 
 def _configure_plot_style():
@@ -22,6 +49,42 @@ def _configure_plot_style():
     plt.rcParams['ytick.direction'] = 'out'
     plt.rcParams['xtick.major.size'] = 4
     plt.rcParams['ytick.major.size'] = 4
+
+
+def _plot_by_phase(
+    ax,
+    runs: np.ndarray,
+    y: np.ndarray,
+    phases: np.ndarray,
+    *,
+    base_alpha: float = 1.0,
+    label: str | None = None,
+    **kwargs,
+) -> None:
+    """Plot a line in contiguous phase segments with per-phase alpha.
+
+    The final alpha is ``base_alpha * phase_alpha``.  Segments overlap by
+    1 point at phase boundaries so the line is continuous.
+    Only the first segment gets the legend label.
+    """
+    # Identify contiguous runs of the same phase
+    change_points = np.where(np.diff(phases) != 0)[0] + 1
+    segments = np.split(np.arange(len(runs)), change_points)
+
+    for seg_idx, seg in enumerate(segments):
+        if len(seg) == 0:
+            continue
+        # Extend segment by 1 into next phase for continuity
+        end = min(seg[-1] + 2, len(runs))
+        idx = np.arange(seg[0], end)
+        phase = phases[seg[0]]
+        alpha = base_alpha * _PHASE_ALPHA.get(phase, 1.0)
+        ax.plot(
+            runs[idx], y[idx],
+            alpha=alpha,
+            label=label if seg_idx == 0 else None,
+            **kwargs,
+        )
 
 
 def read_populations_from_runs(
@@ -104,6 +167,7 @@ def plot_population_convergence(
     threshold_label: str,
     site_label: str,
     output_path: Path,
+    phases: np.ndarray | None = None,
 ) -> None:
     """Create a single convergence plot for one site and threshold.
 
@@ -113,6 +177,8 @@ def plot_population_convergence(
         threshold_label: e.g. "λ > 0.8".
         site_label: e.g. "Site 0" or "" for single-site systems.
         output_path: Full path for the output PNG file.
+        phases: Optional 1-D array of phase values (1/2/3) per run.
+            Controls line transparency — phase 1 is faint, phase 3 is opaque.
     """
     try:
         import matplotlib
@@ -134,17 +200,27 @@ def plot_population_convergence(
     for s in range(n_substates):
         color = colors[s % len(colors)]
         marker = markers[s % len(markers)]
-        ax.plot(
-            runs,
-            site_pops[:, s],
-            marker=marker,
-            color=color,
-            linewidth=2,
-            markersize=6,
-            markeredgecolor='black',
-            markeredgewidth=0.5,
-            label=f"State {s}",
-        )
+
+        if phases is not None:
+            # Plot each contiguous phase segment separately for different alpha
+            _plot_by_phase(
+                ax, runs, site_pops[:, s], phases,
+                color=color, marker=marker, linewidth=2, markersize=6,
+                markeredgecolor="black", markeredgewidth=0.5,
+                label=f"State {s}",
+            )
+        else:
+            ax.plot(
+                runs,
+                site_pops[:, s],
+                marker=marker,
+                color=color,
+                linewidth=2,
+                markersize=6,
+                markeredgecolor='black',
+                markeredgewidth=0.5,
+                label=f"State {s}",
+            )
 
     # Ideal equal-population line
     ideal = 1.0 / n_substates
@@ -221,6 +297,9 @@ def generate_population_plots(
     relaxed_per_site = _normalize_per_site(run_data["hits_relaxed"], nsubs)
     strict_per_site = _normalize_per_site(run_data["hits_strict"], nsubs)
 
+    # Read per-run phase info for transparency
+    phases = _read_phases_from_runs(input_folder, runs)
+
     n_sites = len(nsubs)
     multi_site = n_sites > 1
 
@@ -242,6 +321,7 @@ def generate_population_plots(
                 threshold_label=thresh_label,
                 site_label=site_label,
                 output_path=output_dir / fname,
+                phases=phases,
             )
 
     print(f"Population convergence plots saved to {output_dir}")

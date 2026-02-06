@@ -16,6 +16,8 @@ from pathlib import Path
 
 import numpy as np
 
+from .population_convergence import _PHASE_ALPHA, _read_phases_from_runs
+
 
 _RMSD_YTICKS = [0.01, 0.1, 1, 10, 20, 30, 50, 100]
 
@@ -40,6 +42,40 @@ def _configure_plot_style():
     plt.rcParams['ytick.direction'] = 'out'
     plt.rcParams['xtick.major.size'] = 4
     plt.rcParams['ytick.major.size'] = 4
+
+
+def _semilogy_by_phase(
+    ax,
+    runs: np.ndarray,
+    y: np.ndarray,
+    phases: np.ndarray,
+    *,
+    base_alpha: float = 1.0,
+    label: str | None = None,
+    **kwargs,
+) -> None:
+    """Like ax.semilogy but segments the line by phase with per-phase alpha.
+
+    The final alpha for each segment is ``base_alpha * phase_alpha``, so
+    lines that are normally faint (e.g. background pairs) stay faint even
+    in phase 3.  Segments overlap by 1 point at boundaries for continuity.
+    """
+    change_points = np.where(np.diff(phases) != 0)[0] + 1
+    segments = np.split(np.arange(len(runs)), change_points)
+
+    for seg_idx, seg in enumerate(segments):
+        if len(seg) == 0:
+            continue
+        end = min(seg[-1] + 2, len(runs))
+        idx = np.arange(seg[0], end)
+        phase = phases[seg[0]]
+        alpha = base_alpha * _PHASE_ALPHA.get(phase, 1.0)
+        ax.semilogy(
+            runs[idx], y[idx],
+            alpha=alpha,
+            label=label if seg_idx == 0 else None,
+            **kwargs,
+        )
 
 
 def _collect_rmsd_from_dirs(
@@ -117,6 +153,7 @@ def plot_rmsd_convergence(
     nsubs: list[int],
     lag: int,
     output_path: Path,
+    phases: np.ndarray | None = None,
 ) -> None:
     """Create a per-site RMSD convergence plot.
 
@@ -129,6 +166,8 @@ def plot_rmsd_convergence(
         nsubs: Number of substates per site.
         lag: Lag used for RMSD computation (shown in label).
         output_path: Full path for the output PNG file.
+        phases: Optional 1-D array of phase values (1/2/3) per run.
+            Controls line transparency — phase 1 is faint, phase 3 is opaque.
     """
     try:
         import matplotlib
@@ -161,12 +200,20 @@ def plot_rmsd_convergence(
         site_rmsd[~np.isfinite(site_rmsd)] = np.nan
 
         # Main RMSD line with markers (semilog to resolve small values)
-        ax.semilogy(
-            runs, site_rmsd,
-            marker=marker, color=color, linewidth=2, markersize=6,
-            markeredgecolor='black', markeredgewidth=0.5,
-            label=f"RMSD vs run-{lag}",
-        )
+        if phases is not None:
+            _semilogy_by_phase(
+                ax, runs, site_rmsd, phases,
+                marker=marker, color=color, linewidth=2, markersize=6,
+                markeredgecolor='black', markeredgewidth=0.5,
+                label=f"RMSD vs run-{lag}",
+            )
+        else:
+            ax.semilogy(
+                runs, site_rmsd,
+                marker=marker, color=color, linewidth=2, markersize=6,
+                markeredgecolor='black', markeredgewidth=0.5,
+                label=f"RMSD vs run-{lag}",
+            )
 
         # Coverage on secondary axis (subtle fill)
         ax2 = ax.twinx()
@@ -220,6 +267,7 @@ def plot_pairwise_rmsd_convergence(
     lag: int,
     output_path: Path,
     top_n: int = 5,
+    phases: np.ndarray | None = None,
 ) -> None:
     """Create per-pair RMSD convergence plot with individual lines per lambda pair.
 
@@ -234,6 +282,7 @@ def plot_pairwise_rmsd_convergence(
         lag: Lag used for RMSD computation.
         output_path: Full path for the output PNG file.
         top_n: Number of worst pairs to highlight.
+        phases: Optional 1-D array of phase values (1/2/3) per run.
     """
     try:
         import matplotlib
@@ -284,10 +333,17 @@ def plot_pairwise_rmsd_convergence(
 
         # Plot individual substate profiles as grey dashed background
         for k in range(ns):
-            ax.semilogy(
-                runs, indiv_rmsd[:, k],
-                color="grey", linewidth=0.5, alpha=0.4, linestyle="--",
-            )
+            if phases is not None:
+                _semilogy_by_phase(
+                    ax, runs, indiv_rmsd[:, k], phases,
+                    base_alpha=0.4,
+                    color="grey", linewidth=0.5, linestyle="--",
+                )
+            else:
+                ax.semilogy(
+                    runs, indiv_rmsd[:, k],
+                    color="grey", linewidth=0.5, alpha=0.4, linestyle="--",
+                )
 
         # Determine top N worst pairs at the last run
         last_vals = pair_rmsd[-1, :]
@@ -315,14 +371,26 @@ def plot_pairwise_rmsd_convergence(
             is_worst = k in highlight_set
             color = colors_20[k % len(colors_20)]
             ls = linestyles[(k // len(colors_20)) % len(linestyles)]
-            ax.semilogy(
-                runs, pair_rmsd[:, k],
-                color=color,
-                linestyle=ls if not is_worst else "-",
-                linewidth=2.5 if is_worst else 0.8,
-                alpha=1.0 if is_worst else 0.35,
-                label=pair_labels[k] if is_worst else None,
-            )
+            base_alpha = 1.0 if is_worst else 0.35
+
+            if phases is not None:
+                _semilogy_by_phase(
+                    ax, runs, pair_rmsd[:, k], phases,
+                    base_alpha=base_alpha,
+                    color=color,
+                    linestyle=ls if not is_worst else "-",
+                    linewidth=2.5 if is_worst else 0.8,
+                    label=pair_labels[k] if is_worst else None,
+                )
+            else:
+                ax.semilogy(
+                    runs, pair_rmsd[:, k],
+                    color=color,
+                    linestyle=ls if not is_worst else "-",
+                    linewidth=2.5 if is_worst else 0.8,
+                    alpha=base_alpha,
+                    label=pair_labels[k] if is_worst else None,
+                )
 
         site_label = f"Site {s+1} ({ns} substates, {n_pairs} pairs)"
         ax.set_ylabel("RMSD (kcal/mol)", fontsize=11)
@@ -348,6 +416,152 @@ def plot_pairwise_rmsd_convergence(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=300, bbox_inches="tight")
     plt.close(fig)
+
+
+
+def _collect_b_biases_from_dirs(
+    input_folder: Path,
+    max_run: int,
+    nsubs: list[int],
+) -> tuple[np.ndarray, np.ndarray]:
+    """Read cumulative b biases from analysis directories.
+
+    Returns:
+        (runs, b_values) where b_values is (n_runs, nblocks).
+    """
+    nblocks = sum(nsubs)
+    runs: list[int] = []
+    b_values: list[np.ndarray] = []
+
+    for run_idx in range(0, max_run + 1):
+        b_file = input_folder / f"analysis{run_idx}" / "b_sum.dat"
+        if not b_file.exists():
+            continue
+        try:
+            b = np.loadtxt(b_file).ravel()
+            if b.size == nblocks:
+                runs.append(run_idx)
+                b_values.append(b)
+        except Exception:
+            continue
+
+    if not runs:
+        return np.array([]), np.array([]).reshape(0, 0)
+
+    return np.array(runs), np.array(b_values)
+
+
+def plot_b_bias_convergence(
+    runs: np.ndarray,
+    b_values: np.ndarray,
+    nsubs: list[int],
+    output_path: Path,
+    phases: np.ndarray | None = None,
+) -> None:
+    """Plot cumulative b bias values over ALF runs.
+
+    One subplot per site, showing all substates except the first
+    (which is always zero by convention).
+
+    Args:
+        runs: 1-D array of run indices.
+        b_values: (n_runs, nblocks) cumulative b bias values.
+        nsubs: Number of substates per site.
+        output_path: Full path for the output PNG file.
+        phases: Optional 1-D array of phase values (1/2/3) per run.
+    """
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ImportError:
+        print("matplotlib not available, skipping b-bias convergence plots")
+        return
+
+    _configure_plot_style()
+
+    n_sites = len(nsubs)
+    sub0 = np.cumsum(nsubs) - np.array(nsubs)
+
+    fig, axes = plt.subplots(
+        n_sites, 1,
+        figsize=(8, 3 * n_sites + 1),
+        sharex=True,
+        squeeze=False,
+    )
+
+    colors = plt.cm.tab10.colors
+
+    for s in range(n_sites):
+        ax = axes[s, 0]
+        start = sub0[s]
+
+        # Plot substates 1..nsubs[s]-1 (skip index 0 — always zero)
+        for j in range(1, nsubs[s]):
+            col_idx = start + j
+            color = colors[(j - 1) % len(colors)]
+            label = f"sub {j + 1}"
+            y = b_values[:, col_idx]
+
+            if phases is not None:
+                _plot_by_phase(
+                    ax, runs, y, phases,
+                    marker='o', color=color, linewidth=1.5, markersize=4,
+                    markeredgecolor='black', markeredgewidth=0.3,
+                    label=label,
+                )
+            else:
+                ax.plot(
+                    runs, y,
+                    marker='o', color=color, linewidth=1.5, markersize=4,
+                    markeredgecolor='black', markeredgewidth=0.3,
+                    label=label,
+                )
+
+        site_label = f"Site {s + 1} ({nsubs[s]} substates)"
+        ax.set_ylabel("b bias (kcal/mol)", fontsize=11)
+        ax.set_title(site_label, fontsize=12, fontweight='bold', loc="left")
+        ax.legend(loc="upper left", fontsize=9, ncol=min(nsubs[s] - 1, 4))
+        ax.grid(True, which='major', linestyle='--', alpha=0.3)
+        ax.axhline(0, color='black', linewidth=0.5, alpha=0.3)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+
+    axes[-1, 0].set_xlabel("Run", fontsize=12)
+    fig.suptitle("Cumulative b Bias Over Runs", fontsize=14, fontweight='bold', y=1.01)
+    plt.tight_layout()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _plot_by_phase(
+    ax,
+    runs: np.ndarray,
+    y: np.ndarray,
+    phases: np.ndarray,
+    *,
+    base_alpha: float = 1.0,
+    label: str | None = None,
+    **kwargs,
+) -> None:
+    """Like ax.plot but segments the line by phase with per-phase alpha."""
+    change_points = np.where(np.diff(phases) != 0)[0] + 1
+    segments = np.split(np.arange(len(runs)), change_points)
+
+    for seg_idx, seg in enumerate(segments):
+        if len(seg) == 0:
+            continue
+        end = min(seg[-1] + 2, len(runs))
+        idx = np.arange(seg[0], end)
+        phase = phases[seg[0]]
+        alpha = base_alpha * _PHASE_ALPHA.get(phase, 1.0)
+        ax.plot(
+            runs[idx], y[idx],
+            alpha=alpha,
+            label=label if seg_idx == 0 else None,
+            **kwargs,
+        )
 
 
 def generate_rmsd_convergence_plots(
@@ -395,6 +609,9 @@ def generate_rmsd_convergence_plots(
     if len(runs) < 2:
         return
 
+    # Read per-run phase info for transparency
+    phases = _read_phases_from_runs(input_folder, runs)
+
     plot_rmsd_convergence(
         runs=runs,
         rmsds=rmsds,
@@ -402,6 +619,7 @@ def generate_rmsd_convergence_plots(
         nsubs=nsubs,
         lag=effective_lag,
         output_path=output_dir / "rmsd_convergence.png",
+        phases=phases,
     )
     print(f"RMSD convergence plot saved to {output_dir / 'rmsd_convergence.png'}")
 
@@ -410,11 +628,26 @@ def generate_rmsd_convergence_plots(
         input_folder, max_run, nsubs, effective_lag,
     )
     if len(pair_runs) >= 2:
+        pair_phases = _read_phases_from_runs(input_folder, pair_runs)
         plot_pairwise_rmsd_convergence(
             runs=pair_runs,
             pair_data=pair_data,
             nsubs=nsubs,
             lag=effective_lag,
             output_path=output_dir / "rmsd_pairwise.png",
+            phases=pair_phases,
         )
         print(f"Pairwise RMSD plot saved to {output_dir / 'rmsd_pairwise.png'}")
+
+    # --- b bias convergence plot ---
+    b_runs, b_values = _collect_b_biases_from_dirs(input_folder, max_run, nsubs)
+    if len(b_runs) >= 2:
+        b_phases = _read_phases_from_runs(input_folder, b_runs)
+        plot_b_bias_convergence(
+            runs=b_runs,
+            b_values=b_values,
+            nsubs=nsubs,
+            output_path=output_dir / "b_bias_convergence.png",
+            phases=b_phases,
+        )
+        print(f"b-bias convergence plot saved to {output_dir / 'b_bias_convergence.png'}")
