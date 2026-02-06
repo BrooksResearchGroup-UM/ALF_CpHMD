@@ -49,6 +49,21 @@
 
 #include "wham.h"
 
+// Polyfill: double atomicAdd via CAS for architectures < sm_60
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 600
+__device__ double atomicAdd(double* address, double val)
+{
+    unsigned long long int* address_as_ull = (unsigned long long int*)address;
+    unsigned long long int old = *address_as_ull, assumed;
+    do {
+        assumed = old;
+        old = atomicCAS(address_as_ull, assumed,
+                        __double_as_longlong(val + __longlong_as_double(assumed)));
+    } while (assumed != old);
+    return __longlong_as_double(old);
+}
+#endif
+
 // #define kB 0.008314
 #define kB 0.00198614
 #define MAXLENGTH 4096
@@ -726,7 +741,7 @@ __global__ void bin12(struct_data data, int i1, int i2)
     if (isfinite(q1) && isfinite(q2) && q1 >= 0 && q2 >= 0) // Validate inputs
     {
       double sum_q = q1 + q2;
-      if (sum_q > 0.8 && sum_q > 1e-12) // More precise threshold check
+      if (sum_q > data.cutlsum && sum_q > 1e-12) // Configurable threshold
       {
         double ratio = q1 / sum_q;
         int iB12 = (int)floor((ratio - data.B[1].min) / data.B[1].dx);
@@ -1902,7 +1917,7 @@ void getfofq(struct_data *data, double beta)
 
 extern "C" int wham(int arg1, double arg2, int arg3, int arg4, int use_gshift,
                    int *nsubs, int nsites, const char *g_imp_path,
-                   double chi_offset, double chi_scale)
+                   double chi_offset, double chi_scale, double cutlsum)
 {
   // Initialize and validate GPU
   validate_and_setup_gpu();
@@ -1911,6 +1926,7 @@ extern "C" int wham(int arg1, double arg2, int arg3, int arg4, int use_gshift,
   if (data) {
     data->chi_offset = chi_offset;
     data->chi_scale = chi_scale;
+    data->cutlsum = cutlsum;
   }
   if (!data)
   {

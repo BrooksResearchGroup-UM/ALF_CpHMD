@@ -124,6 +124,7 @@ class ALFConfig:
     # None = use bundled/existing G_imp as-is; set explicitly to validate & regenerate
     # int = same bins for all phases; list[int] = per-phase [phase1, phase2, phase3]
     g_imp_bins: int | list[int] | None = None
+    cutlsum: float = 0.8  # G12 conditional threshold (λ_i + λ_j > cutlsum)
 
     # Analysis method configuration
     analysis_method: AnalysisMethod = "wham"  # "wham" or "lmalf"
@@ -522,6 +523,7 @@ class ALFSimulation:
             "ntersite": self._ntersite(),  # Intersite biases [ms, msprof]
             "fnex": self.config.fnex,
             "g_imp_bins": ALFConfig.resolve_g_imp_bins(self.config.g_imp_bins, self.state.phase) or 32,
+            "cutlsum": self.config.cutlsum,
         }
 
         # Count blocks and subsites per site
@@ -666,6 +668,7 @@ class ALFSimulation:
             constraint_type="fnex",
             nsubs=nsubs,
             bins=bins,
+            cutlsum=self.config.cutlsum,
         )
 
         try:
@@ -717,7 +720,7 @@ class ALFSimulation:
             g12_path = g_imp_dir / f"G12_{ndim}.dat"
             if not g12_path.exists():
                 print(f"G_imp: computing missing G12_{ndim}.dat...")
-                G12 = compute_g12("fnex", ndim, bins=actual_bins)
+                G12 = compute_g12("fnex", ndim, bins=actual_bins, cutlsum=self.config.cutlsum)
                 np.savetxt(g12_path, G12)
 
         for ndim_i in unique_ndims:
@@ -1838,6 +1841,11 @@ class ALFSimulation:
                 print(f"  Low connectivity ({prev_scaling['connectivity']:.2f}) "
                       f"-> dampened coupling cutoffs")
 
+        # Phase 1: disable x and s entirely — focus on linear (b) and
+        # quadratic coupling (c) first.  Intersite terms are unreliable
+        # with short Phase-1 trajectories.
+        cutx, cuts = 0.0, 0.0
+
         # Build cut_params dict with exclusion flags
         # A cutoff of 0 means "exclude this parameter type entirely"
         cut_params = {"cutb": cutb, "cutc": cutc, "cutx": cutx, "cuts": cuts}
@@ -1968,6 +1976,7 @@ class ALFSimulation:
             g_imp_path="../G_imp",
             log_file="analysis.log",
             fnex=self.config.fnex,
+            cutlsum=self.config.cutlsum,
         )
         get_free_energy5(
             self.state.alf_info, ms=ms, msprof=msprof, **cut_params
