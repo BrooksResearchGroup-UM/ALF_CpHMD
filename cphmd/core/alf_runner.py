@@ -2422,7 +2422,7 @@ class ALFSimulation:
                                         f"{prev2_scaling['max_pop_diff']:.3f}"
                                     )
                                     self._rollback_biases(
-                                        analysis_dir, prev_dir
+                                        Path("."), prev_dir
                                     )
                                     # Halve cutoffs via scaling.dat override
                                     if prev_scaling:
