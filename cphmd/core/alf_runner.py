@@ -115,6 +115,11 @@ class ALFConfig:
     # FNEX softmax constraint parameter (controls bias potential shape)
     fnex: float = 5.5
 
+    # Lambda dynamics mass and friction (per-block via LDIN)
+    # None = auto: HMR(4fs) → mass=12.0/fbeta=5.0; non-HMR(2fs) → mass=5.0/fbeta=7.0
+    lambda_mass: float | None = None   # Lambda mass in amu·Å² (BIMLAM)
+    lambda_fbeta: float | None = None  # Lambda Langevin friction in ps⁻¹ (BIBLAM)
+
     # Analysis method configuration
     analysis_method: AnalysisMethod = "wham"  # "wham" or "lmalf"
     lmalf_max_iter: int = 0  # Maximum L-BFGS iterations (0 = use default)
@@ -193,6 +198,14 @@ class ALFConfig:
             self.vdw_type = "vfswitch" if is_legacy else "vswitch"
         if self.gscale is None:
             self.gscale = 0.1 if is_legacy else 10.0
+
+        # Lambda mass/friction: HMR(4fs) keeps heavy/gentle defaults;
+        # non-HMR(2fs) uses lighter mass (Kramers ∝ 1/M) with scaled friction
+        # γ(M) = γ₀·√(M₀/M) for near-critical damping.
+        if self.lambda_mass is None:
+            self.lambda_mass = 12.0 if self.hmr else 5.0
+        if self.lambda_fbeta is None:
+            self.lambda_fbeta = 5.0 if self.hmr else 7.0
 
     @staticmethod
     def _find_legacy_setup_script(prep_dir: Path) -> str:
@@ -1216,6 +1229,8 @@ class ALFSimulation:
             delta_pKa=delta_pKa,
             use_cphmd=(self.config.pH is not None and delta_pKa != 0 and not self.config.no_pka_bias),
             initial_lambdas=self.state.forced_initial_lambdas,
+            lambda_mass=self.config.lambda_mass,
+            lambda_fbeta=self.config.lambda_fbeta,
         )
 
         # Generate and execute BLOCK command

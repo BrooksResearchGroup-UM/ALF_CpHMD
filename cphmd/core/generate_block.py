@@ -42,6 +42,8 @@ class BlockGeneratorConfig:
     electrostatics: str = "pmeex"
     temperature: float = 298.15
     variables_dir: str = "variables"
+    lambda_mass: float = 12.0    # Lambda mass in amu·Å² (BIMLAM)
+    lambda_fbeta: float = 5.0    # Lambda Langevin friction in ps⁻¹ (BIBLAM)
 
     def __post_init__(self):
         self.input_folder = Path(self.input_folder)
@@ -127,6 +129,8 @@ def _generate_block_str(
     temperature: float,
     electrostatics: str,
     fnex: float = 5.5,
+    lambda_mass: float = 12.0,
+    lambda_fbeta: float = 5.0,
 ) -> str:
     """Generate MSLD BLOCK command string."""
     from .bias_constants import derive_bias_constants
@@ -143,7 +147,7 @@ def _generate_block_str(
 
     # Initial LDIN for environment block
     ldin_lines.append(
-        f"LDIN {1:<6} {1:<6} {0.0:<6} {12.0:<7} {0.0:>8} {5.0:>7} {'NONE':>12}"
+        f"LDIN {1:<6} {1:<6} {0.0:<6} {lambda_mass:<7} {0.0:>8} {lambda_fbeta:>7} {'NONE':>12}"
     )
 
     site_counter = 0
@@ -199,12 +203,12 @@ def _generate_block_str(
             if patch_idx == 0:
                 ldin_lines.append(
                     f"LDIN {block_count:<6} {round(1/num_patches, 2):<6} {0.0:<6} "
-                    f"{12.0:<7} {lam_bias:>8} {5.0:>7} {'NONE':>12}"
+                    f"{lambda_mass:<7} {lam_bias:>8} {lambda_fbeta:>7} {'NONE':>12}"
                 )
             else:
                 ldin_lines.append(
                     f"LDIN {block_count:<6} {round(1/num_patches, 2):<6} {0.0:<6} "
-                    f"{12.0:<7} {lam_bias:>8} {5.0:>7} {utag:>12}"
+                    f"{lambda_mass:<7} {lam_bias:>8} {lambda_fbeta:>7} {utag:>12}"
                 )
 
         # Generate exclusions for this site
@@ -484,6 +488,8 @@ def generate_block_files(config: BlockGeneratorConfig) -> BlockGeneratorResult:
         config.variables_dir,
         config.temperature,
         config.electrostatics,
+        lambda_mass=config.lambda_mass,
+        lambda_fbeta=config.lambda_fbeta,
     )
 
     block_file = config.input_folder / "prep" / "block.str"
