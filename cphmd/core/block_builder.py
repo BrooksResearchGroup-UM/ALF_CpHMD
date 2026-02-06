@@ -43,6 +43,8 @@ class BlockConfig:
     delta_pKa: float = 0.0
     use_cphmd: bool = True
     initial_lambdas: dict | None = None  # {site: [dirichlet_alphas]} biased sampling
+    lambda_mass: float = 12.0    # Lambda mass in amu·Å² (BIMLAM)
+    lambda_fbeta: float = 5.0    # Lambda Langevin friction in ps⁻¹ (BIBLAM)
 
 
 def read_variable_file(var_file: Path) -> dict[str, float]:
@@ -195,13 +197,13 @@ def generate_ldin_statements(
 ) -> str:
     """Generate LDIN statements for lambda initialization.
 
-    LDIN format: block# l0 vel mass bias fnex [TAG]
+    LDIN format: block# l0 vel mass bias fbeta [TAG]
     - block#: Block index (1=environment, 2+=titratable groups)
     - l0: Initial lambda value
     - vel: Initial velocity (usually 0)
-    - mass: Lambda mass (usually 12)
+    - mass: Lambda mass (default 12.0 amu·Å²)
     - bias: Fixed bias from ALF (from variables file)
-    - fnex: Functional exponent (usually 5)
+    - fbeta: Lambda Langevin friction coefficient (default 5.0 ps⁻¹)
     - TAG: UPOS/UNEG/NONE with pKa value (for CpHMD)
 
     Args:
@@ -240,10 +242,12 @@ def generate_ldin_statements(
 
     # Generate LDIN statements
     use_tags = config.use_cphmd
+    mass = config.lambda_mass
+    fbeta = config.lambda_fbeta
 
     if use_tags:
         # Environment block
-        lines.append(f"LDIN {1:<4} {1:<4} {0.0:<4} {12.0:<4} {0.0:<2} {5.0:<4} {'NONE':<5}")
+        lines.append(f"LDIN {1:<4} {1:<4} {0.0:<4} {mass:<4} {0.0:<2} {fbeta:<4} {'NONE':<5}")
 
         # Titratable groups with TAG
         for idx, row in patch_info.iterrows():
@@ -251,16 +255,16 @@ def generate_ldin_statements(
             var_key = f"lam{row['SELECT']}"
             bias = variables.get(var_key, 0.0)
             tag = row["TAG"]
-            lines.append(f"LDIN {idx + 2:<4} {l0:<4} {0.0:<4} {12.0:<4} {bias:<2} {5.0:<4} {tag:<5}")
+            lines.append(f"LDIN {idx + 2:<4} {l0:<4} {0.0:<4} {mass:<4} {bias:<2} {fbeta:<4} {tag:<5}")
     else:
         # Without TAG values
-        lines.append(f"LDIN {1:<4} {1:<4} {0.0:<4} {12.0:<4} {0.0:<2} {5.0:<4}")
+        lines.append(f"LDIN {1:<4} {1:<4} {0.0:<4} {mass:<4} {0.0:<2} {fbeta:<4}")
 
         for idx, row in patch_info.iterrows():
             l0 = row["l0"]
             var_key = f"lam{row['SELECT']}"
             bias = variables.get(var_key, 0.0)
-            lines.append(f"LDIN {idx + 2:<4} {l0:<4} {0.0:<4} {12.0:<4} {bias:<2} {5.0:<4}")
+            lines.append(f"LDIN {idx + 2:<4} {l0:<4} {0.0:<4} {mass:<4} {bias:<2} {fbeta:<4}")
 
     return "\n".join(lines) + "\n\n"
 
