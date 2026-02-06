@@ -285,7 +285,7 @@ def prepare_g_imp_for_wham(
         Path to G_imp directory in analysis_dir.
     """
     from cphmd.core.alf_utils import ensure_alf_info
-    from cphmd.core.entropy import compute_g_imp, get_cache_path
+    from cphmd.core.entropy import compute_g_imp, compute_g12, compute_g1_cross, get_cache_path
 
     analysis_dir = Path(analysis_dir)
     alf_info = ensure_alf_info(alf_info)
@@ -301,11 +301,14 @@ def prepare_g_imp_for_wham(
     # Ensure G_imp files exist in cache
     cache_dir = get_cache_path(constraint_type, bins, fnex, fpie_width, fpie_force)
 
-    for ndim in set(nsubs):
-        if ndim < 2:
-            continue
+    # CUDA indexes G1 per-block as G1_{block+2}.dat with nsubs blocks per site,
+    # so need all ndims from 2..max(nsubs)+1
+    unique_ndims = list(range(2, max(nsubs) + 2)) if len(nsubs) > 0 else []
+
+    for ndim in unique_ndims:
         g1_file = cache_dir / f"G1_{ndim}.dat"
         g2_file = cache_dir / f"G2_{ndim}.dat"
+        g12_file = cache_dir / f"G12_{ndim}.dat"
 
         if force_recompute or not g1_file.exists() or not g2_file.exists():
             logger.info(f"Computing G_imp for ndim={ndim}")
@@ -319,25 +322,54 @@ def prepare_g_imp_for_wham(
                 use_cache=True,
             )
 
+        if force_recompute or not g12_file.exists():
+            logger.info(f"Computing G12 for ndim={ndim}")
+            compute_g12(
+                constraint_type=constraint_type,
+                ndim=ndim,
+                bins=bins,
+                fnex=fnex,
+                fpie_width=fpie_width,
+                fpie_force=fpie_force,
+                use_cache=True,
+            )
+
+    # Cross-site profiles
+    for ndim_i in unique_ndims:
+        for ndim_j in unique_ndims:
+            cross_file = cache_dir / f"G1_{ndim_i}_{ndim_j}.dat"
+            if force_recompute or not cross_file.exists():
+                logger.info(f"Computing G1_cross for ndim_i={ndim_i}, ndim_j={ndim_j}")
+                compute_g1_cross(
+                    constraint_type=constraint_type,
+                    ndim_i=ndim_i,
+                    ndim_j=ndim_j,
+                    bins=bins,
+                    fnex=fnex,
+                    fpie_width=fpie_width,
+                    fpie_force=fpie_force,
+                    use_cache=True,
+                )
+
     # Create G_imp directory in analysis_dir and copy/link files
     g_imp_dir = analysis_dir / "G_imp"
     g_imp_dir.mkdir(exist_ok=True)
 
-    for ndim in set(nsubs):
-        if ndim < 2:
-            continue
+    for ndim in unique_ndims:
+        # Copy G1, G2, G12 from cache to analysis directory
+        for prefix in ("G1", "G2", "G12"):
+            src = cache_dir / f"{prefix}_{ndim}.dat"
+            dst = g_imp_dir / f"{prefix}_{ndim}.dat"
+            if src.exists() and (force_recompute or not dst.exists()):
+                shutil.copy2(src, dst)
 
-        # Copy files from cache to analysis directory
-        # (Using copy instead of symlink for portability across filesystems)
-        src_g1 = cache_dir / f"G1_{ndim}.dat"
-        src_g2 = cache_dir / f"G2_{ndim}.dat"
-        dst_g1 = g_imp_dir / f"G1_{ndim}.dat"
-        dst_g2 = g_imp_dir / f"G2_{ndim}.dat"
-
-        if src_g1.exists() and (force_recompute or not dst_g1.exists()):
-            shutil.copy2(src_g1, dst_g1)
-        if src_g2.exists() and (force_recompute or not dst_g2.exists()):
-            shutil.copy2(src_g2, dst_g2)
+    # Copy cross-site files
+    for ndim_i in unique_ndims:
+        for ndim_j in unique_ndims:
+            src = cache_dir / f"G1_{ndim_i}_{ndim_j}.dat"
+            dst = g_imp_dir / f"G1_{ndim_i}_{ndim_j}.dat"
+            if src.exists() and (force_recompute or not dst.exists()):
+                shutil.copy2(src, dst)
 
     logger.info(f"G_imp files prepared in {g_imp_dir}")
     return g_imp_dir

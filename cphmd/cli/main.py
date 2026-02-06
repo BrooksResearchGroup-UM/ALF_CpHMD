@@ -136,6 +136,20 @@ def patch(
     console.print(f"[green]Patching complete: {result_dir}/prep/system.pdb[/green]")
 
 
+def _parse_g_imp_bins(value: str | None) -> "int | list[int] | None":
+    """Parse --g-imp-bins CLI string into int, list[int], or None."""
+    if value is None:
+        return None
+    if "," not in value:
+        return int(value)
+    parts = [int(x.strip()) for x in value.split(",")]
+    if len(parts) != 3:
+        raise typer.BadParameter(
+            "Per-phase g_imp_bins must have exactly 3 values (phase 1,2,3)"
+        )
+    return parts
+
+
 @run_app.command("alf")
 def alf(
     input_folder: str = typer.Option(..., "-i", "--input", help="Input folder with prep/ directory"),
@@ -166,6 +180,7 @@ def alf(
     fnex: float = typer.Option(5.5, "--fnex", help="FNEX softmax constraint parameter"),
     gscale: float = typer.Option(10.0, "--gscale", help="Global Langevin friction coefficient (ps⁻¹)"),
     extra_files: list[str] = typer.Option(None, "--extra-files", help="Extra topology/parameter files (repeatable)"),
+    g_imp_bins: str = typer.Option(None, "--g-imp-bins", help="G_imp bins: single int or comma-separated per-phase (e.g. '16,32,32')"),
 ):
     """Run ALF simulation with optional CpHMD.
 
@@ -227,6 +242,7 @@ def alf(
         fnex=fnex,
         gscale=gscale,
         extra_files=extra_files or [],
+        g_imp_bins=_parse_g_imp_bins(g_imp_bins),
     )
 
     run_alf_simulation(config)
