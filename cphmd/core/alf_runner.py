@@ -120,6 +120,11 @@ class ALFConfig:
     lambda_mass: float | None = None   # Lambda mass in amu·Å² (BIMLAM)
     lambda_fbeta: float | None = None  # Lambda Langevin friction in ps⁻¹ (BIBLAM)
 
+    # G_imp entropy profile bins (2D=N×N, 1D=N²)
+    # None = use bundled/existing G_imp as-is; set explicitly to validate & regenerate
+    # int = same bins for all phases; list[int] = per-phase [phase1, phase2, phase3]
+    g_imp_bins: int | list[int] | None = None
+
     # Analysis method configuration
     analysis_method: AnalysisMethod = "wham"  # "wham" or "lmalf"
     lmalf_max_iter: int = 0  # Maximum L-BFGS iterations (0 = use default)
@@ -206,6 +211,26 @@ class ALFConfig:
             self.lambda_mass = 12.0 if self.hmr else 5.0
         if self.lambda_fbeta is None:
             self.lambda_fbeta = 5.0 if self.hmr else 7.0
+
+    @staticmethod
+    def resolve_g_imp_bins(
+        g_imp_bins: "int | list[int] | None", phase: int
+    ) -> int | None:
+        """Resolve g_imp_bins for a specific phase.
+
+        Args:
+            g_imp_bins: Single int (all phases), list of 3 ints (per-phase), or None.
+            phase: Phase number (1, 2, or 3).
+
+        Returns:
+            Resolved bin count for this phase, or None if g_imp_bins is None.
+        """
+        if g_imp_bins is None:
+            return None
+        if isinstance(g_imp_bins, int):
+            return g_imp_bins
+        # list[int] — index by phase (1-indexed → 0-indexed)
+        return g_imp_bins[phase - 1]
 
     @staticmethod
     def _find_legacy_setup_script(prep_dir: Path) -> str:
@@ -496,6 +521,7 @@ class ALFSimulation:
             "engine": "charmm",
             "ntersite": self._ntersite(),  # Intersite biases [ms, msprof]
             "fnex": self.config.fnex,
+            "g_imp_bins": ALFConfig.resolve_g_imp_bins(self.config.g_imp_bins, self.state.phase) or 32,
         }
 
         # Count blocks and subsites per site
@@ -574,39 +600,149 @@ class ALFSimulation:
     def _ensure_g_imp(self):
         """Ensure G_imp entropy data is available for WHAM.
 
+        If g_imp_bins is None (default): use existing/bundled G_imp as-is.
+        If g_imp_bins is set explicitly: validate bins match and regenerate
+        if mismatched.
+
         Priority:
-        1. Use existing G_imp/ in input folder (precomputed / previous run)
-        2. Copy from bundled cphmd/data/G_imp/ (precomputed profiles)
-        3. Compute via Monte Carlo and cache (expensive, last resort)
+        1. Use existing G_imp/ in input folder (validate if g_imp_bins set)
+        2. Copy from bundled cphmd/data/G_imp/ (validate if g_imp_bins set)
+        3. Compute via Monte Carlo and cache
         """
         dst = self.config.input_folder / "G_imp"
-        if dst.exists():
-            print(f"Using existing G_imp: {dst}")
-            return
+        expected_bins = ALFConfig.resolve_g_imp_bins(
+            self.config.g_imp_bins, self.state.phase
+        )
+        nsubs = self.state.alf_info["nsubs"]
 
-        # Try bundled data first (avoids expensive MC computation)
+        # Check existing G_imp/ directory
+        if dst.exists():
+            actual_bins = self._detect_g_imp_bins(dst)
+            if expected_bins is not None and actual_bins != expected_bins:
+                print(
+                    f"G_imp: existing has bins={actual_bins}, "
+                    f"need {expected_bins}. Regenerating..."
+                )
+                if dst.is_symlink():
+                    dst.unlink()
+                else:
+                    shutil.rmtree(dst)
+            else:
+                self._supplement_g_imp(dst, nsubs, actual_bins)
+                print(
+                    f"G_imp: using existing ({dst}, "
+                    f"bins={actual_bins}, nsubs={list(nsubs)})"
+                )
+                return
+
+        # Try bundled data (avoids expensive MC computation)
         from cphmd import PACKAGE_DIR
         bundled = PACKAGE_DIR / "data" / "G_imp"
         if bundled.exists() and any(bundled.glob("G1_*.dat")):
-            shutil.copytree(bundled, dst)
-            print(f"Copied bundled G_imp to {dst}")
-            return
+            bundled_bins = self._detect_g_imp_bins(bundled)
+            if expected_bins is not None and bundled_bins != expected_bins:
+                print(
+                    f"G_imp: bundled has bins={bundled_bins}, "
+                    f"need {expected_bins}. Computing fresh..."
+                )
+            else:
+                shutil.copytree(bundled, dst)
+                self._supplement_g_imp(dst, nsubs, bundled_bins)
+                print(
+                    f"G_imp: copied bundled data ({dst}, "
+                    f"bins={bundled_bins}, nsubs={list(nsubs)})"
+                )
+                return
 
         # Fall back to computing from scratch
         from cphmd.core.entropy import ensure_g_imp_available
 
-        nsubs = self.state.alf_info["nsubs"]
+        bins = expected_bins if expected_bins is not None else 32
+        print(
+            f"G_imp: computing via Monte Carlo "
+            f"(bins={bins}, nsubs={list(nsubs)})..."
+        )
         g_imp_dir = ensure_g_imp_available(
             constraint_type="fnex",
             nsubs=nsubs,
+            bins=bins,
         )
 
         try:
             dst.symlink_to(g_imp_dir)
-            print(f"Linked G_imp: {dst} → {g_imp_dir}")
+            print(f"G_imp: cached at {g_imp_dir}, linked to {dst}")
         except OSError:
             shutil.copytree(g_imp_dir, dst, dirs_exist_ok=True)
-            print(f"Copied G_imp to {dst}")
+            print(f"G_imp: cached at {g_imp_dir}, copied to {dst}")
+
+    def _regenerate_g_imp_if_needed(self, old_phase: int, new_phase: int):
+        """Regenerate G_imp if the new phase requires different bins."""
+        old_bins = ALFConfig.resolve_g_imp_bins(self.config.g_imp_bins, old_phase)
+        new_bins = ALFConfig.resolve_g_imp_bins(self.config.g_imp_bins, new_phase)
+        if old_bins == new_bins:
+            return
+        print(
+            f"G_imp: bins {old_bins} → {new_bins} for phase {new_phase}, "
+            f"regenerating..."
+        )
+        dst = self.config.input_folder / "G_imp"
+        if dst.exists():
+            if dst.is_symlink():
+                dst.unlink()
+            else:
+                shutil.rmtree(dst)
+        self._ensure_g_imp()
+        self.state.alf_info["g_imp_bins"] = new_bins or 32
+
+    def _supplement_g_imp(self, g_imp_dir: Path, nsubs, bins: int | None):
+        """Ensure G1, G12 and cross-site files exist, computing if missing."""
+        from cphmd.core.entropy import compute_g_imp, compute_g12, compute_g1_cross
+
+        actual_bins = bins if bins is not None else 32
+        # CUDA indexes G1 per-block as G1_{block+2}.dat with nsubs blocks per site,
+        # so need all ndims 2..max(nsubs)+1
+        unique_ndims = list(range(2, max(nsubs) + 2)) if len(nsubs) > 0 else []
+
+        for ndim in unique_ndims:
+            g1_path = g_imp_dir / f"G1_{ndim}.dat"
+            g2_path = g_imp_dir / f"G2_{ndim}.dat"
+            if not g1_path.exists() or not g2_path.exists():
+                print(f"G_imp: computing missing G1_{ndim}/G2_{ndim}.dat...")
+                G1, G2 = compute_g_imp("fnex", ndim, bins=actual_bins)
+                if not g1_path.exists():
+                    np.savetxt(g1_path, G1)
+                if not g2_path.exists():
+                    np.savetxt(g2_path, G2)
+
+            g12_path = g_imp_dir / f"G12_{ndim}.dat"
+            if not g12_path.exists():
+                print(f"G_imp: computing missing G12_{ndim}.dat...")
+                G12 = compute_g12("fnex", ndim, bins=actual_bins)
+                np.savetxt(g12_path, G12)
+
+        for ndim_i in unique_ndims:
+            for ndim_j in unique_ndims:
+                cross_path = g_imp_dir / f"G1_{ndim_i}_{ndim_j}.dat"
+                if not cross_path.exists():
+                    print(f"G_imp: computing missing G1_{ndim_i}_{ndim_j}.dat...")
+                    G_cross = compute_g1_cross(
+                        "fnex", ndim_i, ndim_j, bins=actual_bins,
+                    )
+                    np.savetxt(cross_path, G_cross)
+
+    @staticmethod
+    def _detect_g_imp_bins(g_imp_dir: Path) -> int | None:
+        """Detect bin count from existing G_imp files.
+
+        Reads the first G2_*.dat file and counts lines (= 2D bins).
+        Returns None if no G2 files found.
+        """
+        g2_files = sorted(g_imp_dir.glob("G2_[0-9]*.dat"))
+        if not g2_files:
+            return None
+        # G2 file has `bins` lines of `bins` columns → line count = bins
+        with open(g2_files[0]) as f:
+            return sum(1 for line in f if line.strip())
 
     def initialize(self):
         """Perform full initialization sequence."""
@@ -1332,17 +1468,17 @@ class ALFSimulation:
         # Dynamics parameters vary by phase
         if self.state.phase == 1:
             nsteps_eq = 0        # No equilibration in phase 1
-            nsteps_prod = 40000  # 80 ps
+            nsteps_prod = 50000  # 100 ps
             nsavc = 0            # No DCD saving by default
             nsavl = 1            # Save lambda every 2 fs
         elif self.state.phase == 2:
             nsteps_eq = 10000    # 20 ps equilibration
-            nsteps_prod = 450000 # 900 ps
+            nsteps_prod = 500000 # 1 ns
             nsavc = 0            # No DCD saving by default
             nsavl = 1            # Save lambda every 2 fs
         else:  # Phase 3
-            nsteps_eq = 10000    # 20 ps equilibration
-            nsteps_prod = 500000 # 1 ns
+            nsteps_eq = 0        # No equilibration in phase 3
+            nsteps_prod = 1000000 # 2 ns
             nsavc = 0            # No DCD saving by default
             nsavl = 1            # Save lambda every 2 fs
 
@@ -2549,7 +2685,9 @@ class ALFSimulation:
                         print(f"  {reason}")
                         if new_phase == 2 and self.state.phase2_start_run is None:
                             self.state.phase2_start_run = run_idx
+                        old_phase = self.state.phase
                         self.state.phase = new_phase
+                        self._regenerate_g_imp_if_needed(old_phase, new_phase)
                     else:
                         print(f"Phase check: {reason}")
 
@@ -2625,7 +2763,9 @@ class ALFSimulation:
                     print(f"  Reason: {reason}")
                     if new_phase == 2 and self.state.phase2_start_run is None:
                         self.state.phase2_start_run = run_idx
+                    old_phase = self.state.phase
                     self.state.phase = new_phase
+                    self._regenerate_g_imp_if_needed(old_phase, new_phase)
                 else:
                     print(f"Phase check: {reason}")
 
