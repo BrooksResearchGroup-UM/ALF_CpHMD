@@ -122,6 +122,7 @@ def run_wham(
     g_imp_path: str | Path | None = None,
     log_file: str | Path | None = None,
     fnex: float = 5.5,
+    cutlsum: float = 0.8,
 ) -> None:
     """Run WHAM analysis using bundled GPU-accelerated library.
 
@@ -222,12 +223,13 @@ def run_wham(
                 ctypes.c_char_p,                   # g_imp_path
                 ctypes.c_double,                   # chi_offset
                 ctypes.c_double,                   # chi_scale
+                ctypes.c_double,                   # cutlsum
             ]
             pywham.restype = ctypes.c_int
 
             with _redirect_c_output(log_path):
                 result = pywham(nf, temp, nts0, nts1, int(use_gshift), nsubs_ptr, nsites, g_imp_path_bytes,
-                                constants.chi_offset, constants.chi_scale)
+                                constants.chi_offset, constants.chi_scale, cutlsum)
             if result != 0:
                 raise RuntimeError(f"WHAM returned error code: {result}")
 
@@ -296,10 +298,11 @@ def prepare_g_imp_for_wham(
     fpie_width = alf_info.fpie_width
     fpie_force = alf_info.fpie_force
     bins = alf_info.g_imp_bins
+    cutlsum = alf_info.cutlsum
     nsubs = alf_info.nsubs
 
     # Ensure G_imp files exist in cache
-    cache_dir = get_cache_path(constraint_type, bins, fnex, fpie_width, fpie_force)
+    cache_dir = get_cache_path(constraint_type, bins, fnex, fpie_width, fpie_force, cutlsum)
 
     # CUDA indexes G1 per-block as G1_{block+2}.dat with nsubs blocks per site,
     # so need all ndims from 2..max(nsubs)+1
@@ -331,6 +334,7 @@ def prepare_g_imp_for_wham(
                 fnex=fnex,
                 fpie_width=fpie_width,
                 fpie_force=fpie_force,
+                cutlsum=cutlsum,
                 use_cache=True,
             )
 
@@ -428,6 +432,7 @@ def run_wham_with_g_imp(
         nsubs=alf_info.nsubs,
         g_imp_path=g_imp_dir,
         fnex=alf_info.fnex,
+        cutlsum=alf_info.cutlsum,
     )
 
 

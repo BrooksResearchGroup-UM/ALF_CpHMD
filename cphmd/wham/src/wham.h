@@ -69,6 +69,7 @@ typedef struct struct_data
   char g_imp_path[256];  // Path to G_imp directory
   double chi_offset;     // s-term sigmoid offset (derived from FNEX: 4*exp(-FNEX))
   double chi_scale;      // x-term reciprocal decay (derived from FNEX: 1/FNEX)
+  double cutlsum;        // G12 conditional threshold (λ_i + λ_j > cutlsum)
 } struct_data;
 
 /**

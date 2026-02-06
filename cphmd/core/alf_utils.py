@@ -81,6 +81,7 @@ class ALFInfo:
     fpie_width: float = 1.0
     fpie_force: float = 100.0
     g_imp_bins: int = 32
+    cutlsum: float = 0.8
 
     def __post_init__(self):
         if self.nsubs is None:
@@ -103,6 +104,7 @@ class ALFInfo:
             "fpie_width": self.fpie_width,
             "fpie_force": self.fpie_force,
             "g_imp_bins": self.g_imp_bins,
+            "cutlsum": self.cutlsum,
         }
 
     @classmethod
@@ -123,6 +125,7 @@ class ALFInfo:
             fpie_width=d.get("fpie_width", 1.0),
             fpie_force=d.get("fpie_force", 100.0),
             g_imp_bins=d.get("g_imp_bins", 32),
+            cutlsum=d.get("cutlsum", 0.8),
         )
 
 

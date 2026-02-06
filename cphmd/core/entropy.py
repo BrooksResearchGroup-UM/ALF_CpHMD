@@ -68,6 +68,7 @@ def get_cache_path(
     fnex: float = 5.5,
     fpie_width: float = 1.0,
     fpie_force: float = 100.0,
+    cutlsum: float = 0.8,
 ) -> Path:
     """Get cache directory path for given constraint parameters.
 
@@ -77,6 +78,7 @@ def get_cache_path(
         fnex: FNEX parameter (if constraint_type="fnex")
         fpie_width: FPIE well width (if constraint_type="fpie")
         fpie_force: FPIE force constant (if constraint_type="fpie")
+        cutlsum: G12 conditional threshold (only appended when non-default)
 
     Returns:
         Path to cache directory (e.g., ~/.cache/cphmd/G_imp/fnex_5.5_bins32/)
@@ -85,6 +87,9 @@ def get_cache_path(
         dirname = f"fnex_{fnex}_bins{bins}"
     else:
         dirname = f"fpie_{fpie_width}_{fpie_force}_bins{bins}"
+
+    if cutlsum != 0.8:
+        dirname += f"_cut{cutlsum}"
 
     return get_cache_dir() / dirname
 
@@ -643,7 +648,7 @@ def compute_g12(
     if ndim < 2:
         raise ValueError(f"ndim must be >= 2, got {ndim}")
 
-    cache_dir = get_cache_path(constraint_type, bins, fnex, fpie_width, fpie_force)
+    cache_dir = get_cache_path(constraint_type, bins, fnex, fpie_width, fpie_force, cutlsum)
     g12_file = cache_dir / f"G12_{ndim}.dat"
 
     if use_cache and g12_file.exists():
@@ -786,6 +791,7 @@ def ensure_g_imp_available(
     fnex: float = 5.5,
     fpie_width: float = 1.0,
     fpie_force: float = 100.0,
+    cutlsum: float = CUTLSUM,
     nmc: int = DEFAULT_NMC,
 ) -> Path:
     """Ensure G_imp files exist for all sites, computing if needed.
@@ -797,12 +803,13 @@ def ensure_g_imp_available(
         fnex: FNEX parameter
         fpie_width: FPIE well width
         fpie_force: FPIE force constant
+        cutlsum: G12 conditional threshold
         nmc: Monte Carlo samples if computing
 
     Returns:
         Path to cache directory containing G_imp files
     """
-    cache_dir = get_cache_path(constraint_type, bins, fnex, fpie_width, fpie_force)
+    cache_dir = get_cache_path(constraint_type, bins, fnex, fpie_width, fpie_force, cutlsum)
 
     # Compute G_imp for all ndim from 2 to max(nsubs)+1.
     # CUDA indexes G1 files as G1_{block+2}.dat, with nsubs blocks per site,
@@ -828,6 +835,7 @@ def ensure_g_imp_available(
             fnex=fnex,
             fpie_width=fpie_width,
             fpie_force=fpie_force,
+            cutlsum=cutlsum,
             nmc=nmc,
             use_cache=True,
         )

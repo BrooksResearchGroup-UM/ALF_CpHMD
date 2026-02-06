@@ -181,6 +181,7 @@ def alf(
     gscale: float = typer.Option(10.0, "--gscale", help="Global Langevin friction coefficient (ps⁻¹)"),
     extra_files: list[str] = typer.Option(None, "--extra-files", help="Extra topology/parameter files (repeatable)"),
     g_imp_bins: str = typer.Option(None, "--g-imp-bins", help="G_imp bins: single int or comma-separated per-phase (e.g. '16,32,32')"),
+    cutlsum: float = typer.Option(0.8, "--cutlsum", help="G12 conditional threshold (λ_i + λ_j > cutlsum)"),
 ):
     """Run ALF simulation with optional CpHMD.
 
@@ -243,6 +244,7 @@ def alf(
         gscale=gscale,
         extra_files=extra_files or [],
         g_imp_bins=_parse_g_imp_bins(g_imp_bins),
+        cutlsum=cutlsum,
     )
 
     run_alf_simulation(config)
