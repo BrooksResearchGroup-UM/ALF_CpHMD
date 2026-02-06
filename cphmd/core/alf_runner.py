@@ -1772,11 +1772,11 @@ class ALFSimulation:
         # x and s excluded (0 = disable) — focus on linear/coupling terms first.
         # Per-parameter clipping ensures no single parameter overshoots.
         if run_idx < 20:
-            cutb, cutc = 10.0, 20.0
+            cutb, cutc = 5.0, 20.0
             cutx, cuts = 0.0, 0.0
         else:
-            cutb, cutc = 5.0, 8.0
-            cutx, cuts = 1.0, 1.0
+            cutb, cutc = 2.0, 8.0
+            cutx, cuts = 0.5, 0.5
 
         # Try to read scaling from most recent analysis
         prev_scaling = None
@@ -1841,10 +1841,6 @@ class ALFSimulation:
                 print(f"  Low connectivity ({prev_scaling['connectivity']:.2f}) "
                       f"-> dampened coupling cutoffs")
 
-        # Phase 1: disable x and s entirely — focus on linear (b) and
-        # quadratic coupling (c) first.  Intersite terms are unreliable
-        # with short Phase-1 trajectories.
-        cutx, cuts = 0.0, 0.0
 
         # Build cut_params dict with exclusion flags
         # A cutoff of 0 means "exclude this parameter type entirely"
