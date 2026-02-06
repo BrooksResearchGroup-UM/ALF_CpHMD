@@ -33,6 +33,7 @@ from .population_convergence import (
 from .rmsd_convergence_plot import (
     plot_rmsd_convergence,
     plot_pairwise_rmsd_convergence,
+    plot_b_bias_convergence,
     generate_rmsd_convergence_plots,
 )
 from .henderson_hasselbalch import (
@@ -75,6 +76,7 @@ __all__ = [
     # RMSD convergence
     "plot_rmsd_convergence",
     "plot_pairwise_rmsd_convergence",
+    "plot_b_bias_convergence",
     "generate_rmsd_convergence_plots",
     # Henderson-Hasselbalch
     "HHFitResult",
