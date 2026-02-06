@@ -1664,18 +1664,34 @@ class ALFSimulation:
 
         lingo.charmm_script("blade off")
 
-    def _is_wham_output_invalid(self, analysis_dir: Path) -> bool:
+    def _is_wham_output_invalid(self, analysis_dir: Path, cut_params: dict | None = None) -> bool:
         """Check for invalid WHAM output (all-zero, NaN, or Inf).
+
+        Only checks files whose parameter types are active (non-zero cutoff).
+        When a parameter type is disabled (cutoff=0), its output file is
+        expected to be all zeros and should not trigger a retry.
 
         Args:
             analysis_dir: Path to analysis directory containing b.dat, c.dat, etc.
+            cut_params: Cutoff parameters dict. Used to skip validation for
+                disabled parameter types.
 
         Returns:
             True if output is invalid and WHAM should be retried
         """
-        files_to_check = ['b.dat', 'c.dat', 'b_sum.dat', 'c_sum.dat']
+        # Map output files to their cutoff keys
+        file_cut_map = {
+            'b.dat': 'cutb',
+            'c.dat': 'cutc',
+            'b_sum.dat': 'cutb',
+            'c_sum.dat': 'cutc',
+        }
 
-        for fname in files_to_check:
+        for fname, cut_key in file_cut_map.items():
+            # Skip validation for disabled parameter types
+            if cut_params and cut_params.get(cut_key, 1.0) == 0:
+                continue
+
             fpath = analysis_dir / fname
             if not fpath.exists():
                 continue
@@ -1775,7 +1791,10 @@ class ALFSimulation:
         # First 20 runs: aggressive b/c cutoffs to establish biases fast.
         # x and s excluded (0 = disable) — focus on linear/coupling terms first.
         # Per-parameter clipping ensures no single parameter overshoots.
-        if run_idx < 20:
+        if run_idx < 10:
+            cutb, cutc = 20.0, 10.0
+            cutx, cuts = 0.0, 0.0
+        elif run_idx < 20:
             cutb, cutc = 5.0, 20.0
             cutx, cuts = 0.0, 0.0
         else:
@@ -1926,7 +1945,7 @@ class ALFSimulation:
                             self._run_wham_analysis(nf, ms, msprof, cut_params)
 
                     # Validate output
-                    if self._is_wham_output_invalid(analysis_dir):
+                    if self._is_wham_output_invalid(analysis_dir, cut_params):
                         msg = f"{method.upper()} output invalid on attempt {attempt + 1}"
                         log_f.write(f"{msg}\n")
                         log_f.flush()
