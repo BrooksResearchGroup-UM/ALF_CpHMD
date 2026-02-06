@@ -109,6 +109,8 @@ def patch(
     hmr: bool = typer.Option(True, "--hmr/--no-hmr", help="Enable hydrogen mass repartitioning"),
     hmr_waters: bool = typer.Option(False, "--hmr-waters/--no-hmr-waters", help="Apply HMR to waters"),
     residues: list[str] = typer.Option(None, "-s", "--select", help="Residues to patch (e.g., ASP GLU PROA:15)"),
+    extra_files: list[str] = typer.Option(None, "--extra-files", help="Extra topology/parameter files (repeatable)"),
+    toppar_dir: str = typer.Option(None, "--toppar-dir", help="Topology/parameter directory (default: bundled toppar)"),
 ):
     """Apply CpHMD patches to titratable residues."""
     from cphmd.core import PatchConfig, patch_system
@@ -116,12 +118,18 @@ def patch(
     console.print(f"[cyan]Patching titratable residues in {input_folder}/[/cyan]")
     console.print(f"[dim]HMR: {hmr}, HMR waters: {hmr_waters}[/dim]")
 
+    kwargs = {}
+    if toppar_dir is not None:
+        kwargs["toppar_dir"] = toppar_dir
+
     config = PatchConfig(
         input_folder=input_folder,
         structure_file=structure,
         hmr=hmr,
         hmr_waters=hmr_waters,
         selected_residues=residues or [],
+        extra_files=extra_files or [],
+        **kwargs,
     )
 
     result_dir = patch_system(config)
@@ -153,6 +161,11 @@ def alf(
     analysis_method: str = typer.Option("wham", "--analysis-method", help="Analysis method: wham or lmalf"),
     lmalf_max_iter: int = typer.Option(0, "--lmalf-max-iter", help="LMALF max iterations (0=default)"),
     lmalf_tolerance: float = typer.Option(0.0, "--lmalf-tolerance", help="LMALF tolerance (0=default)"),
+    lambda_mass: float = typer.Option(None, "--lambda-mass", help="Lambda mass in amu·Å² (default: 12.0 for HMR, 5.0 for non-HMR)"),
+    lambda_fbeta: float = typer.Option(None, "--lambda-fbeta", help="Lambda friction in ps⁻¹ (default: 5.0 for HMR, 7.0 for non-HMR)"),
+    fnex: float = typer.Option(5.5, "--fnex", help="FNEX softmax constraint parameter"),
+    gscale: float = typer.Option(10.0, "--gscale", help="Global Langevin friction coefficient (ps⁻¹)"),
+    extra_files: list[str] = typer.Option(None, "--extra-files", help="Extra topology/parameter files (repeatable)"),
 ):
     """Run ALF simulation with optional CpHMD.
 
@@ -209,6 +222,11 @@ def alf(
         analysis_method=analysis_method,  # type: ignore
         lmalf_max_iter=lmalf_max_iter,
         lmalf_tolerance=lmalf_tolerance,
+        lambda_mass=lambda_mass,
+        lambda_fbeta=lambda_fbeta,
+        fnex=fnex,
+        gscale=gscale,
+        extra_files=extra_files or [],
     )
 
     run_alf_simulation(config)
