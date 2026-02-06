@@ -807,16 +807,20 @@ def ensure_g_imp_available(
         nmc: Monte Carlo samples if computing
 
     Returns:
-        Path to cache directory containing G_imp files
+        Path to cache directory containing all G_imp files
     """
+    import shutil
+
     cache_dir = get_cache_path(constraint_type, bins, fnex, fpie_width, fpie_force, cutlsum)
+    # G1/G2 are cutlsum-independent — they live in the base cache
+    base_cache = get_cache_path(constraint_type, bins, fnex, fpie_width, fpie_force)
 
     # Compute G_imp for all ndim from 2 to max(nsubs)+1.
     # CUDA indexes G1 files as G1_{block+2}.dat, with nsubs blocks per site,
     # so nsubs=3 needs G1_2, G1_3, G1_4; nsubs=5 needs G1_2..G1_6.
     unique_ndims = list(range(2, max(nsubs) + 2)) if len(nsubs) > 0 else []
     for ndim in unique_ndims:
-        # G1 + G2 (1D marginal + 2D intra-site joint)
+        # G1 + G2 (1D marginal + 2D intra-site joint) — written to base_cache
         compute_g_imp(
             constraint_type=constraint_type,
             ndim=ndim,
@@ -827,7 +831,7 @@ def ensure_g_imp_available(
             nmc=nmc,
             use_cache=True,
         )
-        # G12 (conditional ratio profile)
+        # G12 (conditional ratio profile) — written to cache_dir (cutlsum-aware)
         compute_g12(
             constraint_type=constraint_type,
             ndim=ndim,
@@ -840,7 +844,7 @@ def ensure_g_imp_available(
             use_cache=True,
         )
 
-    # Cross-site profiles: all (i, j) pairs of unique ndims
+    # Cross-site profiles: all (i, j) pairs of unique ndims — written to base_cache
     for ndim_i in unique_ndims:
         for ndim_j in unique_ndims:
             compute_g1_cross(
@@ -854,6 +858,24 @@ def ensure_g_imp_available(
                 nmc=nmc,
                 use_cache=True,
             )
+
+    # When cutlsum != default, G1/G2/G1_cross live in base_cache while G12 is
+    # in cache_dir.  Copy the cutlsum-independent files into cache_dir so CUDA
+    # finds everything in one directory.
+    if cache_dir != base_cache:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        for ndim in unique_ndims:
+            for prefix in ("G1", "G2"):
+                src = base_cache / f"{prefix}_{ndim}.dat"
+                dst = cache_dir / f"{prefix}_{ndim}.dat"
+                if src.exists() and not dst.exists():
+                    shutil.copy2(src, dst)
+        for ndim_i in unique_ndims:
+            for ndim_j in unique_ndims:
+                src = base_cache / f"G1_{ndim_i}_{ndim_j}.dat"
+                dst = cache_dir / f"G1_{ndim_i}_{ndim_j}.dat"
+                if src.exists() and not dst.exists():
+                    shutil.copy2(src, dst)
 
     return cache_dir
 

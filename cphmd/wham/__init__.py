@@ -222,14 +222,14 @@ def run_wham(
                 ctypes.c_int,                      # nsites
                 ctypes.c_char_p,                   # g_imp_path
                 ctypes.c_double,                   # chi_offset
-                ctypes.c_double,                   # chi_scale
+                ctypes.c_double,                   # omega_scale
                 ctypes.c_double,                   # cutlsum
             ]
             pywham.restype = ctypes.c_int
 
             with _redirect_c_output(log_path):
                 result = pywham(nf, temp, nts0, nts1, int(use_gshift), nsubs_ptr, nsites, g_imp_path_bytes,
-                                constants.chi_offset, constants.chi_scale, cutlsum)
+                                constants.chi_offset, constants.omega_scale, cutlsum)
             if result != 0:
                 raise RuntimeError(f"WHAM returned error code: {result}")
 
@@ -301,7 +301,8 @@ def prepare_g_imp_for_wham(
     cutlsum = alf_info.cutlsum
     nsubs = alf_info.nsubs
 
-    # Ensure G_imp files exist in cache
+    # G1/G2 are cutlsum-independent (base cache); G12 uses cutlsum-aware cache
+    base_cache = get_cache_path(constraint_type, bins, fnex, fpie_width, fpie_force)
     cache_dir = get_cache_path(constraint_type, bins, fnex, fpie_width, fpie_force, cutlsum)
 
     # CUDA indexes G1 per-block as G1_{block+2}.dat with nsubs blocks per site,
@@ -309,8 +310,8 @@ def prepare_g_imp_for_wham(
     unique_ndims = list(range(2, max(nsubs) + 2)) if len(nsubs) > 0 else []
 
     for ndim in unique_ndims:
-        g1_file = cache_dir / f"G1_{ndim}.dat"
-        g2_file = cache_dir / f"G2_{ndim}.dat"
+        g1_file = base_cache / f"G1_{ndim}.dat"
+        g2_file = base_cache / f"G2_{ndim}.dat"
         g12_file = cache_dir / f"G12_{ndim}.dat"
 
         if force_recompute or not g1_file.exists() or not g2_file.exists():
@@ -338,10 +339,10 @@ def prepare_g_imp_for_wham(
                 use_cache=True,
             )
 
-    # Cross-site profiles
+    # Cross-site profiles (cutlsum-independent, base cache)
     for ndim_i in unique_ndims:
         for ndim_j in unique_ndims:
-            cross_file = cache_dir / f"G1_{ndim_i}_{ndim_j}.dat"
+            cross_file = base_cache / f"G1_{ndim_i}_{ndim_j}.dat"
             if force_recompute or not cross_file.exists():
                 logger.info(f"Computing G1_cross for ndim_i={ndim_i}, ndim_j={ndim_j}")
                 compute_g1_cross(
@@ -355,22 +356,22 @@ def prepare_g_imp_for_wham(
                     use_cache=True,
                 )
 
-    # Create G_imp directory in analysis_dir and copy/link files
+    # Create G_imp directory in analysis_dir and copy files from both caches
     g_imp_dir = analysis_dir / "G_imp"
     g_imp_dir.mkdir(exist_ok=True)
 
     for ndim in unique_ndims:
-        # Copy G1, G2, G12 from cache to analysis directory
-        for prefix in ("G1", "G2", "G12"):
-            src = cache_dir / f"{prefix}_{ndim}.dat"
+        # G1/G2 from base cache, G12 from cutlsum cache
+        for prefix, src_dir in [("G1", base_cache), ("G2", base_cache), ("G12", cache_dir)]:
+            src = src_dir / f"{prefix}_{ndim}.dat"
             dst = g_imp_dir / f"{prefix}_{ndim}.dat"
             if src.exists() and (force_recompute or not dst.exists()):
                 shutil.copy2(src, dst)
 
-    # Copy cross-site files
+    # Copy cross-site files from base cache
     for ndim_i in unique_ndims:
         for ndim_j in unique_ndims:
-            src = cache_dir / f"G1_{ndim_i}_{ndim_j}.dat"
+            src = base_cache / f"G1_{ndim_i}_{ndim_j}.dat"
             dst = g_imp_dir / f"G1_{ndim_i}_{ndim_j}.dat"
             if src.exists() and (force_recompute or not dst.exists()):
                 shutil.copy2(src, dst)
@@ -550,13 +551,13 @@ def run_lmalf(
                 ctypes.c_char_p,                   # g_imp_path
                 ctypes.c_double,                   # fnex
                 ctypes.c_double,                   # chi_offset
-                ctypes.c_double,                   # chi_scale
+                ctypes.c_double,                   # omega_scale
             ]
             pylmalf.restype = ctypes.c_int
 
             with _redirect_c_output(log_path):
                 result = pylmalf(nf, temp, ms, msprof, max_iter, tolerance, nsubs_ptr, nsites, g_imp_path_bytes,
-                                 constants.fnex, constants.chi_offset, constants.chi_scale)
+                                 constants.fnex, constants.chi_offset, constants.omega_scale)
             if result != 0:
                 raise RuntimeError(f"LMALF returned error code: {result}")
 
