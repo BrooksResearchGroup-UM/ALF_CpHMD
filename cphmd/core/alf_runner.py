@@ -17,37 +17,33 @@ Architecture:
 - HendersonHasselbalch: Fitting utilities for titration curves
 """
 
-from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Literal, Any
 import os
+import shutil
 import sys
 import time
-import shutil
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Literal
 
 import numpy as np
 import pandas as pd
 
-from cphmd.core.phase_switcher import (
-    _per_site_ranges,
-    check_phase_transition,
-    check_phase3_stop,
-    load_lambda_data,
-    calculate_populations,
-    write_populations_file,
-    PhaseTransitionConfig,
-    StopCriteriaConfig,
-)
-
 from cphmd.core.alf_utils import (
-    ALFInfo,
-    ensure_alf_info,
+    convert_lambda_binary_to_text,
+    get_energy_from_analysis_dir,
     init_vars,
     set_vars_from_analysis_dir,
-    get_energy_from_analysis_dir,
-    convert_lambda_binary_to_text,
 )
 from cphmd.core.free_energy import get_free_energy5
+from cphmd.core.phase_switcher import (
+    StopCriteriaConfig,
+    _per_site_ranges,
+    calculate_populations,
+    check_phase3_stop,
+    check_phase_transition,
+    load_lambda_data,
+    write_populations_file,
+)
 
 # Type aliases
 PhaseType = Literal[1, 2, 3]
@@ -209,7 +205,7 @@ class ALFConfig:
         # non-HMR(2fs) uses lighter mass (Kramers ∝ 1/M) with scaled friction
         # γ(M) = γ₀·√(M₀/M) for near-critical damping.
         if self.lambda_mass is None:
-            self.lambda_mass = 12.0 if self.hmr else 5.0
+            self.lambda_mass = 10.0 if self.hmr else 5.0
         if self.lambda_fbeta is None:
             self.lambda_fbeta = 5.0 if self.hmr else 7.0
 
@@ -568,8 +564,8 @@ class ALFSimulation:
         # Validate required key
         if "box" not in alf_info:
             raise ValueError(
-                f"Legacy prep format requires 'box' in alf_info.py "
-                f"(cubic box edge length). Add: alf_info['box'] = <value>"
+                "Legacy prep format requires 'box' in alf_info.py "
+                "(cubic box edge length). Add: alf_info['box'] = <value>"
             )
 
         # Ensure nsubs is numpy array
@@ -602,81 +598,38 @@ class ALFSimulation:
     def _ensure_g_imp(self):
         """Ensure G_imp entropy data is available for WHAM.
 
-        If g_imp_bins is None (default): use existing/bundled G_imp as-is.
-        If g_imp_bins is set explicitly: validate bins match and regenerate
-        if mismatched.
+        Copies bundled G_imp data from cphmd/data/G_imp/ if not already
+        present in the input folder. No Monte Carlo computation.
 
         Priority:
-        1. Use existing G_imp/ in input folder (validate if g_imp_bins set)
-        2. Copy from bundled cphmd/data/G_imp/ (validate if g_imp_bins set)
-        3. Compute via Monte Carlo and cache
+        1. Use existing G_imp/ in input folder as-is
+        2. Copy from bundled cphmd/data/G_imp/
         """
         dst = self.config.input_folder / "G_imp"
-        expected_bins = ALFConfig.resolve_g_imp_bins(
-            self.config.g_imp_bins, self.state.phase
-        )
-        nsubs = self.state.alf_info["nsubs"]
 
-        # Check existing G_imp/ directory
+        # Use existing G_imp/ directory if present
         if dst.exists():
             actual_bins = self._detect_g_imp_bins(dst)
-            if expected_bins is not None and actual_bins != expected_bins:
-                print(
-                    f"G_imp: existing has bins={actual_bins}, "
-                    f"need {expected_bins}. Regenerating..."
-                )
-                if dst.is_symlink():
-                    dst.unlink()
-                else:
-                    shutil.rmtree(dst)
-            else:
-                self._supplement_g_imp(dst, nsubs, actual_bins)
-                print(
-                    f"G_imp: using existing ({dst}, "
-                    f"bins={actual_bins}, nsubs={list(nsubs)})"
-                )
-                return
+            print(
+                f"G_imp: using existing ({dst}, bins={actual_bins})"
+            )
+            return
 
-        # Try bundled data (avoids expensive MC computation)
+        # Copy from bundled module data
         from cphmd import PACKAGE_DIR
         bundled = PACKAGE_DIR / "data" / "G_imp"
         if bundled.exists() and any(bundled.glob("G1_*.dat")):
-            bundled_bins = self._detect_g_imp_bins(bundled)
-            if expected_bins is not None and bundled_bins != expected_bins:
-                print(
-                    f"G_imp: bundled has bins={bundled_bins}, "
-                    f"need {expected_bins}. Computing fresh..."
-                )
-            else:
-                shutil.copytree(bundled, dst)
-                self._supplement_g_imp(dst, nsubs, bundled_bins)
-                print(
-                    f"G_imp: copied bundled data ({dst}, "
-                    f"bins={bundled_bins}, nsubs={list(nsubs)})"
-                )
-                return
+            shutil.copytree(bundled, dst)
+            bundled_bins = self._detect_g_imp_bins(dst)
+            print(
+                f"G_imp: copied bundled data ({dst}, bins={bundled_bins})"
+            )
+            return
 
-        # Fall back to computing from scratch
-        from cphmd.core.entropy import ensure_g_imp_available
-
-        bins = expected_bins if expected_bins is not None else 32
-        print(
-            f"G_imp: computing via Monte Carlo "
-            f"(bins={bins}, nsubs={list(nsubs)})..."
+        raise FileNotFoundError(
+            f"No G_imp data found. Expected bundled data at {bundled} "
+            f"or existing data at {dst}."
         )
-        g_imp_dir = ensure_g_imp_available(
-            constraint_type="fnex",
-            nsubs=nsubs,
-            bins=bins,
-            cutlsum=self.config.cutlsum,
-        )
-
-        try:
-            dst.symlink_to(g_imp_dir)
-            print(f"G_imp: cached at {g_imp_dir}, linked to {dst}")
-        except OSError:
-            shutil.copytree(g_imp_dir, dst, dirs_exist_ok=True)
-            print(f"G_imp: cached at {g_imp_dir}, copied to {dst}")
 
     def _regenerate_g_imp_if_needed(self, old_phase: int, new_phase: int):
         """Regenerate G_imp if the new phase requires different bins."""
@@ -699,12 +652,11 @@ class ALFSimulation:
 
     def _supplement_g_imp(self, g_imp_dir: Path, nsubs, bins: int | None):
         """Ensure G1, G12 and cross-site files exist, computing if missing."""
-        from cphmd.core.entropy import compute_g_imp, compute_g12, compute_g1_cross
+        from cphmd.core.entropy import compute_g1_cross, compute_g12, compute_g_imp
 
         actual_bins = bins if bins is not None else 32
-        # CUDA indexes G1 per-block as G1_{block+2}.dat with nsubs blocks per site,
-        # so need all ndims 2..max(nsubs)+1
-        unique_ndims = list(range(2, max(nsubs) + 2)) if len(nsubs) > 0 else []
+        # CUDA indexes G_imp files by dimension: G1_{nsubs}.dat, G12_{nsubs}.dat, etc.
+        unique_ndims = sorted(set(nsubs)) if len(nsubs) > 0 else []
 
         for ndim in unique_ndims:
             g1_path = g_imp_dir / f"G1_{ndim}.dat"
@@ -1048,21 +1000,21 @@ class ALFSimulation:
         Reads box parameters, loads structure, configures crystal images,
         and sets up non-bonded interactions.
         """
+        import random
+
+        import pycharmm.read as read
+        import pycharmm.settings as settings
+
         from .charmm_utils import (
             BoxParameters,
             FFTParameters,
             NonBondedConfig,
-            read_structure,
-            setup_crystal,
-            setup_nonbonded,
-            define_selections,
             clear_block,
             clear_crystal,
+            define_selections,
+            setup_crystal,
+            setup_nonbonded,
         )
-        import pycharmm.read as read
-        import pycharmm.lingo as lingo
-        import pycharmm.settings as settings
-        import random
 
         prep_dir = self.config.input_folder / "prep"
         # Use structure_loaded flag to determine if this is the first run in this session
@@ -1176,15 +1128,17 @@ class ALFSimulation:
         5. Setup nonbonded parameters
         6. Stream user-provided restraints (prep/restrains.str)
         """
-        from .charmm_utils import (
-            NonBondedConfig,
-            setup_nonbonded,
-            clear_block,
-            clear_crystal,
-        )
+        import random
+
         import pycharmm.lingo as lingo
         import pycharmm.settings as settings
-        import random
+
+        from .charmm_utils import (
+            NonBondedConfig,
+            clear_block,
+            clear_crystal,
+            setup_nonbonded,
+        )
 
         prep_dir = self.config.input_folder / "prep"
         is_first_run = not self.state.structure_loaded and k == 0
@@ -1296,8 +1250,9 @@ class ALFSimulation:
         subs) cannot produce valid restraints.  Instead, we stream the
         user-provided prep/restrains.str file directly.
         """
-        import pycharmm.lingo as lingo
         import logging
+
+        import pycharmm.lingo as lingo
 
         prep_dir = self.config.input_folder / "prep"
         restraint_file = prep_dir / "restrains.str"
@@ -1321,8 +1276,8 @@ class ALFSimulation:
         from .cphmd_params import (
             compute_all_site_parameters,
             compute_bias_shifts,
-            write_bias_files,
             get_delta_pKa_for_phase,
+            write_bias_files,
         )
 
         # Skip BLOCK setup for subsequent repeats (k > 0)
@@ -1388,9 +1343,9 @@ class ALFSimulation:
 
     def _apply_restraints(self, run_idx: int, k: int = 0):
         """Apply SCAT or NOE restraints to titratable atoms."""
-        from .restraints import generate_scat_restraints, generate_noe_restraints
-        from .charmm_utils import execute_block_command
         import pycharmm.lingo as lingo
+
+        from .restraints import generate_noe_restraints, generate_scat_restraints
 
         # Skip restraint setup for subsequent repeats (k > 0)
         # Restraints persist from k=0
@@ -1425,10 +1380,10 @@ class ALFSimulation:
         Only runs if no minimized coordinates exist.  Uses steepest-descent
         minimisation (BLADE supports SD but not ABNR).
         """
+        import pycharmm.energy as energy
         import pycharmm.minimize as minimize
         import pycharmm.shake as shake
         import pycharmm.write as write
-        import pycharmm.energy as energy
 
         min_crd = self.config.input_folder / "prep" / "system_min.crd"
         if min_crd.exists():
@@ -1462,9 +1417,8 @@ class ALFSimulation:
             replica_idx: MPI replica index
         """
         import pycharmm
-        import pycharmm.psf as psf
         import pycharmm.lingo as lingo
-        import pycharmm.settings as settings
+        import pycharmm.psf as psf
 
         # File units
         dcd_unit = 51
@@ -1503,8 +1457,8 @@ class ALFSimulation:
             nsavl = 10
 
         # Initialize dynamics: SHAKE, FASTER, BLADE
-        import pycharmm.shake as shake
         import pycharmm.dynamics as dyn
+        import pycharmm.shake as shake
 
         # SHAKE for hydrogen constraints
         shake.on(fast=True, bonh=True, param=True, tol=1e-7)
@@ -1737,133 +1691,28 @@ class ALFSimulation:
 
     # --- Adaptive cutoff helpers ---
 
-    @staticmethod
-    def _read_scaling_dat(scaling_file: Path) -> dict | None:
-        """Read scaling diagnostics from a previous analysis step."""
-        if not scaling_file.exists():
-            return None
-        try:
-            with open(scaling_file) as f:
-                header_fields = []
-                for line in f:
-                    if line.startswith("#"):
-                        header_fields = line.strip().split()[1:]  # skip '#'
-                        continue
-                    parts = line.split()
-                    if len(parts) >= 6:
-                        result = {
-                            "scaling": float(parts[0]),
-                            "bottleneck": parts[1],
-                            "cutb": float(parts[2]),
-                            "cutc": float(parts[3]),
-                            "cutx": float(parts[4]),
-                            "cuts": float(parts[5]),
-                        }
-                        # Parse remaining fields based on header
-                        for idx in range(6, len(parts)):
-                            if idx < len(header_fields):
-                                field_name = header_fields[idx]
-                                try:
-                                    result[field_name] = float(parts[idx])
-                                except ValueError:
-                                    result[field_name] = parts[idx]
-                            elif idx == 6:
-                                # Legacy format: 7th field is max_pop_diff
-                                result["max_pop_diff"] = float(parts[idx])
-                        return result
-        except (ValueError, IndexError):
-            return None
-        return None
-
     def _adapt_cutoffs(self, run_idx: int) -> dict:
-        """Compute adaptive cutoffs for Phase 1 based on previous scaling.
+        """Compute fixed staged cutoffs for Phase 1.
 
-        Reads scaling.dat from the previous analysis directory. If scaling < 0.6,
-        loosens the bottleneck cutoff. If scaling == 1.0 for 2 consecutive runs,
-        tightens all cutoffs. Bounds: [1.0, 50.0].
+        Phase 1 uses fixed cutoffs based on run index. No scaling.dat feedback
+        is used because trapped-state data produces unreliable bottleneck
+        direction and scaling signals.
 
         Returns:
             dict of cutoff/calc parameters to pass to get_free_energy5.
         """
-        CUT_FLOOR = 1.0
-        CUT_CEIL = 50.0
-
-        # First 20 runs: aggressive b/c cutoffs to establish biases fast.
-        # x and s excluded (0 = disable) — focus on linear/coupling terms first.
-        # Per-parameter clipping ensures no single parameter overshoots.
-        if run_idx < 10:
-            cutb, cutc = 20.0, 10.0
-            cutx, cuts = 0.0, 0.0
-        elif run_idx < 20:
-            cutb, cutc = 5.0, 20.0
-            cutx, cuts = 0.0, 0.0
+        # Phase 1 parameter staging:
+        #   Runs 0-19: larger cutoffs to build up biases quickly from scratch.
+        #   Runs 20+:  tighter cutoffs for refinement.
+        #   x/s always disabled in Phase 1 (no inter-site transition data).
+        if run_idx < 20:
+            cutb = 5.0
+            cutc = 20.0
         else:
-            cutb, cutc = 2.0, 8.0
-            cutx, cuts = 0.5, 0.5
-
-        # Try to read scaling from most recent analysis
-        prev_scaling = None
-        for prev_run in (run_idx, run_idx - 1):
-            if prev_run < 0:
-                break
-            prev_file = self.config.input_folder / f"analysis{prev_run}" / "scaling.dat"
-            prev_scaling = self._read_scaling_dat(prev_file)
-            if prev_scaling is not None:
-                break
-
-        if prev_scaling is not None:
-            # Start from previous cutoffs
-            cutb = prev_scaling["cutb"]
-            cutc = prev_scaling["cutc"]
-            cutx = prev_scaling["cutx"]
-            cuts = prev_scaling["cuts"]
-
-            scaling = prev_scaling["scaling"]
-            bottleneck = prev_scaling["bottleneck"]
-
-            if scaling < 0.6:
-                # Loosen the bottleneck parameter
-                factor = min(1.5 / scaling, 3.0)
-                cut_map = {"cutb": cutb, "cutc": cutc, "cutx": cutx, "cuts": cuts}
-                if bottleneck in cut_map:
-                    cut_map[bottleneck] = min(cut_map[bottleneck] * factor, CUT_CEIL)
-                    cutb, cutc = cut_map["cutb"], cut_map["cutc"]
-                    cutx, cuts = cut_map["cutx"], cut_map["cuts"]
-                print(f"  Adaptive cutoffs: scaling={scaling:.2f} "
-                      f"bottleneck={bottleneck} → loosened to "
-                      f"cutb={cutb:.1f} cutc={cutc:.1f}")
-
-            elif scaling >= 1.0:
-                # Check for 2 consecutive scaling >= 1.0 → tighten
-                consecutive_ones = 1
-                for prev_run in range(run_idx - 1, max(run_idx - 2, 0), -1):
-                    pf = self.config.input_folder / f"analysis{prev_run}" / "scaling.dat"
-                    pd = self._read_scaling_dat(pf)
-                    if pd and pd["scaling"] >= 1.0:
-                        consecutive_ones += 1
-                    else:
-                        break
-                if consecutive_ones >= 2:
-                    cutb = max(cutb * 0.5, CUT_FLOOR)
-                    cutc = max(cutc * 0.5, CUT_FLOOR)
-                    cutx = max(cutx * 0.5, CUT_FLOOR)
-                    cuts = max(cuts * 0.5, CUT_FLOOR)
-                    print(f"  Adaptive cutoffs: {consecutive_ones}x scaling>=1.0 → tightened to "
-                          f"cutb={cutb:.1f} cutc={cutc:.1f}")
-            else:
-                print(f"  Adaptive cutoffs: scaling={scaling:.2f} (in range, no change)")
-
-            # If previous analysis had some transitions but poor connectivity,
-            # dampen coupling cutoffs. Skip when connectivity=0 (normal for
-            # Phase 1 short runs — no transitions expected at all).
-            if ("connectivity" in prev_scaling
-                    and 0 < prev_scaling["connectivity"] < 0.3):
-                cutc = max(cutc * 0.5, CUT_FLOOR)
-                cutx = max(cutx * 0.5, CUT_FLOOR)
-                cuts = max(cuts * 0.5, CUT_FLOOR)
-                print(f"  Low connectivity ({prev_scaling['connectivity']:.2f}) "
-                      f"-> dampened coupling cutoffs")
-
+            cutb = 2.5
+            cutc = 10.0
+        cutx, cuts = 0.0, 0.0
+        print(f"  Phase 1 cutoffs: cutb={cutb:.1f} cutc={cutc:.1f} (fixed, run {run_idx})")
 
         # Build cut_params dict with exclusion flags
         # A cutoff of 0 means "exclude this parameter type entirely"
@@ -1878,24 +1727,6 @@ class ALFSimulation:
             cut_params["calc_omega"] = False
 
         return cut_params
-
-    def _rollback_biases(self, current_analysis: Path, prev_analysis: Path):
-        """Revert bias files to previous analysis step."""
-        for fname in ("b.dat", "c.dat", "x.dat", "s.dat"):
-            src = prev_analysis / fname
-            dst = current_analysis / fname
-            if src.exists():
-                shutil.copy2(src, dst)
-        print(f"  Rolled back biases from {prev_analysis.name} to {current_analysis.name}")
-
-    @staticmethod
-    def _get_worst_site_diff(pop_strict, nsubs_eff):
-        """Compute worst-site population imbalance metric."""
-        worst = 0.0
-        for start, end in _per_site_ranges(nsubs_eff):
-            s = pop_strict[start:end]
-            worst = max(worst, max(s) - min(s))
-        return worst
 
     def _run_wham_with_retry(
         self,
@@ -2016,12 +1847,12 @@ class ALFSimulation:
             msprof: Multisite profile parameter
             cut_params: Cutoff parameters for GetFreeEnergyLM
         """
-        from cphmd.wham import run_lmalf, prepare_lmalf_input
-        from cphmd.core.alf_utils import get_free_energy_lm
-
         # LMALF needs a combined Lambda.dat file
         # Collect all data/Lambda.*.*.dat files
         import sys
+
+        from cphmd.core.alf_utils import get_free_energy_lm
+        from cphmd.wham import prepare_lmalf_input, run_lmalf
         print("[LMALF] Starting analysis...", flush=True)
         sys.stdout.flush()
         data_dir = Path("data")
@@ -2096,8 +1927,8 @@ class ALFSimulation:
 
         # Step 2: If Phase 1, refine with short LMALF
         if self.state.phase == 1:
-            from cphmd.wham import run_lmalf, prepare_lmalf_input
             from cphmd.core.alf_utils import get_free_energy_lm
+            from cphmd.wham import prepare_lmalf_input, run_lmalf
 
             lambda_files = sorted(Path("data").glob("Lambda.*.*.dat"))
             if lambda_files:
@@ -2219,10 +2050,10 @@ class ALFSimulation:
             os.chdir(self.config.input_folder)
 
             # Determine analysis window
-            # Phase 1: wider window (10 runs) — short simulations benefit from more history
+            # Phase 1: wider window (15 runs) — short simulations benefit from more history
             # Phase 2/3: narrower window (5 runs) — longer simulations are self-sufficient
             if self.state.phase == 1:
-                im5 = max(run_idx - 10, 1)
+                im5 = max(run_idx - 15, 1)
             else:
                 im5 = max(run_idx - 5, 1)
 
@@ -2359,7 +2190,7 @@ class ALFSimulation:
                         "cutx": 0.5 * coupling_scale,
                         "cuts": 0.5 * coupling_scale,
                     }
-                    print(f"  Phase 3 recovery: pop diff > 70% → using Phase 2 cutoffs")
+                    print("  Phase 3 recovery: pop diff > 70% → using Phase 2 cutoffs")
                 else:
                     cut_params = {
                         "cutb": 0.02,
@@ -2381,10 +2212,10 @@ class ALFSimulation:
 
             # Compute transition counts from Lambda data for regularization
             from cphmd.core.transitions import (
-                compute_transition_matrix,
-                transition_matrix_to_coupling_weights,
-                save_transition_matrix,
                 compute_connectivity_metric,
+                compute_transition_matrix,
+                save_transition_matrix,
+                transition_matrix_to_coupling_weights,
             )
             data_dir = Path("data")
             pre_lambda_data, _ = load_lambda_data(data_dir)
@@ -2407,6 +2238,11 @@ class ALFSimulation:
                 )
                 cut_params["transition_weights"] = trans_weights
                 cut_params["connectivity"] = connectivity
+
+            # # DAMPENING DISABLED FOR TESTING
+            # # Read previous-run populations for differential dampening.
+            # if run_idx >= 1:
+            #     ...  (population wiring commented out)
 
             # Run WHAM with retry (3 attempts) and validation
             # Verbose output appended to analysis.log, summary message returned
@@ -2528,117 +2364,6 @@ class ALFSimulation:
                         np.savetxt("pop_strict.dat", np.array(pop_strict),
                                    fmt=" %.6f")
 
-                        # Wrong-direction detection (Phase 1 only)
-                        if self.state.phase == 1 and run_idx >= 2:
-                            worst_diff_frac = self._get_worst_site_diff(
-                                pop_strict, nsubs_eff
-                            )
-                            # Append max_pop_diff to scaling.dat
-                            analysis_dir_local = Path("..") / f"analysis{run_idx}"
-                            scaling_file = analysis_dir_local / "scaling.dat"
-                            if scaling_file.exists():
-                                content = scaling_file.read_text()
-                                if "max_pop_diff" not in content:
-                                    lines = content.strip().split("\n")
-                                    new_lines = []
-                                    for line in lines:
-                                        if line.startswith("#"):
-                                            new_lines.append(
-                                                line.rstrip() + " max_pop_diff"
-                                            )
-                                        else:
-                                            new_lines.append(
-                                                f"{line.rstrip()} {worst_diff_frac:.6f}"
-                                            )
-                                    scaling_file.write_text(
-                                        "\n".join(new_lines) + "\n"
-                                    )
-
-                            # Check for 2 consecutive increases in pop diff
-                            prev_dir = (
-                                Path("..") / f"analysis{run_idx - 1}"
-                            )
-                            prev_scaling = self._read_scaling_dat(
-                                prev_dir / "scaling.dat"
-                            )
-                            if (
-                                prev_scaling
-                                and "max_pop_diff" in prev_scaling
-                            ):
-                                prev_diff = prev_scaling["max_pop_diff"]
-                                prev2_dir = (
-                                    Path("..")
-                                    / f"analysis{run_idx - 2}"
-                                )
-                                prev2_scaling = self._read_scaling_dat(
-                                    prev2_dir / "scaling.dat"
-                                )
-                                if (
-                                    worst_diff_frac > prev_diff
-                                    and prev2_scaling
-                                    and "max_pop_diff" in prev2_scaling
-                                    and prev_diff > prev2_scaling["max_pop_diff"]
-                                ):
-                                    print(
-                                        f"  WRONG DIRECTION: pop diff "
-                                        f"{worst_diff_frac:.3f} > "
-                                        f"{prev_diff:.3f} > "
-                                        f"{prev2_scaling['max_pop_diff']:.3f}"
-                                    )
-                                    self._rollback_biases(
-                                        Path("."), prev_dir
-                                    )
-                                    # Halve cutoffs via scaling.dat override
-                                    if prev_scaling:
-                                        halved = {
-                                            "scaling": prev_scaling["scaling"],
-                                            "bottleneck": "rollback",
-                                            "cutb": max(
-                                                prev_scaling["cutb"] * 0.5, 1.0
-                                            ),
-                                            "cutc": max(
-                                                prev_scaling["cutc"] * 0.5, 1.0
-                                            ),
-                                            "cutx": max(
-                                                prev_scaling["cutx"] * 0.5, 1.0
-                                            ),
-                                            "cuts": max(
-                                                prev_scaling["cuts"] * 0.5, 1.0
-                                            ),
-                                        }
-                                        with open(scaling_file, "w") as f:
-                                            conn = prev_scaling.get("connectivity")
-                                            if conn is not None:
-                                                f.write(
-                                                    "# scaling bottleneck cutb "
-                                                    "cutc cutx cuts connectivity "
-                                                    "max_pop_diff\n"
-                                                )
-                                                f.write(
-                                                    f"{halved['scaling']:.6f} "
-                                                    f"{halved['bottleneck']} "
-                                                    f"{halved['cutb']:.4f} "
-                                                    f"{halved['cutc']:.4f} "
-                                                    f"{halved['cutx']:.4f} "
-                                                    f"{halved['cuts']:.4f} "
-                                                    f"{conn:.4f} "
-                                                    f"{worst_diff_frac:.6f}\n"
-                                                )
-                                            else:
-                                                f.write(
-                                                    "# scaling bottleneck cutb "
-                                                    "cutc cutx cuts max_pop_diff\n"
-                                                )
-                                                f.write(
-                                                    f"{halved['scaling']:.6f} "
-                                                    f"{halved['bottleneck']} "
-                                                    f"{halved['cutb']:.4f} "
-                                                    f"{halved['cutc']:.4f} "
-                                                    f"{halved['cutx']:.4f} "
-                                                    f"{halved['cuts']:.4f} "
-                                                    f"{worst_diff_frac:.6f}\n"
-                                                )
-
                 # Generate population convergence plots
                 from cphmd.analysis.population_convergence import generate_population_plots
                 generate_population_plots(
@@ -2651,7 +2376,9 @@ class ALFSimulation:
                 # Generate RMSD convergence plot (works with both convergence modes)
                 try:
                     if (Path("..") / f"analysis{run_idx}" / "multisite").is_dir():
-                        from cphmd.analysis.rmsd_convergence_plot import generate_rmsd_convergence_plots
+                        from cphmd.analysis.rmsd_convergence_plot import (
+                            generate_rmsd_convergence_plots,
+                        )
                         generate_rmsd_convergence_plots(
                             input_folder=Path(".."),
                             max_run=run_idx,
@@ -2676,9 +2403,11 @@ class ALFSimulation:
             if (self.config.convergence_mode == "rmsd"
                     and self.config.auto_phase_switch):
                 from .rmsd_convergence import (
-                    RMSDState, RMSDConvergenceConfig,
-                    compute_site_rmsd, check_rmsd_phase_transition,
+                    RMSDConvergenceConfig,
+                    RMSDState,
+                    check_rmsd_phase_transition,
                     check_rmsd_stop,
+                    compute_site_rmsd,
                 )
                 if self.state.rmsd_state is None:
                     self.state.rmsd_state = RMSDState()
@@ -2744,7 +2473,7 @@ class ALFSimulation:
                             print(f"\n{'='*60}")
                             print(f"RMSD CONVERGENCE CANDIDATE at run {run_idx}")
                             print(f"  {stop_reason}")
-                            print(f"  Triggering confirmation repeat...")
+                            print("  Triggering confirmation repeat...")
                             print(f"{'='*60}\n")
                         else:
                             print(f"RMSD stop check: {stop_reason}")
@@ -2778,9 +2507,31 @@ class ALFSimulation:
                         "nreps": self.config.nreps,
                     }
 
+                # For Phase 1→2, accumulate lambda data from recent runs.
+                # Single-run data can't show inter-run state hopping that
+                # occurs when ALF biases shift the dominant state between runs.
+                # Guard: require min 20 runs before accumulating, so random
+                # initialization (lambda placed randomly across states) can't
+                # fake balanced populations before biases are refined.
+                lambda_data_for_check = lambda_data
+                min_phase1_runs = 20  # 10 c-only + 10 b+c refinement
+                if self.state.phase == 1 and run_idx >= min_phase1_runs:
+                    window = 20
+                    accumulated = []
+                    for prev_r in range(max(1, run_idx - window + 1), run_idx + 1):
+                        prev_data_dir = Path("..") / f"analysis{prev_r}" / "data"
+                        if prev_data_dir.exists():
+                            prev_data, _ = load_lambda_data(prev_data_dir)
+                            if prev_data is not None:
+                                accumulated.append(prev_data)
+                    if len(accumulated) >= 2:
+                        lambda_data_for_check = np.vstack(accumulated)
+                        print(f"  Phase 1 check: accumulated {len(accumulated)} runs "
+                              f"({lambda_data_for_check.shape[0]} frames)")
+
                 new_phase, reason = check_phase_transition(
                     self.state.phase,
-                    lambda_data,
+                    lambda_data_for_check,
                     **cphmd_kwargs,
                     nsubs=nsubs,
                     connectivity=cut_params.get("connectivity"),
@@ -2842,7 +2593,7 @@ class ALFSimulation:
                         print(f"\n{'='*60}")
                         print(f"CONVERGENCE NOT CONFIRMED at run {run_idx}")
                         print(f"  With additional data: {stop_reason}")
-                        print(f"  Continuing optimization...")
+                        print("  Continuing optimization...")
                         print(f"{'='*60}\n")
                 else:
                     # Normal check (first pass)
@@ -2854,7 +2605,7 @@ class ALFSimulation:
                         print(f"  {stop_reason}")
                         print(f"  Fractions: {stop_result.fractions}")
                         print(f"  Fraction diff: {stop_result.frac_diff_pct:.2f}%")
-                        print(f"  Triggering confirmation repeat...")
+                        print("  Triggering confirmation repeat...")
                         print(f"{'='*60}\n")
                     else:
                         print(f"Stop check: {stop_reason}")
@@ -2866,6 +2617,7 @@ class ALFSimulation:
                 self.config.nreps > 3 and
                 self.state.patch_info is not None):
                 from cphmd.analysis.henderson_hasselbalch import generate_hh_analysis
+
                 from .cphmd_params import compute_all_site_parameters
 
                 delta_pKa = get_delta_pKa_for_phase(self.state.phase)
