@@ -815,10 +815,9 @@ def ensure_g_imp_available(
     # G1/G2 are cutlsum-independent — they live in the base cache
     base_cache = get_cache_path(constraint_type, bins, fnex, fpie_width, fpie_force)
 
-    # Compute G_imp for all ndim from 2 to max(nsubs)+1.
-    # CUDA indexes G1 files as G1_{block+2}.dat, with nsubs blocks per site,
-    # so nsubs=3 needs G1_2, G1_3, G1_4; nsubs=5 needs G1_2..G1_6.
-    unique_ndims = list(range(2, max(nsubs) + 2)) if len(nsubs) > 0 else []
+    # Compute G_imp for each unique subsite count.
+    # CUDA indexes G_imp files by dimension: G1_{nsubs}.dat, G12_{nsubs}.dat, etc.
+    unique_ndims = sorted(set(nsubs)) if len(nsubs) > 0 else []
     for ndim in unique_ndims:
         # G1 + G2 (1D marginal + 2D intra-site joint) — written to base_cache
         compute_g_imp(

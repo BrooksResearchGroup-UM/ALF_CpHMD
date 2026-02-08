@@ -46,6 +46,90 @@ logger = logging.getLogger(__name__)
 # Path to the compiled WHAM shared library
 _WHAM_LIB_PATH = Path(__file__).parent / "libwham.so"
 
+# Lazy-loaded library cache: avoids repeated ctypes.CDLL() and argtypes setup
+_wham_lib_cache: ctypes.CDLL | None = None
+
+
+def _get_wham_lib() -> ctypes.CDLL:
+    """Load and cache the WHAM shared library.
+
+    Returns the cached library handle on subsequent calls, avoiding
+    repeated dlopen() and symbol resolution overhead.
+
+    Raises:
+        FileNotFoundError: If libwham.so doesn't exist.
+        RuntimeError: If the library can't be loaded (e.g. CUDA unavailable).
+    """
+    global _wham_lib_cache
+    if _wham_lib_cache is not None:
+        return _wham_lib_cache
+
+    if not _WHAM_LIB_PATH.exists():
+        raise FileNotFoundError(
+            f"WHAM library not found at {_WHAM_LIB_PATH}. "
+            "Please compile: cd cphmd/wham/src && make"
+        )
+
+    try:
+        lib = ctypes.CDLL(str(_WHAM_LIB_PATH))
+    except OSError as e:
+        raise RuntimeError(
+            f"Failed to load WHAM library: {e}. "
+            "Ensure CUDA is available and library is compiled correctly."
+        ) from e
+
+    # Configure wham() function signature once
+    lib.wham.argtypes = [
+        ctypes.c_int,                   # nf
+        ctypes.c_double,                # temp
+        ctypes.c_int,                   # nts0
+        ctypes.c_int,                   # nts1
+        ctypes.c_int,                   # use_gshift
+        ctypes.POINTER(ctypes.c_int),   # nsubs
+        ctypes.c_int,                   # nsites
+        ctypes.c_char_p,               # g_imp_path
+        ctypes.c_double,                # chi_offset
+        ctypes.c_double,                # omega_scale
+        ctypes.c_double,                # cutlsum
+    ]
+    lib.wham.restype = ctypes.c_int
+
+    # Configure lmalf() function signature once
+    lib.lmalf.argtypes = [
+        ctypes.c_int,                   # nf
+        ctypes.c_double,                # temp
+        ctypes.c_int,                   # ms
+        ctypes.c_int,                   # msprof
+        ctypes.c_int,                   # max_iter
+        ctypes.c_double,                # tolerance
+        ctypes.POINTER(ctypes.c_int),   # nsubs
+        ctypes.c_int,                   # nsites
+        ctypes.c_char_p,               # g_imp_path
+        ctypes.c_double,                # fnex
+        ctypes.c_double,                # chi_offset
+        ctypes.c_double,                # omega_scale
+    ]
+    lib.lmalf.restype = ctypes.c_int
+
+    _wham_lib_cache = lib
+    return lib
+
+
+def _prepare_nsubs(
+    nsubs: np.ndarray | list[int] | None,
+) -> tuple[np.ndarray | None, ctypes.POINTER(ctypes.c_int) | None, int]:
+    """Convert nsubs to ctypes-compatible format."""
+    if nsubs is not None:
+        arr = np.asarray(nsubs, dtype=np.int32)
+        ptr = arr.ctypes.data_as(ctypes.POINTER(ctypes.c_int))
+        return arr, ptr, len(arr)
+    return None, None, 0
+
+
+def _to_bytes(path: str | Path | None) -> bytes | None:
+    """Convert a path to UTF-8 bytes for ctypes c_char_p."""
+    return str(path).encode("utf-8") if path is not None else None
+
 
 @contextmanager
 def _chdir_context(path: Path) -> Generator[None, None, None]:
@@ -166,80 +250,47 @@ def run_wham(
         >>> # With explicit nsubs and G_imp path:
         >>> run_wham("./analysis/5", nf=10, temp=298.15, nsubs=[2, 2], g_imp_path="/path/to/G_imp")
     """
+    # Validate cutlsum (G12 conditional threshold) before any I/O
+    if cutlsum <= 0.0 or cutlsum >= 1.0:
+        raise ValueError(
+            f"cutlsum must be in (0, 1), got {cutlsum}. "
+            "Typical value is 0.8 (exclude frames where λ_i + λ_j < 0.8)."
+        )
+
     analysis_dir = Path(analysis_dir)
     if not analysis_dir.exists():
         raise FileNotFoundError(f"Analysis directory not found: {analysis_dir}")
 
-    # Check for compiled library
-    if not _WHAM_LIB_PATH.exists():
-        raise FileNotFoundError(
-            f"WHAM library not found at {_WHAM_LIB_PATH}. "
-            "Please compile: cd cphmd/wham/src && "
-            "nvcc -shared -Xcompiler -fPIC -o ../libwham.so wham.cu"
-        )
+    # Load library (cached after first call)
+    lib = _get_wham_lib()
 
     # Create multisite output directory
     multisite_dir = analysis_dir / "multisite"
     multisite_dir.mkdir(exist_ok=True)
 
-    # Prepare nsubs array for ctypes
-    if nsubs is not None:
-        nsubs_arr = np.asarray(nsubs, dtype=np.int32)
-        nsubs_ptr = nsubs_arr.ctypes.data_as(ctypes.POINTER(ctypes.c_int))
-        nsites = len(nsubs_arr)
-    else:
-        nsubs_ptr = None
-        nsites = 0
-
-    # Prepare g_imp_path for ctypes
-    if g_imp_path is not None:
-        g_imp_path_bytes = str(g_imp_path).encode('utf-8')
-    else:
-        g_imp_path_bytes = None
-
-    # Resolve log_file to absolute path before chdir
+    # Prepare ctypes arguments
+    nsubs_arr, nsubs_ptr, nsites = _prepare_nsubs(nsubs)
+    g_imp_path_bytes = _to_bytes(g_imp_path)
     log_path = Path(log_file).resolve() if log_file is not None else None
 
-    # Run WHAM in analysis directory context
-    # WHAM expects files in current directory, so we must chdir temporarily
+    from cphmd.core.bias_constants import derive_bias_constants
+    constants = derive_bias_constants(fnex)
+
+    logger.info(f"Running WHAM with nf={nf}, temp={temp}, use_gshift={use_gshift}, fnex={fnex}")
+    if nsubs_arr is not None:
+        logger.info(f"  nsubs={list(nsubs_arr)}, g_imp_path={g_imp_path}")
+
     with _chdir_context(analysis_dir):
-        try:
-            from cphmd.core.bias_constants import derive_bias_constants
-            constants = derive_bias_constants(fnex)
-
-            logger.info(f"Running WHAM with nf={nf}, temp={temp}, use_gshift={use_gshift}, fnex={fnex}")
-            if nsubs is not None:
-                logger.info(f"  nsubs={list(nsubs_arr)}, g_imp_path={g_imp_path}")
-            whamlib = ctypes.CDLL(str(_WHAM_LIB_PATH))
-            pywham = whamlib.wham
-            pywham.argtypes = [
-                ctypes.c_int,                      # nf
-                ctypes.c_double,                   # temp
-                ctypes.c_int,                      # nts0
-                ctypes.c_int,                      # nts1
-                ctypes.c_int,                      # use_gshift
-                ctypes.POINTER(ctypes.c_int),     # nsubs
-                ctypes.c_int,                      # nsites
-                ctypes.c_char_p,                   # g_imp_path
-                ctypes.c_double,                   # chi_offset
-                ctypes.c_double,                   # omega_scale
-                ctypes.c_double,                   # cutlsum
-            ]
-            pywham.restype = ctypes.c_int
-
-            with _redirect_c_output(log_path):
-                result = pywham(nf, temp, nts0, nts1, int(use_gshift), nsubs_ptr, nsites, g_imp_path_bytes,
-                                constants.chi_offset, constants.omega_scale, cutlsum)
-            if result != 0:
-                raise RuntimeError(f"WHAM returned error code: {result}")
-
-            logger.info("WHAM analysis completed successfully")
-
-        except OSError as e:
-            raise RuntimeError(
-                f"Failed to load WHAM library: {e}. "
-                "Ensure CUDA is available and library is compiled correctly."
+        with _redirect_c_output(log_path):
+            result = lib.wham(
+                nf, temp, nts0, nts1, int(use_gshift),
+                nsubs_ptr, nsites, g_imp_path_bytes,
+                constants.chi_offset, constants.omega_scale, cutlsum,
             )
+        if result != 0:
+            raise RuntimeError(f"WHAM returned error code: {result}")
+
+    logger.info("WHAM analysis completed successfully")
 
 
 def check_wham_available() -> bool:
@@ -248,13 +299,10 @@ def check_wham_available() -> bool:
     Returns:
         True if WHAM library exists and can be loaded, False otherwise.
     """
-    if not _WHAM_LIB_PATH.exists():
-        return False
-    
     try:
-        ctypes.CDLL(str(_WHAM_LIB_PATH))
+        _get_wham_lib()
         return True
-    except OSError:
+    except (FileNotFoundError, RuntimeError):
         return False
 
 
@@ -287,7 +335,7 @@ def prepare_g_imp_for_wham(
         Path to G_imp directory in analysis_dir.
     """
     from cphmd.core.alf_utils import ensure_alf_info
-    from cphmd.core.entropy import compute_g_imp, compute_g12, compute_g1_cross, get_cache_path
+    from cphmd.core.entropy import compute_g1_cross, compute_g12, compute_g_imp, get_cache_path
 
     analysis_dir = Path(analysis_dir)
     alf_info = ensure_alf_info(alf_info)
@@ -305,9 +353,8 @@ def prepare_g_imp_for_wham(
     base_cache = get_cache_path(constraint_type, bins, fnex, fpie_width, fpie_force)
     cache_dir = get_cache_path(constraint_type, bins, fnex, fpie_width, fpie_force, cutlsum)
 
-    # CUDA indexes G1 per-block as G1_{block+2}.dat with nsubs blocks per site,
-    # so need all ndims from 2..max(nsubs)+1
-    unique_ndims = list(range(2, max(nsubs) + 2)) if len(nsubs) > 0 else []
+    # CUDA indexes G_imp files by dimension: G1_{nsubs}.dat, G12_{nsubs}.dat, etc.
+    unique_ndims = sorted(set(nsubs)) if len(nsubs) > 0 else []
 
     for ndim in unique_ndims:
         g1_file = base_cache / f"G1_{ndim}.dat"
@@ -495,12 +542,8 @@ def run_lmalf(
     if not analysis_dir.exists():
         raise FileNotFoundError(f"Analysis directory not found: {analysis_dir}")
 
-    # Check for compiled library
-    if not _WHAM_LIB_PATH.exists():
-        raise FileNotFoundError(
-            f"WHAM/LMALF library not found at {_WHAM_LIB_PATH}. "
-            "Please compile: cd cphmd/wham && ./build.sh"
-        )
+    # Load library (cached after first call)
+    lib = _get_wham_lib()
 
     # Verify Lambda.dat exists
     lambda_file = analysis_dir / "Lambda.dat"
@@ -510,64 +553,29 @@ def run_lmalf(
             "LMALF requires a combined Lambda.dat file."
         )
 
-    # Prepare nsubs array for ctypes
-    if nsubs is not None:
-        nsubs_arr = np.asarray(nsubs, dtype=np.int32)
-        nsubs_ptr = nsubs_arr.ctypes.data_as(ctypes.POINTER(ctypes.c_int))
-        nsites = len(nsubs_arr)
-    else:
-        nsubs_ptr = None
-        nsites = 0
-
-    # Prepare g_imp_path for ctypes
-    if g_imp_path is not None:
-        g_imp_path_bytes = str(g_imp_path).encode('utf-8')
-    else:
-        g_imp_path_bytes = None
-
-    # Resolve log_file to absolute path before chdir
+    # Prepare ctypes arguments
+    nsubs_arr, nsubs_ptr, nsites = _prepare_nsubs(nsubs)
+    g_imp_path_bytes = _to_bytes(g_imp_path)
     log_path = Path(log_file).resolve() if log_file is not None else None
 
-    # Run LMALF in analysis directory context
+    from cphmd.core.bias_constants import derive_bias_constants
+    constants = derive_bias_constants(fnex)
+
+    logger.info(f"Running LMALF with nf={nf}, temp={temp}, ms={ms}, msprof={msprof}, fnex={fnex}")
+    if nsubs_arr is not None:
+        logger.info(f"  nsubs={list(nsubs_arr)}, g_imp_path={g_imp_path}")
+
     with _chdir_context(analysis_dir):
-        try:
-            from cphmd.core.bias_constants import derive_bias_constants
-            constants = derive_bias_constants(fnex)
-
-            logger.info(f"Running LMALF with nf={nf}, temp={temp}, ms={ms}, msprof={msprof}, fnex={fnex}")
-            if nsubs is not None:
-                logger.info(f"  nsubs={list(nsubs_arr)}, g_imp_path={g_imp_path}")
-            whamlib = ctypes.CDLL(str(_WHAM_LIB_PATH))
-            pylmalf = whamlib.lmalf
-            pylmalf.argtypes = [
-                ctypes.c_int,                      # nf
-                ctypes.c_double,                   # temp
-                ctypes.c_int,                      # ms
-                ctypes.c_int,                      # msprof
-                ctypes.c_int,                      # max_iter
-                ctypes.c_double,                   # tolerance
-                ctypes.POINTER(ctypes.c_int),     # nsubs
-                ctypes.c_int,                      # nsites
-                ctypes.c_char_p,                   # g_imp_path
-                ctypes.c_double,                   # fnex
-                ctypes.c_double,                   # chi_offset
-                ctypes.c_double,                   # omega_scale
-            ]
-            pylmalf.restype = ctypes.c_int
-
-            with _redirect_c_output(log_path):
-                result = pylmalf(nf, temp, ms, msprof, max_iter, tolerance, nsubs_ptr, nsites, g_imp_path_bytes,
-                                 constants.fnex, constants.chi_offset, constants.omega_scale)
-            if result != 0:
-                raise RuntimeError(f"LMALF returned error code: {result}")
-
-            logger.info("LMALF analysis completed successfully")
-
-        except OSError as e:
-            raise RuntimeError(
-                f"Failed to load WHAM/LMALF library: {e}. "
-                "Ensure CUDA is available and library is compiled correctly."
+        with _redirect_c_output(log_path):
+            result = lib.lmalf(
+                nf, temp, ms, msprof, max_iter, tolerance,
+                nsubs_ptr, nsites, g_imp_path_bytes,
+                constants.fnex, constants.chi_offset, constants.omega_scale,
             )
+        if result != 0:
+            raise RuntimeError(f"LMALF returned error code: {result}")
+
+    logger.info("LMALF analysis completed successfully")
 
 
 def check_lmalf_available() -> bool:
@@ -576,14 +584,11 @@ def check_lmalf_available() -> bool:
     Returns:
         True if LMALF function exists and can be called, False otherwise.
     """
-    if not _WHAM_LIB_PATH.exists():
-        return False
-
     try:
-        whamlib = ctypes.CDLL(str(_WHAM_LIB_PATH))
-        _ = whamlib.lmalf
+        lib = _get_wham_lib()
+        _ = lib.lmalf
         return True
-    except (OSError, AttributeError):
+    except (FileNotFoundError, RuntimeError, AttributeError):
         return False
 
 

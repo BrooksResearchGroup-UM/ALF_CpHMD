@@ -13,6 +13,40 @@ typedef struct struct_hist
   double dx;
 } struct_hist;
 
+// G_imp file cache: avoids re-reading the same file on every bin_all() call.
+// All blocks within a site share the same G_imp file (per-dimension naming),
+// so caching eliminates O(profiles_per_site) redundant file reads.
+#define GIMP_CACHE_MAX 32
+typedef struct struct_gimp_entry
+{
+  char filename[256];
+  double *data;
+  int size;
+} struct_gimp_entry;
+
+typedef struct struct_gimp_cache
+{
+  struct_gimp_entry entries[GIMP_CACHE_MAX];
+  int count;
+} struct_gimp_cache;
+
+// Profile descriptor for bin_all(): precomputed lookup replaces decrement-counter loop
+typedef struct profile_desc
+{
+  int ptype;          // 0=1D(phi), 1=12(psi), 2=2D(chi/omega), 3=SS(cross-site)
+  int i1, i2;         // block indices
+  double wnorm;       // normalization weight for C/V matrix
+  int B_N;            // number of histogram bins (1D or 2D)
+  char gimp_fn[256];  // precomputed G_imp filename
+} profile_desc;
+
+// Reaction coordinate descriptor for reactioncoord_all(): direct kernel dispatch
+typedef struct param_desc
+{
+  int type;    // 0=phi, 1=psi, 2=chi, 3=omega
+  int j1, j2;  // block indices
+} param_desc;
+
 typedef struct struct_data
 {
   int NL;
@@ -41,8 +75,7 @@ typedef struct struct_data
   int *n_d;
   double *f_h;
   double *f_d;
-  double *invf_h;
-  double *invf_d;
+  // invf_h/invf_d removed: getf writes f_d directly
   double *lnZ_h;
   double *lnZ_d;
   double **dlnZ_hN;
@@ -64,12 +97,15 @@ typedef struct struct_data
   int *block0;
   int iN;
   int jN;
-  int current_block_idx; // Current block index being processed
+  int current_block_idx; // Current block index for gshift lookups
   int use_gshift;        // 0 = disabled (legacy), 1 = enabled (apply G_imp shifts)
   char g_imp_path[256];  // Path to G_imp directory
   double chi_offset;     // s-term sigmoid offset (derived from FNEX: 4*exp(-FNEX))
   double omega_scale;      // x-term reciprocal decay (derived from FNEX: 1/FNEX)
   double cutlsum;        // G12 conditional threshold (λ_i + λ_j > cutlsum)
+  struct_gimp_cache *gimp_cache;  // Cached G_imp file data (host-only)
+  profile_desc *profiles;         // Precomputed profile descriptors [iN] (host-only)
+  param_desc *params;             // Precomputed param descriptors [jN] (host-only)
 } struct_data;
 
 /**
@@ -134,13 +170,10 @@ typedef struct struct_lmalf
   double *mc_dEds_d;     // MC energy derivatives [B]
   double *Z_d;           // Partition function
   double *mc_Z_d;        // MC partition function
-  double *Zprofile_d;    // Profile partition functions [nprof * NBINS]
-  double *mc_Zprofile_d; // MC profile partition functions
-  double *dLdZprofile_d; // Gradient w.r.t. profiles
-  double *mc_dLdZprofile_d;
+  // NOTE: Zprofile/dLdZprofile fields removed — allocated but never referenced by any kernel.
   double *dLdE_d;        // Gradient w.r.t. energies [B]
   double *Gimp_d;        // Importance sampling reference [nprof * NBINS]
-  double *G_d;           // Computed free energy profiles
+  // NOTE: G_d field removed — allocated but never referenced by any kernel.
   double *Esum_d;        // Sum of weighted energies
   double *dEdssum_d;     // Sum of energy derivatives
   double *mc_dEdssum_d;  // MC sum of energy derivatives
