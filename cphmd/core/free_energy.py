@@ -155,18 +155,28 @@ def get_populations_from_lambda(
             continue
 
         data = np.loadtxt(data_file)
+        if data.ndim == 1:
+            data = data.reshape(1, -1)
         total_frames += data.shape[0]
 
-        # Process each frame
-        for t in range(data.shape[0]):
-            ibuff = 0
-            for isite in range(len(nsubs)):
-                # Find current state (first lambda > cutoff)
-                for j in range(nsubs[isite]):
-                    if data[t, j + ibuff] > lc:
-                        counts[ibuff + j] += 1
-                        break
-                ibuff += nsubs[isite]
+        # Vectorized state assignment: for each site, find the first
+        # lambda > cutoff using argmax on the boolean mask.
+        ibuff = 0
+        for isite in range(len(nsubs)):
+            n = int(nsubs[isite])
+            site_lambdas = data[:, ibuff : ibuff + n]  # (frames, n)
+            above = site_lambdas > lc  # boolean mask
+
+            # argmax returns the first True index per row; if no lambda
+            # exceeds the cutoff, the frame contributes no count.
+            has_state = above.any(axis=1)  # which frames have a state
+            state_idx = above.argmax(axis=1)  # first True per row
+
+            # Count occurrences of each state
+            for j in range(n):
+                counts[ibuff + j] += np.sum((state_idx == j) & has_state)
+
+            ibuff += n
 
     # Convert to fractions
     if total_frames > 0:
@@ -179,7 +189,10 @@ def get_populations_from_lambda(
 
 
 def fallback_bias_update(
-    populations: np.ndarray, temperature: float, max_change: float = 2.0
+    populations: np.ndarray,
+    nsubs: np.ndarray,
+    temperature: float,
+    max_change: float = 2.0,
 ) -> np.ndarray:
     """Compute bias updates from populations when WHAM fails.
 
@@ -187,43 +200,54 @@ def fallback_bias_update(
     This provides a simple heuristic to push undersampled states toward
     uniform populations when the WHAM matrix is too ill-conditioned.
 
+    Normalization and targeting are done per-site: each site's populations
+    are normalized independently, and the uniform target is 1/nsubs[i]
+    (not 1/nblocks).
+
     Args:
-        populations: Current population fractions for each state (should sum to 1).
+        populations: Current population fractions for each state.
+            Shape: (nblocks,) where nblocks = sum(nsubs).
+        nsubs: Substituent counts per site.
         temperature: Simulation temperature in Kelvin.
         max_change: Maximum bias change per state (kcal/mol).
 
     Returns:
         Bias changes (delta_b) to add to current b parameters.
-        First state is referenced to 0.
+        Referenced to first state within each site.
     """
     RT = 0.001987 * temperature  # kcal/mol
-    n_states = len(populations)
-    target_pop = 1.0 / n_states  # Uniform target
-
-    # Normalize populations just in case
+    nblocks = int(np.sum(nsubs))
     populations = np.asarray(populations, dtype=float)
-    pop_sum = np.sum(populations)
-    if pop_sum > 0:
-        populations = populations / pop_sum
-    else:
-        # All zero populations - can't do anything
-        logger.warning("All populations are zero, cannot compute fallback update")
-        return np.zeros(n_states)
+    delta_b = np.zeros(nblocks)
 
-    # Compute needed bias change using Boltzmann inversion
-    # ΔG = RT * ln(p_target / p_current)
-    # For undersampled states (p < target), this gives positive ΔG (raise bias)
-    with np.errstate(divide="ignore", invalid="ignore"):
-        delta_b = RT * np.log(target_pop / populations)
+    ibuff = 0
+    for isite in range(len(nsubs)):
+        n = int(nsubs[isite])
+        site_pops = populations[ibuff : ibuff + n]
+        site_sum = np.sum(site_pops)
 
-    # Handle edge cases (zero/inf)
-    delta_b = np.nan_to_num(delta_b, nan=0.0, posinf=max_change, neginf=-max_change)
+        if site_sum <= 0:
+            logger.warning(f"Site {isite}: all populations zero, skipping")
+            ibuff += n
+            continue
 
-    # Clip to max change
-    delta_b = np.clip(delta_b, -max_change, max_change)
+        # Normalize within this site
+        site_pops = site_pops / site_sum
+        target = 1.0 / n
 
-    # Reference to first state (first state always 0)
-    delta_b = delta_b - delta_b[0]
+        with np.errstate(divide="ignore", invalid="ignore"):
+            site_delta = RT * np.log(target / site_pops)
+
+        site_delta = np.nan_to_num(
+            site_delta, nan=0.0, posinf=max_change, neginf=-max_change
+        )
+        site_delta = np.clip(site_delta, -max_change, max_change)
+
+        # Reference to first state of this site
+        site_delta -= site_delta[0]
+
+        delta_b[ibuff : ibuff + n] = site_delta
+        ibuff += n
 
     logger.info(f"Fallback bias update: {delta_b}")
     return delta_b
@@ -374,6 +398,12 @@ def _compute_free_energy(
     nsubs = np.array(alf_info.nsubs)
     nblocks = alf_info.nblocks
 
+    # Reserved parameters (accepted for API compatibility, not yet implemented)
+    if transition_weights is not None:
+        logger.debug("transition_weights provided but not yet used in regularization")
+    if site_populations is not None:
+        logger.debug("site_populations provided but not yet used for dampening")
+
     kT = 0.001987 * temp
     krest = 1
 
@@ -408,22 +438,18 @@ def _compute_free_energy(
     cutlist = np.zeros((nparm,))
     reglist = np.zeros((nparm,))
     param_active = np.ones((nparm,), dtype=bool)
-    param_dampen = np.ones((nparm,))
-
-    # Compute per-site dampening factors from populations
-    site_dampening = None
-    if site_populations is not None:
-        site_dampening = []
-        for isite in range(len(nsubs)):
-            target_pop = 1.0 / nsubs[isite]
-            min_pop = float(np.min(site_populations[isite]))
-            dampen = max(0.5, min(1.0, min_pop / target_pop))
-            site_dampening.append(dampen)
-        dampen_str = ", ".join(f"{d:.2f}" for d in site_dampening)
-        logger.info(f"Per-site population dampening: [{dampen_str}]")
 
     n0 = 0
     iblock = 0
+
+    # Track parameter indices by type (needed for C matrix symmetrization)
+    b_indx: list[int] = []
+    c_indx: list[int] = []
+    x_indx: list[int] = []
+    s_indx: list[int] = []
+    c2_indx: list[int] = []
+    x2_indx: list[int] = []
+    s2_indx: list[int] = []
 
     for isite in range(len(nsubs)):
         jblock = iblock
@@ -432,26 +458,29 @@ def _compute_free_energy(
 
         for jsite in range(isite, len(nsubs)):
             n3 = nsubs[isite] * nsubs[jsite]
-            n0_block_start = n0  # Track start for dampening
 
             if isite == jsite:
                 # Intra-site parameters
                 cutlist[n0 : n0 + n1] = cutb
+                b_indx.extend(range(n0, n0 + n1))
                 if not calc_phi:
                     param_active[n0 : n0 + n1] = False
                 n0 += n1
 
                 cutlist[n0 : n0 + n2] = cutc
+                c_indx.extend(range(n0, n0 + n2))
                 if not calc_psi:
                     param_active[n0 : n0 + n2] = False
                 n0 += n2
 
                 cutlist[n0 : n0 + 2 * n2] = cutx
+                x_indx.extend(range(n0, n0 + 2 * n2))
                 if not calc_chi:
                     param_active[n0 : n0 + 2 * n2] = False
                 n0 += 2 * n2
 
                 cutlist[n0 : n0 + 2 * n2] = cuts
+                s_indx.extend(range(n0, n0 + 2 * n2))
                 if not calc_omega:
                     param_active[n0 : n0 + 2 * n2] = False
                 n0 += 2 * n2
@@ -459,6 +488,7 @@ def _compute_free_energy(
             elif ms == 1:
                 # Inter-site parameters with full coupling
                 cutlist[n0 : n0 + n3] = cutc2
+                c2_indx.extend(range(n0, n0 + n3))
                 if not calc_psi:
                     param_active[n0 : n0 + n3] = False
                 n0 += n3
@@ -472,6 +502,7 @@ def _compute_free_energy(
                         reglist[ind] = -x_prev[jblock + j, iblock + i]
                         ind += 1
                 cutlist[n0 : n0 + 2 * n3] = cutx2
+                x2_indx.extend(range(n0, n0 + 2 * n3))
                 if not calc_chi:
                     param_active[n0 : n0 + 2 * n3] = False
                 n0 += 2 * n3
@@ -485,6 +516,7 @@ def _compute_free_energy(
                         reglist[ind] = -s_prev[jblock + j, iblock + i]
                         ind += 1
                 cutlist[n0 : n0 + 2 * n3] = cuts2
+                s2_indx.extend(range(n0, n0 + 2 * n3))
                 if not calc_omega:
                     param_active[n0 : n0 + 2 * n3] = False
                 n0 += 2 * n3
@@ -492,17 +524,10 @@ def _compute_free_energy(
             elif ms == 2:
                 # Inter-site with only c coupling
                 cutlist[n0 : n0 + n3] = cutc2
+                c2_indx.extend(range(n0, n0 + n3))
                 if not calc_psi:
                     param_active[n0 : n0 + n3] = False
                 n0 += n3
-
-            # Apply per-site dampening to this block's parameters
-            if site_dampening is not None:
-                if isite == jsite:
-                    d = site_dampening[isite]
-                else:
-                    d = min(site_dampening[isite], site_dampening[jsite])
-                param_dampen[n0_block_start:n0] = d
 
             jblock += nsubs[jsite]
         iblock += nsubs[isite]
@@ -525,6 +550,35 @@ def _compute_free_energy(
     C = np.loadtxt(c_file)
     V = np.loadtxt(v_file)
 
+    # Validate WHAM output — fail the iteration rather than silently
+    # patching NaN/Inf with zeros (which corrupts the Hessian and
+    # produces plausible-looking but wrong bias updates).
+    if not np.all(np.isfinite(C)):
+        nan_c = int(np.isnan(C).sum())
+        inf_c = int(np.isinf(C).sum())
+        raise ValueError(
+            f"C.dat contains {nan_c} NaN and {inf_c} Inf values. "
+            "WHAM produced a corrupt Hessian — check GPU output."
+        )
+
+    if not np.all(np.isfinite(V)):
+        nan_v = int(np.isnan(V).sum())
+        inf_v = int(np.isinf(V).sum())
+        raise ValueError(
+            f"V.dat contains {nan_v} NaN and {inf_v} Inf values. "
+            "WHAM produced a corrupt gradient — check GPU output."
+        )
+
+    # Symmetrize C matrix for c/c2 parameters (numerical stability).
+    # WHAM's Hessian should be symmetric for pairwise coupling params,
+    # but numerical noise creates slight asymmetry. Extract the submatrix
+    # for each group, symmetrize in one shot, and write back.
+    for indx in [c_indx, c2_indx]:
+        if len(indx) > 1:
+            idx = np.array(indx)
+            sub = C[np.ix_(idx, idx)]
+            C[np.ix_(idx, idx)] = 0.5 * (sub + sub.T)
+
     # Decouple inactive params: zero their rows/columns in C and V,
     # then set diagonal to 1. This fully isolates them from the solve.
     for i in range(n0):
@@ -534,12 +588,12 @@ def _compute_free_energy(
             C[i, i] = 1.0
             V[i] = 0.0
 
-    # Add regularization to diagonal for active params
-    # transition_weights scale regularization: higher weight = stronger regularization
+    # Add Tikhonov regularization to diagonal (active params only).
+    # krest/cutlist^2 acts as a harmonic restraint against zero change,
+    # preventing ill-conditioning and bounding the solution magnitude.
     for i in range(n0):
         if param_active[i]:
-            tw = transition_weights[i] if transition_weights is not None else 1.0
-            C[i, i] += tw * krest * cutlist[i] ** -2
+            C[i, i] += krest * cutlist[i] ** -2
 
     # Ensure no zero diagonal elements (for profile terms beyond n0)
     for i in range(n0, C.shape[0]):
@@ -549,39 +603,35 @@ def _compute_free_energy(
     # Add harmonic restraint to x and s cross terms (active params only)
     for i in range(n0):
         if param_active[i]:
-            tw = transition_weights[i] if transition_weights is not None else 1.0
-            V[i] += (tw * krest * cutlist[i] ** -2) * reglist[i]
+            V[i] += (krest * cutlist[i] ** -2) * reglist[i]
 
-    # Build SVD weights from transition weights (inverse: high reg weight = low SVD trust)
-    if transition_weights is not None:
-        svd_weights = 1.0 / np.maximum(transition_weights, 0.1)
-    else:
-        svd_weights = None
+    # Solve linear system: C @ coeff = V
+    # Direct solve is exact and fast for well-conditioned matrices.
+    # Regularization above ensures C is non-singular; lstsq is the fallback.
+    try:
+        coeff = np.linalg.solve(C, V)
+    except np.linalg.LinAlgError:
+        logger.warning("C is singular after regularization, using least squares")
+        coeff, _, _, _ = np.linalg.lstsq(C, V, rcond=None)
 
-    # Solve linear system using truncated SVD pseudoinverse
-    # This is more robust than np.linalg.solve for ill-conditioned matrices
-    coeff = _solve_with_svd(C, V, n0, weights=svd_weights)
+    # Validate result
+    if not np.all(np.isfinite(coeff)):
+        logger.warning("Solve produced NaN/Inf values. Using zero updates.")
+        coeff = np.zeros_like(V)
 
     # Zero out excluded parameters and extra WHAM profile terms
     # (coeff may be larger than nparm due to WHAM profile entries)
     coeff[n0:] = 0.0
     coeff[0:n0][~param_active] = 0.0
 
-    # Apply per-site population dampening (before scaling computation)
-    # When a site is poorly sampled, WHAM estimates for that site are unreliable.
-    # Dampening reduces the bias update proportionally to sampling quality.
-    if site_dampening is not None:
-        coeff[0:n0] *= param_dampen
-        coeff[0:n0][~param_active] = 0.0
-
-    # Per-parameter clipping: cap each active parameter at its cutoff independently.
-    # This prevents one bottleneck parameter type from dragging all others down.
+    # Compute worst-case ratio of |correction| to cutoff across active parameters.
+    # Used to decide whether global scaling is needed.
     active_ratios = np.abs(coeff[0:n0][param_active] / cutlist[param_active])
     max_change = np.max(active_ratios) if len(active_ratios) > 0 else 0.0
     use_fallback = False
 
     if max_change == 0:
-        # SVD produced zero coefficients (ill-conditioned matrix)
+        # Solver produced zero coefficients (ill-conditioned matrix)
         # Apply population-based fallback to break the convergence deadlock
         logger.warning(
             "WHAM produced zero updates (ill-conditioned matrix). "
@@ -596,15 +646,17 @@ def _compute_free_energy(
             nreps = alf_info.nreps if alf_info.nreps else 1
 
             populations = get_populations_from_lambda(analysis_dir, nsubs, ndupl=nreps)
-            delta_b = fallback_bias_update(populations, temp, max_change=cutb)
+            delta_b = fallback_bias_update(populations, nsubs, temp, max_change=cutb)
 
-            # Apply fallback to b coefficients (only linear biases, if active)
+            # Apply fallback to b coefficients using b_indx (correct coeff
+            # offsets).  b_indx maps block index → coeff index, skipping
+            # over c/x/s parameter slots between sites.
             if calc_phi:
-                ibuff = 0
+                block_idx = 0
                 for isite in range(len(nsubs)):
                     for j in range(nsubs[isite]):
-                        coeff[ibuff + j] = delta_b[ibuff + j]
-                    ibuff += nsubs[isite]
+                        coeff[b_indx[block_idx + j]] = delta_b[block_idx + j]
+                    block_idx += nsubs[isite]
 
             logger.info(f"Fallback bias updates applied: {delta_b}")
 
@@ -612,13 +664,17 @@ def _compute_free_energy(
             logger.warning(f"Fallback bias update failed: {e}. Using zero updates.")
             # Keep coeff as zeros
     else:
-        # Clip each active parameter independently to its cutoff
-        for i in range(n0):
-            if param_active[i] and abs(coeff[i]) > cutlist[i]:
-                coeff[i] = cutlist[i] * np.sign(coeff[i])
-        # Report equivalent scaling for adaptive cutoff feedback
-        # (worst-case ratio: what the most-constrained param got vs wanted)
-        scaling = min(1.0, 1.0 / max_change)
+        # Global scaling: if the worst-case ratio exceeds 1.5x, scale the
+        # entire correction vector down proportionally.  This preserves the
+        # optimizer's chosen proportions across all parameter types — unlike
+        # per-parameter clipping, which distorts the coupled WHAM solution.
+        # The 1.5 factor matches the legacy algorithm that converged reliably.
+        scaling = 1.5 / max_change
+        # Safety: cap at 1.0, handle degenerate values (legacy guard)
+        if scaling > 1.0 or np.isnan(scaling) or np.isinf(scaling):
+            scaling = 1.0
+        coeff[0:n0] *= scaling
+        coeff[0:n0][~param_active] = 0.0
 
     logger.info(f"Free energy scaling: {scaling} (fallback={use_fallback})")
 

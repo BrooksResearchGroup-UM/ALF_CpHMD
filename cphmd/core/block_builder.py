@@ -114,7 +114,7 @@ def generate_call_statements(patch_info: pd.DataFrame) -> str:
     ]
 
     for idx, row in patch_info.iterrows():
-        lines.append(f"CALL {idx + 2} SELECT {row['SELECT']} END")
+        lines.append(f"CALL {idx + 2} SELEct segid {row['SEGID']} .and. resid {row['RESID']} .and. resname {row['PATCH']} END")
 
     return "\n".join(lines) + "\n\n"
 

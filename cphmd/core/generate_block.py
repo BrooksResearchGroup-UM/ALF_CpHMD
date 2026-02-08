@@ -392,15 +392,18 @@ def _generate_restraints_str(
             h_atoms = [a for a in atoms if a.startswith("H")]
             heavy_atoms = [a for a in atoms if not a.startswith("H")]
 
-            # Get SELECT clauses
-            select_clause = " .or. ".join(site_data["SELECT"].tolist())
+            # Build inline selection from SEGID, RESID, and PATCH columns
+            segid = site_data["SEGID"].iloc[0]
+            resid = site_data["RESID"].iloc[0]
+            resnames = site_data["PATCH"].tolist()
+            resname_clause = " .or. ".join(f"resname {r}" for r in resnames)
 
             for atom in heavy_atoms:
-                lines.append(f"cats SELE type {atom} .and. ({select_clause}) END")
+                lines.append(f"cats SELE type {atom} .and. segid {segid} .and. resid {resid} .and. ({resname_clause}) END")
 
             if include_hydrogens:
                 for atom in h_atoms:
-                    lines.append(f"cats SELE type {atom} .and. ({select_clause}) END")
+                    lines.append(f"cats SELE type {atom} .and. segid {segid} .and. resid {resid} .and. ({resname_clause}) END")
 
         lines.append("END")
 

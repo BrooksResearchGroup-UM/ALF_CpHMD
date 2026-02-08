@@ -101,28 +101,92 @@ __device__ int g_2d_bins_y = 32; // Will be updated at runtime
 #define MAX_ATOMIC_RETRIES 1000
 #define NUMERICAL_TOLERANCE 1e-12
 
-// Global context for tracking current pair processing
-struct pair_context
-{
-  int i1, i2; // Current pair indices
-  int s1;     // Current site
-} current_pair_context = {-1, -1, -1};
-
 // Function declarations
-int validate_gimp_file_size(const char *filename, int expected_size);
-int detect_g_file_dimensions(const char *filename, int *dim1, int *dim2, int is_2d);
 void auto_detect_profile_dimensions(struct_data *data);
 void update_device_dimensions(int bins_1d, int bins_2d_x, int bins_2d_y);
 
+// G_imp cache: read a file once, return cached data on subsequent lookups
+static void gimp_cache_init(struct_gimp_cache *cache)
+{
+  cache->count = 0;
+}
+
+static void gimp_cache_free(struct_gimp_cache *cache)
+{
+  for (int i = 0; i < cache->count; i++)
+    free(cache->entries[i].data);
+  cache->count = 0;
+}
+
+// Look up or load a G_imp file. Returns pointer to cached data and sets *size.
+static double *gimp_cache_get(struct_gimp_cache *cache, const char *filename, int expected_size)
+{
+  // Check if already cached
+  for (int i = 0; i < cache->count; i++)
+  {
+    if (strcmp(cache->entries[i].filename, filename) == 0)
+    {
+      if (cache->entries[i].size != expected_size)
+      {
+        fprintf(stderr, "Error: cached %s has %d values but expected %d\n",
+                filename, cache->entries[i].size, expected_size);
+        exit(1);
+      }
+      return cache->entries[i].data;
+    }
+  }
+
+  // Not cached — load from disk
+  FILE *fp = fopen(filename, "r");
+  if (!fp)
+  {
+    fprintf(stderr, "Error, %s does not exist\n", filename);
+    exit(1);
+  }
+
+  // Count values for validation
+  double value;
+  int count = 0;
+  while (fscanf(fp, "%lf", &value) == 1)
+    count++;
+
+  if (count != expected_size)
+  {
+    fprintf(stderr, "Error, %s has %d values, expected %d\n", filename, count, expected_size);
+    fclose(fp);
+    exit(1);
+  }
+
+  // Rewind and read data
+  rewind(fp);
+  double *data = (double *)malloc(expected_size * sizeof(double));
+  for (int i = 0; i < expected_size; i++)
+    fscanf(fp, "%lf", &data[i]);
+  fclose(fp);
+
+  // Store in cache
+  if (cache->count >= GIMP_CACHE_MAX)
+  {
+    fprintf(stderr, "Error: G_imp cache full (max %d entries)\n", GIMP_CACHE_MAX);
+    exit(1);
+  }
+  struct_gimp_entry *e = &cache->entries[cache->count++];
+  strncpy(e->filename, filename, sizeof(e->filename) - 1);
+  e->filename[sizeof(e->filename) - 1] = '\0';
+  e->data = data;
+  e->size = expected_size;
+
+  return data;
+}
+
 __device__ __host__ inline double logadd(double lnA, double lnB)
 {
-  // Careful NaN/Inf handling without fallbacks
-  if (!isfinite(lnA) && !isfinite(lnB))
-    return -INFINITY;
+  // If either is non-finite (-inf), return the other.
+  // If both are non-finite, returns -inf (correct).
   if (!isfinite(lnA))
-    return isfinite(lnB) ? lnB : -INFINITY;
+    return lnB;
   if (!isfinite(lnB))
-    return isfinite(lnA) ? lnA : -INFINITY;
+    return lnA;
 
   if (lnA > lnB)
   {
@@ -245,6 +309,8 @@ struct_data *readdata(int arg1, double arg2, int arg3, int arg4, int use_gshift,
   int ibuffer, n;
   double E, q;
   struct_data *data = (struct_data *)malloc(sizeof(struct_data));
+  data->gimp_cache = (struct_gimp_cache *)malloc(sizeof(struct_gimp_cache));
+  gimp_cache_init(data->gimp_cache);
 
   data->Nsim = arg1;
 
@@ -431,8 +497,7 @@ struct_data *readdata(int arg1, double arg2, int arg3, int arg4, int use_gshift,
   for (i = 0; i < data->NF; i++)
     data->f_h[i] = 0.0;
   CUDA_CHECK(cudaMemcpy(data->f_d, data->f_h, data->NF * sizeof(double), cudaMemcpyHostToDevice));
-  data->invf_h = (double *)malloc(data->NF * sizeof(double));
-  CUDA_CHECK(cudaMalloc(&(data->invf_d), data->NF * sizeof(double)));
+  // invf_h/invf_d removed: getf writes f_d directly, iteratedata copies f_d → f_h
 
   fprintf(stderr, "Warning, DOS allocation is not sparse, requesting %d doubles\n", data->B[0].N * B_N);
   data->lnZ_h = (double *)malloc(B_N * sizeof(double));
@@ -550,6 +615,187 @@ struct_data *readdata(int arg1, double arg2, int arg3, int arg4, int use_gshift,
   return data;
 }
 
+// Build profile descriptor table: maps profile index → (kernel, block indices, G_imp info)
+// Replaces the decrement-counter enumeration in bin_all().
+void build_profile_descs(struct_data *data)
+{
+  int iN = data->iN;
+  data->profiles = (profile_desc *)malloc(iN * sizeof(profile_desc));
+  int idx = 0;
+  int B_1d = data->B[1].N;
+  int B_2d = data->B2d[1].N * data->B2d[2].N;
+
+  for (int s1 = 0; s1 < data->Nsites; s1++)
+  {
+    for (int s2 = s1; s2 < data->Nsites; s2++)
+    {
+      if (s1 == s2)
+      {
+        // 1D profiles (phi)
+        for (int i1 = data->block0[s1]; i1 < data->block0[s1 + 1]; i1++)
+        {
+          profile_desc *d = &data->profiles[idx++];
+          d->ptype = 0;
+          d->i1 = i1; d->i2 = -1;
+          d->wnorm = 1.0;
+          d->B_N = B_1d;
+          sprintf(d->gimp_fn, "%s/G1_%d.dat", data->g_imp_path, data->Nsubs[s1]);
+        }
+        // 12 profiles (psi, intra-site pairs)
+        for (int i1 = data->block0[s1]; i1 < data->block0[s1 + 1]; i1++)
+        {
+          for (int i2 = i1 + 1; i2 < data->block0[s1 + 1]; i2++)
+          {
+            profile_desc *d = &data->profiles[idx++];
+            d->ptype = 1;
+            d->i1 = i1; d->i2 = i2;
+            d->wnorm = 1.0 / ((data->Nsubs[s1] - 1) / 2.0);
+            d->B_N = B_2d;
+            sprintf(d->gimp_fn, "%s/G12_%d.dat", data->g_imp_path, data->Nsubs[s1]);
+          }
+        }
+        // 2D profiles (chi/omega, only when nsubs > 2)
+        if (data->Nsubs[s1] > 2)
+        {
+          for (int i1 = data->block0[s1]; i1 < data->block0[s1 + 1]; i1++)
+          {
+            for (int i2 = i1 + 1; i2 < data->block0[s1 + 1]; i2++)
+            {
+              profile_desc *d = &data->profiles[idx++];
+              d->ptype = 2;
+              d->i1 = i1; d->i2 = i2;
+              d->wnorm = 1.0 / ((data->Nsubs[s1] - 1) / 2.0);
+              d->B_N = B_2d;
+              sprintf(d->gimp_fn, "%s/G2_%d.dat", data->g_imp_path, data->Nsubs[s1]);
+            }
+          }
+        }
+      }
+      else if (data->msprof)
+      {
+        // Cross-site profiles (SS)
+        for (int i1 = data->block0[s1]; i1 < data->block0[s1 + 1]; i1++)
+        {
+          for (int i2 = data->block0[s2]; i2 < data->block0[s2 + 1]; i2++)
+          {
+            profile_desc *d = &data->profiles[idx++];
+            d->ptype = 3;
+            d->i1 = i1; d->i2 = i2;
+            d->wnorm = 1.0 / (data->Nsubs[s1] * data->Nsubs[s2]);
+            d->B_N = B_2d;
+            sprintf(d->gimp_fn, "%s/G1_%d_%d.dat", data->g_imp_path, data->Nsubs[s1], data->Nsubs[s2]);
+          }
+        }
+      }
+    }
+  }
+  if (idx != iN)
+  {
+    fprintf(stderr, "FATAL: build_profile_descs count mismatch: %d vs iN=%d\n", idx, iN);
+    exit(1);
+  }
+}
+
+// Build parameter descriptor table: maps param index → (kernel type, block indices)
+// Replaces the decrement-counter enumeration in reactioncoord_all().
+void build_param_descs(struct_data *data)
+{
+  int jN = data->jN;
+  data->params = (param_desc *)malloc(jN * sizeof(param_desc));
+  int idx = 0;
+
+  for (int s1 = 0; s1 < data->Nsites; s1++)
+  {
+    for (int s2 = s1; s2 < data->Nsites; s2++)
+    {
+      if (s1 == s2)
+      {
+        // phi (b terms)
+        for (int j1 = data->block0[s1]; j1 < data->block0[s1 + 1]; j1++)
+        {
+          param_desc *d = &data->params[idx++];
+          d->type = 0; d->j1 = j1; d->j2 = -1;
+        }
+        // psi (c terms)
+        for (int j1 = data->block0[s1]; j1 < data->block0[s1 + 1]; j1++)
+        {
+          for (int j2 = j1 + 1; j2 < data->block0[s1 + 1]; j2++)
+          {
+            param_desc *d = &data->params[idx++];
+            d->type = 1; d->j1 = j1; d->j2 = j2;
+          }
+        }
+        // chi (x terms, ordered pairs j1 != j2)
+        for (int j1 = data->block0[s1]; j1 < data->block0[s1 + 1]; j1++)
+        {
+          for (int j2 = data->block0[s1]; j2 < data->block0[s1 + 1]; j2++)
+          {
+            if (j1 != j2)
+            {
+              param_desc *d = &data->params[idx++];
+              d->type = 2; d->j1 = j1; d->j2 = j2;
+            }
+          }
+        }
+        // omega (s terms, ordered pairs j1 != j2)
+        for (int j1 = data->block0[s1]; j1 < data->block0[s1 + 1]; j1++)
+        {
+          for (int j2 = data->block0[s1]; j2 < data->block0[s1 + 1]; j2++)
+          {
+            if (j1 != j2)
+            {
+              param_desc *d = &data->params[idx++];
+              d->type = 3; d->j1 = j1; d->j2 = j2;
+            }
+          }
+        }
+      }
+      else if (data->ms)
+      {
+        // Cross-site psi
+        for (int j1 = data->block0[s1]; j1 < data->block0[s1 + 1]; j1++)
+        {
+          for (int j2 = data->block0[s2]; j2 < data->block0[s2 + 1]; j2++)
+          {
+            param_desc *d = &data->params[idx++];
+            d->type = 1; d->j1 = j1; d->j2 = j2;
+          }
+        }
+        if (data->ms == 1)
+        {
+          // Cross-site chi (both directions)
+          for (int j1 = data->block0[s1]; j1 < data->block0[s1 + 1]; j1++)
+          {
+            for (int j2 = data->block0[s2]; j2 < data->block0[s2 + 1]; j2++)
+            {
+              param_desc *d = &data->params[idx++];
+              d->type = 2; d->j1 = j1; d->j2 = j2;
+              d = &data->params[idx++];
+              d->type = 2; d->j1 = j2; d->j2 = j1;
+            }
+          }
+          // Cross-site omega (both directions)
+          for (int j1 = data->block0[s1]; j1 < data->block0[s1 + 1]; j1++)
+          {
+            for (int j2 = data->block0[s2]; j2 < data->block0[s2 + 1]; j2++)
+            {
+              param_desc *d = &data->params[idx++];
+              d->type = 3; d->j1 = j1; d->j2 = j2;
+              d = &data->params[idx++];
+              d->type = 3; d->j1 = j2; d->j2 = j1;
+            }
+          }
+        }
+      }
+    }
+  }
+  if (idx != jN)
+  {
+    fprintf(stderr, "FATAL: build_param_descs count mismatch: %d vs jN=%d\n", idx, jN);
+    exit(1);
+  }
+}
+
 __global__ void resetlogdata(double *d, int N)
 {
   int i = blockIdx.x * blockDim.x + threadIdx.x;
@@ -608,16 +854,8 @@ __global__ void getf(struct_data data)
 
   if (threadIdx.x == 0)
   {
-    data.invf_d[i] = invf[0];
     data.f_d[i] = -invf[0];
   }
-}
-
-__global__ void normf(double *f, double f_avg, int N)
-{
-  int i = blockIdx.x * blockDim.x + threadIdx.x;
-  if (i < N)
-    f[i] -= f_avg;
 }
 
 void iteratedata(struct_data *data)
@@ -640,13 +878,12 @@ void iteratedata(struct_data *data)
     CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaDeviceSynchronize());
 
-    CUDA_CHECK(cudaMemcpy(data->invf_h, data->invf_d, data->NF * sizeof(double), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(data->f_h, data->f_d, data->NF * sizeof(double), cudaMemcpyDeviceToHost));
 
     f_sum = 0.0;
     max_change = 0.0;
     for (int i = 0; i < data->NF; i++)
     {
-      data->f_h[i] = -data->invf_h[i];
       f_sum += data->f_h[i];
       double change = fabs(data->f_h[i] - f_prev[i]);
       if (change > max_change)
@@ -654,45 +891,23 @@ void iteratedata(struct_data *data)
       f_prev[i] = data->f_h[i];
     }
     f_sum /= data->NF;
-    normf<<<(data->NF + BLOCK - 1) / BLOCK, BLOCK>>>(data->f_d, f_sum, data->NF);
-    CUDA_CHECK(cudaGetLastError());
-    CUDA_CHECK(cudaDeviceSynchronize());
-
-    CUDA_CHECK(cudaMemcpy(data->f_h, data->f_d, data->NF * sizeof(double), cudaMemcpyDeviceToHost));
+    // Normalize on host and push back to device (avoids normf kernel launch + extra D→H copy)
+    for (int i = 0; i < data->NF; i++)
+      data->f_h[i] -= f_sum;
+    CUDA_CHECK(cudaMemcpy(data->f_d, data->f_h, data->NF * sizeof(double), cudaMemcpyHostToDevice));
 
     fprintf(stdout, "Iteration %d, max f change: %g\n", itt + 1, max_change);
-    if (max_change < tolerance * fabs(f_sum))
-      break; // Relative convergence
+    // Relative convergence, floored at absolute tolerance when f_sum ≈ 0
+    // (well-balanced systems have f_sum near zero after normalization)
+    if (max_change < tolerance * fmax(fabs(f_sum), 1.0))
+      break;
   }
 
-  // Bootstrap for uncertainty (simple version, 10 resamples)
-  double *f_boot = (double *)malloc(data->NF * sizeof(double));
-  double *f_std = (double *)malloc(data->NF * sizeof(double));
-  for (int i = 0; i < data->NF; i++)
-    f_std[i] = 0.0;
-
-  for (int boot = 0; boot < 10; boot++)
-  {
-    sumdenom<<<(data->ND + BLOCK - 1) / BLOCK, BLOCK>>>(data[0]);
-    CUDA_CHECK(cudaGetLastError());
-    CUDA_CHECK(cudaDeviceSynchronize());
-
-    getf<<<data->NF, BLOCK>>>(data[0]);
-    CUDA_CHECK(cudaGetLastError());
-    CUDA_CHECK(cudaDeviceSynchronize());
-
-    CUDA_CHECK(cudaMemcpy(f_boot, data->f_d, data->NF * sizeof(double), cudaMemcpyDeviceToHost));
-    for (int i = 0; i < data->NF; i++)
-    {
-      double diff = f_boot[i] - data->f_h[i];
-      f_std[i] += diff * diff;
-    }
-  }
-  for (int i = 0; i < data->NF; i++)
-  {
-    f_std[i] = sqrt(f_std[i] / 9.0); // Std dev over 10 samples
-    fprintf(stderr, "f[%d] uncertainty: %g\n", i, f_std[i]);
-  }
+  // NOTE: Statistical uncertainty of f-weights can be estimated post-hoc
+  // from the inverse of the WHAM Hessian (C matrix): var(f_i) ≈ C_ii^{-1}.
+  // A proper bootstrap would require resampling frames with replacement
+  // and re-converging WHAM for each resample (~10x cost), which is not
+  // justified here since f-weight uncertainties are not used downstream.
 
   fp = fopen("f.dat", "w");
   for (int i = 0; i < data->NF; i++)
@@ -700,8 +915,6 @@ void iteratedata(struct_data *data)
   fclose(fp);
 
   free(f_prev);
-  free(f_boot);
-  free(f_std);
 }
 
 __global__ void bin1(struct_data data, int i1)
@@ -808,246 +1021,39 @@ __global__ void bin2(struct_data data, int i1, int i2)
 
 double bin_all(struct_data *data, int *ptype, int i)
 {
-  double wnorm;
-  int s1, s2, i1, i2, B_N;
-  char fnm[MAXLENGTH];
+  profile_desc *p = &data->profiles[i];
+  *ptype = p->ptype;
+  data->current_block_idx = p->i1;
 
-  // Main WHAM processing loop
-  for (s1 = 0; s1 < data->Nsites; s1++)
+  int grid = (data->ND + BLOCK - 1) / BLOCK;
+  switch (p->ptype)
   {
-    for (s2 = s1; s2 < data->Nsites; s2++)
-    {
-      if (s1 == s2)
-      {
-        for (i1 = data->block0[s1]; i1 < data->block0[s1 + 1]; i1++)
-        {
-          if (i == 0)
-          {
-            fprintf(stderr, "1D Profile %d\n", i1);
-            wnorm = 1.0;
-            bin1<<<(data->ND + BLOCK - 1) / BLOCK, BLOCK>>>(data[0], i1);
-            CUDA_CHECK(cudaGetLastError());
-            CUDA_CHECK(cudaDeviceSynchronize());
-            // Map block index to filename: block 0->G1_2, block 1->G1_3, block 2->G1_4
-            int subsite_index = (i1 - data->block0[s1]) + 2;
-            sprintf(fnm, "%s/G1_%d.dat", data->g_imp_path, subsite_index);
-            B_N = data->B[1].N;
-            ptype[0] = 0;
-
-            // Set current block index for kernel processing
-            data->current_block_idx = i1;
-
-            // Apply G_imp shifts immediately for G1 profiles
-            FILE *fp = fopen(fnm, "r");
-            if (!fp)
-            {
-              fprintf(stderr, "Error, %s does not exist\n", fnm);
-              exit(1);
-            }
-
-            // Validate G_imp file size before reading
-            fclose(fp);
-            int validation_result = validate_gimp_file_size(fnm, B_N);
-            if (validation_result == -1)
-            {
-              fprintf(stderr, "Error, %s does not exist\n", fnm);
-              exit(1);
-            }
-            else if (validation_result == 0)
-            {
-              fprintf(stderr, "Error, %s has incorrect size (expected %d bins)\n", fnm, B_N);
-              exit(1);
-            }
-
-            // Reopen and read the validated file
-            fp = fopen(fnm, "r");
-            for (int idx = 0; idx < B_N; idx++)
-              fscanf(fp, "%lf", &data->Gimp_h[idx]);
-            fclose(fp);
-
-            CUDA_CHECK(cudaMemcpy(data->Gimp_d, data->Gimp_h, B_N * sizeof(double), cudaMemcpyHostToDevice));
-          }
-          i--;
-        }
-        int pair_counter = 0; // Counter for G12 pairs
-        for (i1 = data->block0[s1]; i1 < data->block0[s1 + 1]; i1++)
-        {
-          for (i2 = i1 + 1; i2 < data->block0[s1 + 1]; i2++)
-          {
-            if (i == 0)
-            {
-              fprintf(stderr, "1D Profile %d,%d\n", i1, i2);
-              wnorm = 1.0 / ((data->Nsubs[s1] - 1) / 2.0);
-              bin12<<<(data->ND + BLOCK - 1) / BLOCK, BLOCK>>>(data[0], i1, i2);
-              CUDA_CHECK(cudaGetLastError());
-              CUDA_CHECK(cudaDeviceSynchronize());
-              // G12 files are generated per dimension, not per pair
-              // All pairs (0,1), (0,2), (1,2) use the same G12_3.dat file
-              // But we need to track which pair for shift application
-              sprintf(fnm, "%s/G12_%d.dat", data->g_imp_path, data->Nsubs[s1]);
-              B_N = data->B2d[1].N * data->B2d[2].N;
-              ptype[0] = 1;
-
-              // Set current block index for kernel processing (use i1 for conditional profiles)
-              data->current_block_idx = i1;
-
-              // Apply G_imp shifts immediately for G12 profiles
-              FILE *fp = fopen(fnm, "r");
-              if (!fp)
-              {
-                fprintf(stderr, "Error, %s does not exist\n", fnm);
-                exit(1);
-              }
-
-              // Validate G_imp file size before reading
-              fclose(fp);
-              int validation_result = validate_gimp_file_size(fnm, B_N);
-              if (validation_result == -1)
-              {
-                fprintf(stderr, "Error, %s does not exist\n", fnm);
-                exit(1);
-              }
-              else if (validation_result == 0)
-              {
-                fprintf(stderr, "Error, %s has incorrect size (expected %d bins)\n", fnm, B_N);
-                exit(1);
-              }
-
-              // Reopen and read the validated file
-              fp = fopen(fnm, "r");
-              for (int idx = 0; idx < B_N; idx++)
-                fscanf(fp, "%lf", &data->Gimp_h[idx]);
-              fclose(fp);
-
-              CUDA_CHECK(cudaMemcpy(data->Gimp_d, data->Gimp_h, B_N * sizeof(double), cudaMemcpyHostToDevice));
-
-              // Store pair information for shift calculation (will be parsed from context)
-              pair_counter++;
-            }
-            i--;
-          }
-        }
-        if (data->Nsubs[s1] > 2)
-        {
-          int pair_counter = 0; // Counter for G2 pairs
-          for (i1 = data->block0[s1]; i1 < data->block0[s1 + 1]; i1++)
-          {
-            for (i2 = i1 + 1; i2 < data->block0[s1 + 1]; i2++)
-            {
-              if (i == 0)
-              {
-                fprintf(stderr, "2D Profile %d,%d\n", i1, i2);
-                wnorm = 1.0 / ((data->Nsubs[s1] - 1) / 2.0);
-                bin2<<<(data->ND + BLOCK - 1) / BLOCK, BLOCK>>>(data[0], i1, i2);
-                CUDA_CHECK(cudaGetLastError());
-                CUDA_CHECK(cudaDeviceSynchronize());
-                // G2 files are generated per dimension, similar to G12
-                // All pairs use the same G2_3.dat file
-                sprintf(fnm, "%s/G2_%d.dat", data->g_imp_path, data->Nsubs[s1]);
-                B_N = data->B2d[1].N * data->B2d[2].N;
-                ptype[0] = 2;
-
-                // Set current block index for kernel processing (use i1 for pair profiles)
-                data->current_block_idx = i1;
-
-                // Apply G_imp shifts immediately for G2 profiles
-                FILE *fp = fopen(fnm, "r");
-                if (!fp)
-                {
-                  fprintf(stderr, "Error, %s does not exist\n", fnm);
-                  exit(1);
-                }
-
-                // Validate G_imp file size before reading
-                fclose(fp);
-                int validation_result = validate_gimp_file_size(fnm, B_N);
-                if (validation_result == -1)
-                {
-                  fprintf(stderr, "Error, %s does not exist\n", fnm);
-                  exit(1);
-                }
-                else if (validation_result == 0)
-                {
-                  fprintf(stderr, "Error, %s has incorrect size (expected %d bins)\n", fnm, B_N);
-                  exit(1);
-                }
-
-                // Reopen and read the validated file
-                fp = fopen(fnm, "r");
-                for (int idx = 0; idx < B_N; idx++)
-                  fscanf(fp, "%lf", &data->Gimp_h[idx]);
-                fclose(fp);
-
-                CUDA_CHECK(cudaMemcpy(data->Gimp_d, data->Gimp_h, B_N * sizeof(double), cudaMemcpyHostToDevice));
-
-                pair_counter++;
-              }
-              i--;
-            }
-          }
-        }
-      }
-      else if (data->msprof)
-      {
-        for (i1 = data->block0[s1]; i1 < data->block0[s1 + 1]; i1++)
-        {
-          for (i2 = data->block0[s2]; i2 < data->block0[s2 + 1]; i2++)
-          {
-            if (i == 0)
-            {
-              fprintf(stderr, "2D SS Profile %d,%d\n", i1, i2);
-              wnorm = 1.0 / (data->Nsubs[s1] * data->Nsubs[s2]);
-              bin2<<<(data->ND + BLOCK - 1) / BLOCK, BLOCK>>>(data[0], i1, i2);
-              CUDA_CHECK(cudaGetLastError());
-              CUDA_CHECK(cudaDeviceSynchronize());
-              // For cross-site G1_i_j files, map to actual subsite indices
-              int subsite_index_s1 = (i1 - data->block0[s1]) + 2;
-              int subsite_index_s2 = (i2 - data->block0[s2]) + 2;
-              sprintf(fnm, "%s/G1_%d_%d.dat", data->g_imp_path, subsite_index_s1, subsite_index_s2);
-              B_N = data->B2d[1].N * data->B2d[2].N;
-              ptype[0] = 3;
-
-              // Set current block index for kernel processing (use i1 for inter-site profiles)
-              data->current_block_idx = i1;
-
-              // Apply G_imp shifts immediately for cross-site G1_i_j profiles
-              FILE *fp = fopen(fnm, "r");
-              if (!fp)
-              {
-                fprintf(stderr, "Error, %s does not exist\n", fnm);
-                exit(1);
-              }
-
-              // Validate G_imp file size before reading
-              fclose(fp);
-              int validation_result = validate_gimp_file_size(fnm, B_N);
-              if (validation_result == -1)
-              {
-                fprintf(stderr, "Error, %s does not exist\n", fnm);
-                exit(1);
-              }
-              else if (validation_result == 0)
-              {
-                fprintf(stderr, "Error, %s has incorrect size (expected %d bins)\n", fnm, B_N);
-                exit(1);
-              }
-
-              // Reopen and read the validated file
-              fp = fopen(fnm, "r");
-              for (int idx = 0; idx < B_N; idx++)
-                fscanf(fp, "%lf", &data->Gimp_h[idx]);
-              fclose(fp);
-
-              CUDA_CHECK(cudaMemcpy(data->Gimp_d, data->Gimp_h, B_N * sizeof(double), cudaMemcpyHostToDevice));
-            }
-            i--;
-          }
-        }
-      }
-    }
+  case 0:
+    fprintf(stderr, "1D Profile %d\n", p->i1);
+    bin1<<<grid, BLOCK>>>(data[0], p->i1);
+    break;
+  case 1:
+    fprintf(stderr, "1D Profile %d,%d\n", p->i1, p->i2);
+    bin12<<<grid, BLOCK>>>(data[0], p->i1, p->i2);
+    break;
+  case 2:
+    fprintf(stderr, "2D Profile %d,%d\n", p->i1, p->i2);
+    bin2<<<grid, BLOCK>>>(data[0], p->i1, p->i2);
+    break;
+  case 3:
+    fprintf(stderr, "2D SS Profile %d,%d\n", p->i1, p->i2);
+    bin2<<<grid, BLOCK>>>(data[0], p->i1, p->i2);
+    break;
   }
+  CUDA_CHECK(cudaGetLastError());
+  CUDA_CHECK(cudaDeviceSynchronize());
 
-  return wnorm;
+  // Load G_imp data from cache
+  double *gimp_cached = gimp_cache_get(data->gimp_cache, p->gimp_fn, p->B_N);
+  memcpy(data->Gimp_h, gimp_cached, p->B_N * sizeof(double));
+  CUDA_CHECK(cudaMemcpy(data->Gimp_d, data->Gimp_h, p->B_N * sizeof(double), cudaMemcpyHostToDevice));
+
+  return p->wnorm;
 }
 
 __global__ void reactioncoord_phi(struct_data data, int i1)
@@ -1095,93 +1101,23 @@ __global__ void reactioncoord_chi(struct_data data, int i1, int i2)
 
 void reactioncoord_all(struct_data *data, int i)
 {
-  int s1, s2, j1, j2;
-  for (s1 = 0; s1 < data->Nsites; s1++)
+  param_desc *d = &data->params[i];
+  int grid = (data->ND + BLOCK - 1) / BLOCK;
+
+  switch (d->type)
   {
-    for (s2 = s1; s2 < data->Nsites; s2++)
-    {
-      if (s1 == s2)
-      {
-        for (j1 = data->block0[s1]; j1 < data->block0[s1 + 1]; j1++)
-        {
-          if (i == 0)
-            reactioncoord_phi<<<(data->ND + BLOCK - 1) / BLOCK, BLOCK>>>(data[0], j1);
-          i--;
-        }
-        for (j1 = data->block0[s1]; j1 < data->block0[s1 + 1]; j1++)
-        {
-          for (j2 = j1 + 1; j2 < data->block0[s1 + 1]; j2++)
-          {
-            if (i == 0)
-              reactioncoord_psi<<<(data->ND + BLOCK - 1) / BLOCK, BLOCK>>>(data[0], j1, j2);
-            i--;
-          }
-        }
-        for (j1 = data->block0[s1]; j1 < data->block0[s1 + 1]; j1++)
-        {
-          for (j2 = data->block0[s1]; j2 < data->block0[s1 + 1]; j2++)
-          {
-            if (j1 != j2)
-            {
-              if (i == 0)
-                reactioncoord_chi<<<(data->ND + BLOCK - 1) / BLOCK, BLOCK>>>(data[0], j1, j2);
-              i--;
-            }
-          }
-        }
-        for (j1 = data->block0[s1]; j1 < data->block0[s1 + 1]; j1++)
-        {
-          for (j2 = data->block0[s1]; j2 < data->block0[s1 + 1]; j2++)
-          {
-            if (j1 != j2)
-            {
-              if (i == 0)
-                reactioncoord_omega<<<(data->ND + BLOCK - 1) / BLOCK, BLOCK>>>(data[0], j1, j2);
-              i--;
-            }
-          }
-        }
-      }
-      else if (data->ms)
-      {
-        for (j1 = data->block0[s1]; j1 < data->block0[s1 + 1]; j1++)
-        {
-          for (j2 = data->block0[s2]; j2 < data->block0[s2 + 1]; j2++)
-          {
-            if (i == 0)
-              reactioncoord_psi<<<(data->ND + BLOCK - 1) / BLOCK, BLOCK>>>(data[0], j1, j2);
-            i--;
-          }
-        }
-        if (data->ms == 1)
-        {
-          for (j1 = data->block0[s1]; j1 < data->block0[s1 + 1]; j1++)
-          {
-            for (j2 = data->block0[s2]; j2 < data->block0[s2 + 1]; j2++)
-            {
-              if (i == 0)
-                reactioncoord_chi<<<(data->ND + BLOCK - 1) / BLOCK, BLOCK>>>(data[0], j1, j2);
-              i--;
-              if (i == 0)
-                reactioncoord_chi<<<(data->ND + BLOCK - 1) / BLOCK, BLOCK>>>(data[0], j2, j1);
-              i--;
-            }
-          }
-          for (j1 = data->block0[s1]; j1 < data->block0[s1 + 1]; j1++)
-          {
-            for (j2 = data->block0[s2]; j2 < data->block0[s2 + 1]; j2++)
-            {
-              if (i == 0)
-                reactioncoord_omega<<<(data->ND + BLOCK - 1) / BLOCK, BLOCK>>>(data[0], j1, j2);
-              i--;
-              if (i == 0)
-                reactioncoord_omega<<<(data->ND + BLOCK - 1) / BLOCK, BLOCK>>>(data[0], j2, j1);
-              i--;
-            }
-          }
-        }
-      }
-    }
+  case 0: // phi
+    reactioncoord_phi<<<grid, BLOCK>>>(data[0], d->j1);
+    break;
+  case 1: // psi
+    reactioncoord_psi<<<grid, BLOCK>>>(data[0], d->j1, d->j2);
+    break;
+  case 2: // chi
+    reactioncoord_chi<<<grid, BLOCK>>>(data[0], d->j1, d->j2);
+    break;
+  case 3: // omega
+    reactioncoord_omega<<<grid, BLOCK>>>(data[0], d->j1, d->j2);
+    break;
   }
 }
 
@@ -1190,7 +1126,7 @@ __global__ void get_lnZ(struct_data data, double beta,
                         int block_off)
 {
   int t = blockIdx.x * blockDim.x + threadIdx.x;
-  __shared__ double loc_lnZ[MAX_1D_BINS];
+  extern __shared__ double loc_lnZ[];
 
   // Enhanced initialization with bounds checking using dynamic dimension
   for (int i = threadIdx.x; i < g_1d_bins; i += blockDim.x)
@@ -1249,7 +1185,7 @@ __global__ void get_dlnZ(struct_data data, int j1, double beta,
                          int block_off)
 {
   int t = blockIdx.x * blockDim.x + threadIdx.x;
-  __shared__ double loc_dlnZ[MAX_1D_BINS];
+  extern __shared__ double loc_dlnZ[];
 
   // Enhanced initialization using dynamic dimension
   for (int i = threadIdx.x; i < g_1d_bins; i += blockDim.x)
@@ -1378,208 +1314,151 @@ __global__ void get_CC(struct_data data, int i, double beta, double wnorm, int p
     }
   }
 
-  // Validate before storing in shared memory - be strict about invalid values
-  if (!isfinite(myCC))
-  {
-    myCC = 0.0; // Only handle NaN/Inf, preserve valid negative values for debugging
-  }
-  if (myCC < 0)
-  {
-    // Log negative values for debugging but don't change them yet
-    // This helps identify numerical issues
-  }
+  // Store partial sum without suppressing NaN — if a numerical issue
+  // occurred, let it propagate to the final C matrix so the Python
+  // solver can detect it and fail the iteration cleanly.
   loc_CC[threadIdx.x] = myCC;
 
   __syncthreads();
 
-  // Enhanced reduction with validation
+  // Tree reduction
   for (int k = 1; k < 100; k *= 2)
   {
     if (threadIdx.x % (2 * k) == 0 && threadIdx.x + k < 100)
     {
-      double val = loc_CC[threadIdx.x + k];
-      if (isfinite(val))
-      {
-        loc_CC[threadIdx.x] += val;
-      }
+      loc_CC[threadIdx.x] += loc_CC[threadIdx.x + k];
     }
     __syncthreads();
   }
 
   if (threadIdx.x == 0)
   {
-    double final_result = loc_CC[0];
-    if (!isfinite(final_result))
-      final_result = 0.0;
-    // Keep negative values for now - they indicate numerical issues
-
     int output_idx = gridDim.x * j1 + j2;
     if (output_idx >= 0)
     {
-      data.CC_d[output_idx] = final_result;
+      data.CC_d[output_idx] = loc_CC[0];
     }
   }
 }
 
 // G_imp profile size validation function
-int validate_gimp_file_size(const char *filename, int expected_size)
+// Count double values in a file. Returns count, or -1 if file doesn't exist.
+static int count_file_values(const char *filename)
 {
   FILE *fp = fopen(filename, "r");
   if (!fp)
-  {
-    return -1; // File doesn't exist
-  }
+    return -1;
 
   int count = 0;
   double value;
   while (fscanf(fp, "%lf", &value) == 1)
-  {
     count++;
-  }
   fclose(fp);
-
-  if (count != expected_size)
-  {
-    fprintf(stderr, "ERROR: G_imp file %s has %d values, expected %d\n",
-            filename, count, expected_size);
-    fprintf(stderr, "This may indicate incorrect bin configuration or outdated profile files\n");
-    return 0; // Size mismatch
-  }
-
-  return 1; // Correct size
+  return count;
 }
 
-// G_imp dimension detection function
-int detect_g_file_dimensions(const char *filename, int *dim1, int *dim2, int is_2d)
-{
-  FILE *fp = fopen(filename, "r");
-  if (!fp)
-  {
-    fprintf(stderr, "Warning: G_imp file %s does not exist, using default dimensions\n", filename);
-    *dim1 = is_2d ? 32 : 1024;
-    *dim2 = is_2d ? 32 : 1;
-    return 0; // File doesn't exist, return defaults
-  }
-
-  int count = 0;
-  double value;
-  while (fscanf(fp, "%lf", &value) == 1)
-  {
-    count++;
-  }
-  fclose(fp);
-
-  if (is_2d)
-  {
-    // For 2D profiles, find the square root or nearest factors
-    double sqrt_count = sqrt((double)count);
-    if (sqrt_count == floor(sqrt_count))
-    {
-      // Perfect square
-      *dim1 = *dim2 = (int)sqrt_count;
-    }
-    else
-    {
-      // Find best factorization close to square
-      int best_dim1 = (int)sqrt_count;
-      while (best_dim1 > 1 && count % best_dim1 != 0)
-        best_dim1--;
-      *dim1 = best_dim1;
-      *dim2 = count / best_dim1;
-    }
-    fprintf(stderr, "Detected 2D G_imp file %s: %d x %d = %d values\n",
-            filename, *dim1, *dim2, count);
-  }
-  else
-  {
-    // For 1D profiles
-    *dim1 = count;
-    *dim2 = 1;
-    fprintf(stderr, "Detected 1D G_imp file %s: %d values\n", filename, count);
-  }
-
-  return 1; // Success
-}
-
-// Auto-detect profile dimensions from existing G_imp files
+// Auto-detect profile dimensions from G_imp files and pre-populate the cache.
+// Scans one 1D and one 2D file to determine bin counts, then loads all
+// G_imp files into the cache so bin_all() never touches disk.
 void auto_detect_profile_dimensions(struct_data *data)
 {
   char fnm[MAXLENGTH];
-  int dim1_1d = 1024, dim2_1d = 1; // Default 1D dimensions
-  int dim1_2d = 32, dim2_2d = 32;  // Default 2D dimensions
+  int dim_1d = 1024;              // Default 1D bins
+  int dim_2d = 32;                // Default 2D bins (square)
   int found_1d = 0, found_2d = 0;
 
   fprintf(stderr, "\n=== Auto-detecting profile dimensions from G_imp files ===\n");
 
-  // Try to find existing G_imp files to determine dimensions
-  for (int s1 = 0; s1 < data->Nsites; s1++)
+  // --- Phase 1: Detect dimensions from the first available files ---
+
+  for (int s1 = 0; s1 < data->Nsites && !found_1d; s1++)
   {
-    // Check for 1D profile files
     sprintf(fnm, "%s/G1_%d.dat", data->g_imp_path, data->Nsubs[s1]);
-    if (detect_g_file_dimensions(fnm, &dim1_1d, &dim2_1d, 0))
+    int count = count_file_values(fnm);
+    if (count > 0)
     {
+      dim_1d = count;
       found_1d = 1;
-      break; // Found one, that's enough
+      fprintf(stderr, "Detected 1D: %s → %d bins\n", fnm, count);
     }
   }
 
-  // Check for 2D profile files
-  for (int s1 = 0; s1 < data->Nsites; s1++)
+  // Try G12, then G2, then cross-site for 2D dimensions
+  for (int s1 = 0; s1 < data->Nsites && !found_2d; s1++)
   {
-    sprintf(fnm, "%s/G12_%d.dat", data->g_imp_path, data->Nsubs[s1]);
-    if (detect_g_file_dimensions(fnm, &dim1_2d, &dim2_2d, 1))
+    const char *prefixes[] = {"G12", "G2"};
+    for (int p = 0; p < 2 && !found_2d; p++)
     {
-      found_2d = 1;
-      break;
-    }
-
-    sprintf(fnm, "%s/G2_%d.dat", data->g_imp_path, data->Nsubs[s1]);
-    if (detect_g_file_dimensions(fnm, &dim1_2d, &dim2_2d, 1))
-    {
-      found_2d = 1;
-      break;
-    }
-
-    // Check multi-site profiles
-    for (int s2 = s1 + 1; s2 < data->Nsites; s2++)
-    {
-      sprintf(fnm, "%s/G1_%d_%d.dat", data->g_imp_path, data->Nsubs[s1], data->Nsubs[s2]);
-      if (detect_g_file_dimensions(fnm, &dim1_2d, &dim2_2d, 1))
+      sprintf(fnm, "%s/%s_%d.dat", data->g_imp_path, prefixes[p], data->Nsubs[s1]);
+      int count = count_file_values(fnm);
+      if (count > 0)
       {
+        double sq = sqrt((double)count);
+        dim_2d = (sq == floor(sq)) ? (int)sq : 32;
         found_2d = 1;
-        break;
+        fprintf(stderr, "Detected 2D: %s → %dx%d bins\n", fnm, dim_2d, dim_2d);
       }
     }
-    if (found_2d)
-      break;
+    for (int s2 = s1 + 1; s2 < data->Nsites && !found_2d; s2++)
+    {
+      sprintf(fnm, "%s/G1_%d_%d.dat", data->g_imp_path, data->Nsubs[s1], data->Nsubs[s2]);
+      int count = count_file_values(fnm);
+      if (count > 0)
+      {
+        double sq = sqrt((double)count);
+        dim_2d = (sq == floor(sq)) ? (int)sq : 32;
+        found_2d = 1;
+        fprintf(stderr, "Detected 2D: %s → %dx%d bins\n", fnm, dim_2d, dim_2d);
+      }
+    }
   }
 
-  // Update data structure with detected dimensions
-  data->B[1].N = dim1_1d;
-  data->B2d[1].N = dim1_2d;
-  data->B2d[2].N = dim2_2d;
+  // Apply detected dimensions
+  data->B[1].N = dim_1d;
+  data->B[1].dx = 1.0 / dim_1d;
+  data->B2d[1].N = dim_2d;
+  data->B2d[1].dx = 1.0 / dim_2d;
+  data->B2d[2].N = dim_2d;
+  data->B2d[2].dx = 1.0 / dim_2d;
 
-  // Update dx values proportionally if dimensions changed from defaults
-  if (found_1d && dim1_1d != 1024)
+  fprintf(stderr, "Final dimensions: 1D=%d, 2D=%dx%d\n", dim_1d, dim_2d, dim_2d);
+
+  // Update device constants
+  update_device_dimensions(dim_1d, dim_2d, dim_2d);
+
+  // --- Phase 2: Pre-load all G_imp files into cache ---
+  int B_N_1d = dim_1d;
+  int B_N_2d = dim_2d * dim_2d;
+
+  for (int s1 = 0; s1 < data->Nsites; s1++)
   {
-    data->B[1].dx = 1.0 / dim1_1d;
-    fprintf(stderr, "Updated 1D dx to %f for %d bins\n", data->B[1].dx, dim1_1d);
+    // G1 (1D)
+    sprintf(fnm, "%s/G1_%d.dat", data->g_imp_path, data->Nsubs[s1]);
+    gimp_cache_get(data->gimp_cache, fnm, B_N_1d);
+
+    // G12, G2 (2D)
+    sprintf(fnm, "%s/G12_%d.dat", data->g_imp_path, data->Nsubs[s1]);
+    gimp_cache_get(data->gimp_cache, fnm, B_N_2d);
+
+    if (data->Nsubs[s1] > 2)
+    {
+      sprintf(fnm, "%s/G2_%d.dat", data->g_imp_path, data->Nsubs[s1]);
+      gimp_cache_get(data->gimp_cache, fnm, B_N_2d);
+    }
+
+    // Cross-site (2D)
+    if (data->msprof)
+    {
+      for (int s2 = s1 + 1; s2 < data->Nsites; s2++)
+      {
+        sprintf(fnm, "%s/G1_%d_%d.dat", data->g_imp_path, data->Nsubs[s1], data->Nsubs[s2]);
+        gimp_cache_get(data->gimp_cache, fnm, B_N_2d);
+      }
+    }
   }
 
-  if (found_2d && (dim1_2d != 32 || dim2_2d != 32))
-  {
-    data->B2d[1].dx = 1.0 / dim1_2d;
-    data->B2d[2].dx = 1.0 / dim2_2d;
-    fprintf(stderr, "Updated 2D dx to %f x %f for %d x %d bins\n",
-            data->B2d[1].dx, data->B2d[2].dx, dim1_2d, dim2_2d);
-  }
-
-  fprintf(stderr, "Final dimensions: 1D=%d, 2D=%dx%d\n",
-          data->B[1].N, data->B2d[1].N, data->B2d[2].N);
+  fprintf(stderr, "Pre-loaded %d G_imp files into cache\n", data->gimp_cache->count);
   fprintf(stderr, "========================================================\n\n");
-
-  // Update device constants with detected dimensions
-  update_device_dimensions(data->B[1].N, data->B2d[1].N, data->B2d[2].N);
 }
 
 // Update device dimension constants
@@ -1643,17 +1522,12 @@ void validate_matrix_results(double *matrix, int rows, int cols, const char *nam
 
   if (nan_count > 0 || inf_count > 0)
   {
-    fprintf(stderr, "WARNING: %s contains invalid values!\n", name);
-
-    // Only replace NaN/Inf, not negative values - they might be meaningful
-    for (int i = 0; i < rows * cols; i++)
-    {
-      if (!isfinite(matrix[i]))
-      {
-        matrix[i] = 0.0;
-      }
-    }
-    fprintf(stderr, "Invalid values in %s replaced with zeros\n", name);
+    // Report but do NOT replace — patching NaN/Inf with zeros silently
+    // corrupts the Hessian, producing a plausible-looking but wrong
+    // linear system.  The Python solver will detect non-finite values
+    // and fall back to zero updates for the entire iteration.
+    fprintf(stderr, "WARNING: %s contains %d NaN + %d Inf values (not patched)\n",
+            name, nan_count, inf_count);
   }
 
   // Report negative values but don't automatically fix them
@@ -1705,8 +1579,16 @@ void getfofq(struct_data *data, double beta)
 {
   int B_N = (data->B2d[1].N * data->B2d[2].N > data->B[1].N) ? data->B2d[1].N * data->B2d[2].N : data->B[1].N;
   int iN = data->iN, jN = data->jN, i, j1, j2, k;
-  double *C = (double *)malloc((jN + iN) * (jN + iN) * sizeof(double));
-  double *V = (double *)malloc((jN + iN) * sizeof(double));
+  int dim = jN + iN;
+  double *C = (double *)malloc(dim * dim * sizeof(double));
+  double *V = (double *)malloc(dim * sizeof(double));
+  if (!C || !V)
+  {
+    fprintf(stderr, "FATAL: malloc failed for C/V matrices (dim=%d, need %.1f MB)\n",
+            dim, (dim * dim + dim) * sizeof(double) / 1e6);
+    free(C); free(V);
+    return;
+  }
   double wnorm, weight;
   int ptype;
   char fnm[MAXLENGTH];
@@ -1734,7 +1616,7 @@ void getfofq(struct_data *data, double beta)
       CUDA_CHECK(cudaGetLastError());
       CUDA_CHECK(cudaDeviceSynchronize());
 
-      get_lnZ<<<(data->ND + (100 * SBLOCK) - 1) / (100 * SBLOCK), 100>>>(data[0], data->beta_t,
+      get_lnZ<<<(data->ND + (100 * SBLOCK) - 1) / (100 * SBLOCK), 100, B_N * sizeof(double)>>>(data[0], data->beta_t,
                                                                          data->gshift_d, data->current_block_idx);
       CUDA_CHECK(cudaGetLastError());
       CUDA_CHECK(cudaDeviceSynchronize());
@@ -1806,7 +1688,7 @@ void getfofq(struct_data *data, double beta)
         CUDA_CHECK(cudaGetLastError());
         CUDA_CHECK(cudaDeviceSynchronize());
 
-        get_dlnZ<<<(data->ND + (100 * SBLOCK) - 1) / (100 * SBLOCK), 100>>>(data[0], j1, data->beta_t,
+        get_dlnZ<<<(data->ND + (100 * SBLOCK) - 1) / (100 * SBLOCK), 100, B_N * sizeof(double)>>>(data[0], j1, data->beta_t,
                                                                             data->gshift_d, data->current_block_idx);
         CUDA_CHECK(cudaGetLastError());
         CUDA_CHECK(cudaDeviceSynchronize());
@@ -1854,11 +1736,9 @@ void getfofq(struct_data *data, double beta)
         }
         for (j2 = 0; j2 < jN; j2++)
         {
-          double cc_val = data->CC_h[j1 * jN + j2];
-          if (isfinite(cc_val) && cc_val >= 0) // Validate CC matrix values
-          {
-            C[j1 * (jN + iN) + j2] += cc_val;
-          }
+          // Let NaN propagate — Python solver detects it and fails the
+          // iteration cleanly rather than using a silently corrupted Hessian.
+          C[j1 * (jN + iN) + j2] += data->CC_h[j1 * jN + j2];
         }
       }
     }
@@ -1934,6 +1814,10 @@ extern "C" int wham(int arg1, double arg2, int arg3, int arg4, int use_gshift,
     return -1;
   }
 
+  // Build descriptor tables for O(1) profile/param lookup
+  build_profile_descs(data);
+  build_param_descs(data);
+
   // Synchronize before starting main computation
   CUDA_CHECK(cudaDeviceSynchronize());
 
@@ -1946,233 +1830,15 @@ extern "C" int wham(int arg1, double arg2, int arg3, int arg4, int use_gshift,
 
   // Final synchronization and cleanup
   CUDA_CHECK(cudaDeviceSynchronize());
+  gimp_cache_free(data->gimp_cache);
+  free(data->gimp_cache);
+  free(data->profiles);
+  free(data->params);
   CUDA_CHECK(cudaDeviceReset());
 
   return 0;
 }
 
-/**
- * Apply G_imp shifts to G_imp profile data based on block index
- *
- * @param gimp_data: Array of G_imp values to be shifted
- * @param data_size: Number of elements in gimp_data
- * @param gimp_filename: Name of the G_imp file (for logging)
- * @param block_index: Index of the block (0=G1, 1=G12, 2=G2, 3=G1_i_j)
- */
-void apply_gimp_shifts(double *gimp_data, int data_size, const char *gimp_filename, int block_index)
-{
-  // Extract filename from full path
-  const char *filename = strrchr(gimp_filename, '/');
-  if (filename)
-  {
-    filename++; // Skip the '/'
-  }
-  else
-  {
-    filename = gimp_filename;
-  }
-
-  // Determine profile type and parse indices
-  int profile_type = 0; // 0=1D, 1=2D, 2=conditional
-  int actual_block_index = -1;
-  int subsite1 = -1, subsite2 = -1;
-
-  // Parse different G_imp file patterns
-  if (strncmp(filename, "G1_", 3) == 0)
-  {
-    // Check if it's G1_i_j.dat (2D) or G1_i.dat (1D)
-    int i, j;
-    if (sscanf(filename, "G1_%d_%d.dat", &i, &j) == 2)
-    {
-      // 2D cross-site profile: G1_i_j.dat
-      subsite1 = i;
-      subsite2 = j;
-      profile_type = 1; // 2D
-    }
-    else if (sscanf(filename, "G1_%d.dat", &subsite1) == 1)
-    {
-      // 1D profile: G1_i.dat
-      actual_block_index = subsite1 - 2; // G1_2→block 0, G1_3→block 1, G1_4→block 2
-      profile_type = 0;                  // 1D
-    }
-    else
-    {
-      printf("Warning: Could not parse G1 filename %s\n", filename);
-      return;
-    }
-  }
-  else if (strncmp(filename, "G12_", 4) == 0)
-  {
-    if (sscanf(filename, "G12_%d.dat", &subsite1) == 1)
-    {
-      // Conditional profile: G12_i.dat
-      actual_block_index = subsite1 - 2;
-      profile_type = 2; // Conditional
-    }
-    else
-    {
-      printf("Warning: Could not parse G12 filename %s\n", filename);
-      return;
-    }
-  }
-  else if (strncmp(filename, "G2_", 3) == 0)
-  {
-    // Check if it's G2_i_j.dat (2D) or G2_i.dat (1D)
-    int i, j;
-    if (sscanf(filename, "G2_%d_%d.dat", &i, &j) == 2)
-    {
-      // 2D pair profile: G2_i_j.dat
-      subsite1 = i;
-      subsite2 = j;
-      profile_type = 1; // 2D
-    }
-    else if (sscanf(filename, "G2_%d.dat", &subsite1) == 1)
-    {
-      // 1D profile: G2_i.dat
-      actual_block_index = subsite1 - 2;
-      profile_type = 0; // 1D
-    }
-    else
-    {
-      printf("Warning: Could not parse G2 filename %s\n", filename);
-      return;
-    }
-  }
-  else
-  {
-    printf("Warning: Unknown G_imp file pattern: %s\n", filename);
-    return;
-  }
-
-  // Use a single shift file (for now, use shifts_sim1.dat)
-  char shift_filename[256];
-  snprintf(shift_filename, sizeof(shift_filename), "G_imp_shifts/shifts_sim1.dat");
-
-  FILE *shift_file = fopen(shift_filename, "r");
-  if (!shift_file)
-  {
-    printf("No G_imp shift file found (%s), using zero shift for %s\n", shift_filename, filename);
-    return; // No shift applied
-  }
-
-  // Read shift values (skip comment lines)
-  double shift_values[10]; // Support up to 10 blocks
-  int num_shifts = 0;
-  char line[256];
-
-  while (fgets(line, sizeof(line), shift_file) && num_shifts < 10)
-  {
-    // Skip comment lines
-    if (line[0] == '#' || line[0] == '\n')
-      continue;
-
-    double shift_val;
-    if (sscanf(line, "%lf", &shift_val) == 1)
-    {
-      shift_values[num_shifts] = shift_val;
-      num_shifts++;
-    }
-  }
-  fclose(shift_file);
-
-  // Apply shifts based on profile type
-  if (profile_type == 0)
-  {
-    // 1D profiles: uniform shift
-    if (actual_block_index >= 0 && actual_block_index < num_shifts)
-    {
-      double shift = shift_values[actual_block_index];
-
-      for (int i = 0; i < data_size; i++)
-      {
-        gimp_data[i] += shift;
-      }
-
-      printf("Applied G_imp shift %.6f to %s (block %d)\n",
-             shift, filename, actual_block_index);
-    }
-    else
-    {
-      printf("Warning: No shift available for block %d in %s, using zero shift for %s\n",
-             actual_block_index, shift_filename, filename);
-    }
-  }
-  else if (profile_type == 1)
-  {
-    // 2D profiles: position-dependent shifts
-    int block1 = subsite1 - 2;
-    int block2 = subsite2 - 2;
-
-    if (block1 >= 0 && block1 < num_shifts && block2 >= 0 && block2 < num_shifts)
-    {
-      double shift1 = shift_values[block1];
-      double shift2 = shift_values[block2];
-
-      // Determine grid size (assume square 2D matrix)
-      int grid_size = (int)sqrt((double)data_size);
-      if (grid_size * grid_size != data_size)
-      {
-        printf("Warning: Cannot determine 2D grid size for %s (size=%d), using average shift\n",
-               filename, data_size);
-        // Fall back to average shift
-        double avg_shift = (shift1 + shift2) / 2.0;
-        for (int i = 0; i < data_size; i++)
-        {
-          gimp_data[i] += avg_shift;
-        }
-        printf("Applied G_imp average shift %.6f to %s\n", avg_shift, filename);
-      }
-      else
-      {
-        // Apply position-dependent shifts
-        for (int i = 0; i < grid_size; i++)
-        {
-          for (int j = 0; j < grid_size; j++)
-          {
-            int idx = i * grid_size + j;
-
-            // Lambda coordinates [0,1]
-            double lambda1 = (grid_size > 1) ? (double)i / (double)(grid_size - 1) : 0.0;
-            double lambda2 = (grid_size > 1) ? (double)j / (double)(grid_size - 1) : 0.0;
-
-            // Position-dependent shift: weighted by lambda coordinates
-            double position_shift = shift1 * lambda1 + shift2 * lambda2;
-            gimp_data[idx] += position_shift;
-          }
-        }
-
-        printf("Applied G_imp position-dependent shifts to %s (blocks %d:%.6f, %d:%.6f)\n",
-               filename, block1, shift1, block2, shift2);
-      }
-    }
-    else
-    {
-      printf("Warning: Invalid block indices (%d,%d) for 2D profile %s\n",
-             block1, block2, filename);
-    }
-  }
-  else if (profile_type == 2)
-  {
-    // Conditional profiles: uniform shift for now
-    // Could be enhanced to handle specific conditional constraints
-    if (actual_block_index >= 0 && actual_block_index < num_shifts)
-    {
-      double shift = shift_values[actual_block_index];
-
-      for (int i = 0; i < data_size; i++)
-      {
-        gimp_data[i] += shift;
-      }
-
-      printf("Applied G_imp conditional shift %.6f to %s (block %d)\n",
-             shift, filename, actual_block_index);
-    }
-    else
-    {
-      printf("Warning: No shift available for conditional profile %s\n", filename);
-    }
-  }
-}
 
 // ============================================================================
 // LMALF (Likelihood Maximization ALF) Implementation
@@ -2209,6 +1875,19 @@ __device__ void lmalf_reduce(double local, double *shared, double *global)
   }
 }
 
+// Bias basis functions shared by LMALF energy and gradient kernels.
+// rc_exp: exponential saturation basis (x/omega terms)
+// rc_sig: sigmoidal basis (s/chi terms)
+__device__ inline double rc_exp(double qa, double qb, double omega_scale)
+{
+  return qb * (1.0 - exp(-qa / omega_scale));
+}
+
+__device__ inline double rc_sig(double qa, double qb, double chi_offset)
+{
+  return qb * (1.0 - 1.0 / (qa / chi_offset + 1.0));
+}
+
 // LMALF energy kernel: compute bias energy from parameters and lambda
 __global__ void lmalf_energykernel(struct_lmalf lm, double *x, double *lambda, double *energy)
 {
@@ -2237,16 +1916,11 @@ __global__ void lmalf_energykernel(struct_lmalf lm, double *x, double *lambda, d
           for (i2 = i1 + 1; i2 < lm.block0_d[s1 + 1]; i2++)
           {
             q2 = lam[i2];
-            E += x[k] * q1 * q2;                        // c term
-            k++;
-            E += x[k] * q2 * (1 - exp(-q1 / lm.omega_scale));     // x term 1
-            k++;
-            E += x[k] * q1 * (1 - exp(-q2 / lm.omega_scale));     // x term 2
-            k++;
-            E += x[k] * q2 * (1 - 1 / (q1 / lm.chi_offset + 1)); // s term 1
-            k++;
-            E += x[k] * q1 * (1 - 1 / (q2 / lm.chi_offset + 1)); // s term 2
-            k++;
+            E += x[k++] * q1 * q2;
+            E += x[k++] * rc_exp(q1, q2, lm.omega_scale);
+            E += x[k++] * rc_exp(q2, q1, lm.omega_scale);
+            E += x[k++] * rc_sig(q1, q2, lm.chi_offset);
+            E += x[k++] * rc_sig(q2, q1, lm.chi_offset);
           }
         }
       }
@@ -2259,18 +1933,13 @@ __global__ void lmalf_energykernel(struct_lmalf lm, double *x, double *lambda, d
           for (i2 = lm.block0_d[s2]; i2 < lm.block0_d[s2 + 1]; i2++)
           {
             q2 = lam[i2];
-            E += x[k] * q1 * q2;  // c term
-            k++;
+            E += x[k++] * q1 * q2;
             if (lm.ms == 1)
             {
-              E += x[k] * q2 * (1 - exp(-q1 / lm.omega_scale));     // x term 1
-              k++;
-              E += x[k] * q1 * (1 - exp(-q2 / lm.omega_scale));     // x term 2
-              k++;
-              E += x[k] * q2 * (1 - 1 / (q1 / lm.chi_offset + 1)); // s term 1
-              k++;
-              E += x[k] * q1 * (1 - 1 / (q2 / lm.chi_offset + 1)); // s term 2
-              k++;
+              E += x[k++] * rc_exp(q1, q2, lm.omega_scale);
+              E += x[k++] * rc_exp(q2, q1, lm.omega_scale);
+              E += x[k++] * rc_sig(q1, q2, lm.chi_offset);
+              E += x[k++] * rc_sig(q2, q1, lm.chi_offset);
             }
           }
         }
@@ -2317,21 +1986,11 @@ __global__ void lmalf_weightedenergykernel(struct_lmalf lm, double sign, double 
           for (i2 = i1 + 1; i2 < lm.block0_d[s1 + 1]; i2++)
           {
             if (b < lm.B) q2 = lam[i2];
-            E = w * q1 * q2;
-            lmalf_reduce(E, Eloc, &dEdx[k]);
-            k++;
-            E = w * q2 * (1 - exp(-q1 / lm.omega_scale));
-            lmalf_reduce(E, Eloc, &dEdx[k]);
-            k++;
-            E = w * q1 * (1 - exp(-q2 / lm.omega_scale));
-            lmalf_reduce(E, Eloc, &dEdx[k]);
-            k++;
-            E = w * q2 * (1 - 1 / (q1 / lm.chi_offset + 1));
-            lmalf_reduce(E, Eloc, &dEdx[k]);
-            k++;
-            E = w * q1 * (1 - 1 / (q2 / lm.chi_offset + 1));
-            lmalf_reduce(E, Eloc, &dEdx[k]);
-            k++;
+            E = w * q1 * q2;                              lmalf_reduce(E, Eloc, &dEdx[k]); k++;
+            E = w * rc_exp(q1, q2, lm.omega_scale);       lmalf_reduce(E, Eloc, &dEdx[k]); k++;
+            E = w * rc_exp(q2, q1, lm.omega_scale);       lmalf_reduce(E, Eloc, &dEdx[k]); k++;
+            E = w * rc_sig(q1, q2, lm.chi_offset);        lmalf_reduce(E, Eloc, &dEdx[k]); k++;
+            E = w * rc_sig(q2, q1, lm.chi_offset);        lmalf_reduce(E, Eloc, &dEdx[k]); k++;
           }
         }
       }
@@ -2343,23 +2002,13 @@ __global__ void lmalf_weightedenergykernel(struct_lmalf lm, double sign, double 
           for (i2 = lm.block0_d[s2]; i2 < lm.block0_d[s2 + 1]; i2++)
           {
             if (b < lm.B) q2 = lam[i2];
-            E = w * q1 * q2;
-            lmalf_reduce(E, Eloc, &dEdx[k]);
-            k++;
+            E = w * q1 * q2;                              lmalf_reduce(E, Eloc, &dEdx[k]); k++;
             if (lm.ms == 1)
             {
-              E = w * q2 * (1 - exp(-q1 / lm.omega_scale));
-              lmalf_reduce(E, Eloc, &dEdx[k]);
-              k++;
-              E = w * q1 * (1 - exp(-q2 / lm.omega_scale));
-              lmalf_reduce(E, Eloc, &dEdx[k]);
-              k++;
-              E = w * q2 * (1 - 1 / (q1 / lm.chi_offset + 1));
-              lmalf_reduce(E, Eloc, &dEdx[k]);
-              k++;
-              E = w * q1 * (1 - 1 / (q2 / lm.chi_offset + 1));
-              lmalf_reduce(E, Eloc, &dEdx[k]);
-              k++;
+              E = w * rc_exp(q1, q2, lm.omega_scale);     lmalf_reduce(E, Eloc, &dEdx[k]); k++;
+              E = w * rc_exp(q2, q1, lm.omega_scale);     lmalf_reduce(E, Eloc, &dEdx[k]); k++;
+              E = w * rc_sig(q1, q2, lm.chi_offset);      lmalf_reduce(E, Eloc, &dEdx[k]); k++;
+              E = w * rc_sig(q2, q1, lm.chi_offset);      lmalf_reduce(E, Eloc, &dEdx[k]); k++;
             }
           }
         }

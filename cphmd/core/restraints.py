@@ -55,18 +55,20 @@ def generate_scat_restraints(
         heavy_atoms = [a for a in all_atoms if not a.startswith("H")]
         h_atoms = [a for a in all_atoms if a.startswith("H")]
 
-        # Get SELECT names for this site
-        select_names = site_data["SELECT"].tolist()
-        select_clause = " .or. ".join(select_names)
+        # Build inline selection from SEGID, RESID, and PATCH columns
+        segid = site_data["SEGID"].iloc[0]
+        resid = site_data["RESID"].iloc[0]
+        resnames = site_data["PATCH"].tolist()
+        resname_clause = " .or. ".join(f"resname {r}" for r in resnames)
 
         # Add restraints for heavy atoms
         for atom in heavy_atoms:
-            lines.append(f"cats SELE type {atom} .and. ({select_clause}) END")
+            lines.append(f"cats SELE type {atom} .and. segid {segid} .and. resid {resid} .and. ({resname_clause}) END")
 
         # Optionally add hydrogen restraints
         if include_hydrogen:
             for atom in h_atoms:
-                lines.append(f"cats SELE type {atom} .and. ({select_clause}) END")
+                lines.append(f"cats SELE type {atom} .and. segid {segid} .and. resid {resid} .and. ({resname_clause}) END")
 
     lines.append("END")
     return "\n".join(lines) + "\n"
