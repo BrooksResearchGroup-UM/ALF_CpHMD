@@ -2695,9 +2695,27 @@ class ALFSimulation:
                             if prev_data is not None:
                                 accumulated.append(prev_data)
                     if len(accumulated) >= 2:
-                        lambda_data_for_check = np.vstack(accumulated)
-                        print(f"  Phase 1 check: accumulated {len(accumulated)} runs "
-                              f"({lambda_data_for_check.shape[0]} frames)")
+                        # Per-run quality gate: check that individual runs
+                        # show genuine multi-state behavior (2+ states visited).
+                        # This prevents random init from creating fake balanced
+                        # populations when runs are concatenated.
+                        lam_thresh = self.config.phase_transition.lambda_threshold
+                        min_ms = self.config.phase_transition.min_multistate_runs_1to2
+                        multistate_count = 0
+                        for run_data in accumulated:
+                            run_mask = run_data > lam_thresh
+                            states_visited = int((run_mask.sum(axis=0) > 0).sum())
+                            if states_visited >= 2:
+                                multistate_count += 1
+                        if multistate_count >= min_ms:
+                            lambda_data_for_check = np.vstack(accumulated)
+                            print(f"  Phase 1 check: accumulated {len(accumulated)} runs "
+                                  f"({lambda_data_for_check.shape[0]} frames), "
+                                  f"{multistate_count} multi-state")
+                        else:
+                            print(f"  Phase 1 check: only {multistate_count}/{len(accumulated)} "
+                                  f"runs show multi-state behavior (need {min_ms}) "
+                                  f"— using single-run data")
 
                 # Compute Phase 2 run count for minimum duration check
                 p2_run_count = None
