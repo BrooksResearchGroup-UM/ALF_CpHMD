@@ -43,7 +43,7 @@ def _fmtval(v: float) -> float:
     return 0.0 if abs(v) < 5e-6 else v
 
 
-from .bias_constants import derive_bias_constants, OMEGA_DECAY, CHI_OFFSET, DEFAULT_FNEX
+from .bias_constants import CHI_OFFSET, OMEGA_DECAY
 
 
 @dataclass
@@ -781,18 +781,16 @@ def get_energy_from_analysis_dir(
         x_fix_shift = load_shift_file(analysis_dir, "x_fix_shift.dat", 0.0)
         s_fix_shift = load_shift_file(analysis_dir, "s_fix_shift.dat", 0.0)
 
-        lambda_files = sorted(
-            f for f in os.listdir(data_dir)
-            if f.startswith("Lambda.") and f.endswith(".dat")
-        )
+        from cphmd.utils.lambda_io import find_lambda_files, read_lambda_values
+        lambda_fpaths = find_lambda_files(Path(data_dir))
 
-        for lambda_file in lambda_files:
-            file_path = os.path.join(data_dir, lambda_file)
+        for fpath in lambda_fpaths:
+            lambda_file = fpath.name
             try:
-                # Column 0 is time; columns 1: are lambda values
-                Lambda.append(np.loadtxt(file_path)[(skipE - 1)::skipE, 1:])
+                # read_lambda_values returns lambda-only (no time column)
+                Lambda.append(read_lambda_values(fpath)[(skipE - 1)::skipE, :])
 
-                # Extract j and k from filename (Lambda.j.k.dat)
+                # Extract j and k from filename (Lambda.j.k.{parquet,dat})
                 j, k = map(int, lambda_file.split(".")[1:3])
                 b_old = np.loadtxt(os.path.join(analysis_dir, "b_prev.dat"))
                 b.append(b_old + b_shift * (k - ncentral) + b_fix_shift)
@@ -803,7 +801,7 @@ def get_energy_from_analysis_dir(
                 s_old = np.loadtxt(os.path.join(analysis_dir, "s_prev.dat"))
                 s.append(s_old + s_shift * (k - ncentral) + s_fix_shift)
             except Exception as e:
-                print(f"Error loading file {file_path}: {e}")
+                print(f"Error loading file {fpath}: {e}")
 
     os.makedirs("Lambda", exist_ok=True)
     os.makedirs("Energy", exist_ok=True)
@@ -844,13 +842,10 @@ def get_energy_from_analysis_dir(
         data_dir = os.path.join(analysis_dir, "data")
         if not os.path.isdir(data_dir):
             continue
-        lambda_files = sorted(
-            f for f in os.listdir(data_dir)
-            if f.startswith("Lambda.") and f.endswith(".dat")
-        )
-        for lambda_file in lambda_files:
+        lambda_fpaths2 = find_lambda_files(Path(data_dir))
+        for fpath2 in lambda_fpaths2:
             try:
-                j, k = map(int, lambda_file.split(".")[1:3])
+                j, k = map(int, fpath2.name.split(".")[1:3])
                 simulation_jk_map[sim_idx] = (j, k, i)
                 sim_idx += 1
             except (ValueError, IndexError):
@@ -883,6 +878,146 @@ def get_energy_from_analysis_dir(
             print(f"Warning: Could not create G_imp shifts for simulation {sim_idx + 1}: {e}")
 
     return total_simulations
+
+
+def compute_wham_inputs(
+    alf_info: ALFInfo | dict,
+    start_cycle: int,
+    end_cycle: int,
+    skipE: int = 1,
+) -> tuple[list[np.ndarray], list[list[np.ndarray]], np.ndarray | None, int]:
+    """Compute WHAM inputs as in-memory arrays (no intermediate text files).
+
+    Same data-loading and energy-computation logic as get_energy_from_analysis_dir(),
+    but returns numpy arrays instead of writing Lambda/, Energy/, and G_imp_shifts/.
+
+    Must be called from inside an analysis directory (e.g., analysis5/).
+
+    Args:
+        alf_info: ALF simulation information.
+        start_cycle: First ALF cycle to include (inclusive).
+        end_cycle: Final ALF cycle to include (inclusive).
+        skipE: Subsample interval (only every Nth frame). Default 1 = all.
+
+    Returns:
+        Tuple of (lambda_arrays, energy_matrix, gshift_data, nf):
+        - lambda_arrays: list of nf arrays, each [n_frames_i, nblocks]
+        - energy_matrix: E[i][j] = (n_frames_j, 1) array — bias energy of
+          simulation j's lambda under simulation i's parameters
+        - gshift_data: [nf, nblocks] array of G_imp shifts, or None if no shifts
+        - nf: number of simulations (total lambda files found)
+    """
+    import os
+
+    alf_info = ensure_alf_info(alf_info)
+    nblocks = alf_info.nblocks
+    ncentral = alf_info.ncentral
+
+    NF = end_cycle - start_cycle + 1
+
+    def load_shift_file(analysis_dir: str, filename: str, default_value=0.0):
+        local_path = os.path.join(analysis_dir, "nbshift", filename)
+        if os.path.exists(local_path):
+            return np.loadtxt(local_path)
+        fallback_path = os.path.join("../nbshift", filename)
+        if os.path.exists(fallback_path):
+            return np.loadtxt(fallback_path)
+        return default_value
+
+    Lambda: list[np.ndarray] = []
+    b_list: list[np.ndarray] = []
+    c_list: list[np.ndarray] = []
+    x_list: list[np.ndarray] = []
+    s_list: list[np.ndarray] = []
+    jk_map: list[tuple[int, int, int]] = []  # (j, k, analysis_idx) per sim
+
+    from cphmd.utils.lambda_io import find_lambda_files, read_lambda_values
+
+    for i in range(NF):
+        analysis_dir = f"../analysis{start_cycle + i}"
+        data_dir = os.path.join(analysis_dir, "data")
+
+        if not os.path.isdir(data_dir):
+            print(f"Warning: Directory {data_dir} not found")
+            continue
+
+        b_shift = load_shift_file(analysis_dir, "b_shift.dat")
+        c_shift = load_shift_file(analysis_dir, "c_shift.dat")
+        x_shift = load_shift_file(analysis_dir, "x_shift.dat")
+        s_shift = load_shift_file(analysis_dir, "s_shift.dat")
+        b_fix_shift = load_shift_file(analysis_dir, "b_fix_shift.dat", 0.0)
+        c_fix_shift = load_shift_file(analysis_dir, "c_fix_shift.dat", 0.0)
+        x_fix_shift = load_shift_file(analysis_dir, "x_fix_shift.dat", 0.0)
+        s_fix_shift = load_shift_file(analysis_dir, "s_fix_shift.dat", 0.0)
+
+        lambda_fpaths = find_lambda_files(Path(data_dir))
+
+        for fpath in lambda_fpaths:
+            try:
+                Lambda.append(read_lambda_values(fpath)[(skipE - 1)::skipE, :])
+
+                j, k = map(int, fpath.name.split(".")[1:3])
+                jk_map.append((j, k, i))
+                b_old = np.loadtxt(os.path.join(analysis_dir, "b_prev.dat"))
+                b_list.append(b_old + b_shift * (k - ncentral) + b_fix_shift)
+                c_old = np.loadtxt(os.path.join(analysis_dir, "c_prev.dat"))
+                c_list.append(c_old + c_shift * (k - ncentral) + c_fix_shift)
+                x_old = np.loadtxt(os.path.join(analysis_dir, "x_prev.dat"))
+                x_list.append(x_old + x_shift * (k - ncentral) + x_fix_shift)
+                s_old = np.loadtxt(os.path.join(analysis_dir, "s_prev.dat"))
+                s_list.append(s_old + s_shift * (k - ncentral) + s_fix_shift)
+            except Exception as e:
+                print(f"Error loading file {fpath}: {e}")
+
+    total_simulations = len(Lambda)
+    if total_simulations == 0:
+        print("Error: No Lambda files found.")
+        return [], [], None, 0
+
+    # Compute cross-simulation bias energies: E[i][j] = energy of sim j's
+    # lambda under sim i's parameters
+    energy_matrix: list[list[np.ndarray]] = [[] for _ in range(total_simulations)]
+    for i in range(total_simulations):
+        for j_idx in range(total_simulations):
+            bi, ci, xi, si = b_list[i], c_list[i], x_list[i], s_list[i]
+            Lj = Lambda[j_idx]
+            Eij = np.reshape(np.dot(Lj, -bi), (-1, 1))
+            Eij += np.sum(np.dot(Lj, -ci) * Lj, axis=1, keepdims=True)
+            Eij += np.sum(
+                np.dot(1 - np.exp(-OMEGA_DECAY * Lj), -xi) * Lj,
+                axis=1, keepdims=True,
+            )
+            Eij += np.sum(
+                np.dot(Lj / (Lj + CHI_OFFSET), -si) * Lj,
+                axis=1, keepdims=True,
+            )
+            energy_matrix[i].append(Eij)
+
+    # Compute G_imp shift data as array [total_simulations, nblocks]
+    gshift_data = np.zeros((total_simulations, nblocks), dtype=np.float64)
+    for sim_idx, (j, k, analysis_idx) in enumerate(jk_map):
+        analysis_dir = f"../analysis{start_cycle + analysis_idx}"
+        try:
+            b_shift_arr = np.atleast_1d(
+                load_shift_file(analysis_dir, "b_shift.dat", 0.0)
+            )
+            b_fix_shift_arr = np.atleast_1d(
+                load_shift_file(analysis_dir, "b_fix_shift.dat", 0.0)
+            )
+            if b_shift_arr.size == 1:
+                b_shift_arr = np.full(nblocks, float(b_shift_arr.flat[0]))
+                b_fix_shift_arr = np.full(nblocks, float(b_fix_shift_arr.flat[0]))
+            for block_idx in range(nblocks):
+                gshift_data[sim_idx, block_idx] = (
+                    float(b_fix_shift_arr[block_idx])
+                    + float(b_shift_arr[block_idx]) * (k - ncentral)
+                )
+        except Exception as e:
+            print(
+                f"Warning: Could not compute G_imp shifts for sim {sim_idx + 1}: {e}"
+            )
+
+    return Lambda, energy_matrix, gshift_data, total_simulations
 
 
 def compute_bias_energy(
@@ -932,36 +1067,20 @@ def compute_bias_energy(
     return E_b + E_c + E_x + E_s
 
 
-def write_lambda_text(output_path: str | Path, data: np.ndarray) -> None:
-    """Write lambda data in human-readable text format.
-
-    Args:
-        output_path: Path to output file.
-        data: Lambda trajectory data (nframes x nblocks).
-    """
-    np.savetxt(output_path, data, fmt="%10.6f")
-
-
-def convert_lambda_binary_to_text(
+def convert_lambda_binary_to_parquet(
     alf_info: ALFInfo | dict,
     output_path: str | Path,
     input_files: list[str | Path],
 ) -> None:
-    """Convert binary lambda file(s) to human-readable text format.
-
-    This function replaces ALF's GetLambda.GetLambda function.
+    """Convert binary lambda file(s) to Parquet format.
 
     Args:
-        alf_info: ALF simulation information (unused, for compatibility).
-        output_path: Path to output text file.
+        alf_info: ALF simulation information (unused, for API compatibility).
+        output_path: Path to output .parquet file.
         input_files: List of input binary lambda file paths.
-
-    Note:
-        Uses cphmd.utils.lambda_io.read_lambda_binary for file reading.
     """
-    from cphmd.utils.lambda_io import read_lambda_binary
+    from cphmd.utils.lambda_io import read_lambda_binary, write_lambda_parquet
 
-    # Concatenate all input files
     all_data = []
     for input_file in input_files:
         input_path = Path(input_file)
@@ -971,7 +1090,7 @@ def convert_lambda_binary_to_text(
 
     if all_data:
         combined = np.vstack(all_data)
-        write_lambda_text(output_path, combined)
+        write_lambda_parquet(output_path, combined)
     else:
         print(f"Warning: No valid input files found for {output_path}")
 
@@ -1173,6 +1292,6 @@ def get_free_energy_lm(
     np.savetxt("x.dat", _clean_negzero(x), fmt=" %10.5f")
     np.savetxt("s.dat", _clean_negzero(s), fmt=" %10.5f")
 
-    print(f"LMALF: Wrote b.dat, c.dat, x.dat, s.dat")
+    print("LMALF: Wrote b.dat, c.dat, x.dat, s.dat")
 
     return b, c, x, s

@@ -96,15 +96,20 @@ def get_transitions(
 
     data_dir = analysis_dir / "data"
 
+    from cphmd.utils.lambda_io import read_lambda_values
+
     # Process each trial
     for tag in range(ndupl):
-        data_file = data_dir / f"Lambda.{tag}.0.dat"
+        # Prefer .parquet, fall back to .dat for old runs
+        data_file = data_dir / f"Lambda.{tag}.0.parquet"
+        if not data_file.exists():
+            data_file = data_dir / f"Lambda.{tag}.0.dat"
         if not data_file.exists():
             if verbose:
                 logger.warning(f"{data_file} not found, skipping")
             continue
 
-        data = np.loadtxt(data_file)
+        data = read_lambda_values(data_file)
 
         # Process each site
         ibuff = 0

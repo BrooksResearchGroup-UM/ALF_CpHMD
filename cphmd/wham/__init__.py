@@ -12,18 +12,17 @@ The library must be compiled before use:
     # or manually:
     nvcc -shared -Xcompiler -fPIC -o ../libwham.so wham.cu
 
-Usage:
+Usage (preferred — in-memory, no intermediate files):
+    from cphmd.wham import run_wham_from_memory, run_lmalf_from_memory
+
+    run_wham_from_memory(lambda_arrays, energy_matrix, ...)
+    run_lmalf_from_memory(lambda_combined, ...)
+
+Legacy usage (file-based):
     from cphmd.wham import run_wham, run_lmalf
 
-    # WHAM analysis (default)
     run_wham(analysis_dir, nf=10, temp=298.15, nts0=1, nts1=1)
-
-    # LMALF analysis (alternative)
     run_lmalf(analysis_dir, nf=10, temp=298.15)
-
-With automatic G_imp computation:
-    from cphmd.wham import run_wham_with_g_imp
-    run_wham_with_g_imp(analysis_dir, alf_info, nf=10)
 """
 
 from __future__ import annotations
@@ -110,6 +109,50 @@ def _get_wham_lib() -> ctypes.CDLL:
         ctypes.c_double,                # omega_scale
     ]
     lib.lmalf.restype = ctypes.c_int
+
+    # Configure wham_from_memory() function signature
+    lib.wham_from_memory.argtypes = [
+        ctypes.c_int,                         # nf
+        ctypes.c_double,                      # temp
+        ctypes.c_int,                         # nts0
+        ctypes.c_int,                         # nts1
+        ctypes.c_int,                         # use_gshift
+        ctypes.POINTER(ctypes.c_int),         # nsubs
+        ctypes.c_int,                         # nsites
+        ctypes.c_char_p,                      # g_imp_path
+        ctypes.c_double,                      # chi_offset
+        ctypes.c_double,                      # omega_scale
+        ctypes.c_double,                      # cutlsum
+        ctypes.POINTER(ctypes.c_double),      # D_flat
+        ctypes.POINTER(ctypes.c_int),         # sim_indices
+        ctypes.POINTER(ctypes.c_int),         # frame_counts
+        ctypes.c_int,                         # total_frames
+        ctypes.POINTER(ctypes.c_double),      # gshift_flat
+    ]
+    lib.wham_from_memory.restype = ctypes.c_int
+
+    # Configure lmalf_from_memory() function signature
+    lib.lmalf_from_memory.argtypes = [
+        ctypes.c_int,                         # nf
+        ctypes.c_double,                      # temp
+        ctypes.c_int,                         # ms
+        ctypes.c_int,                         # msprof
+        ctypes.c_int,                         # max_iter
+        ctypes.c_double,                      # tolerance
+        ctypes.POINTER(ctypes.c_int),         # nsubs
+        ctypes.c_int,                         # nsites
+        ctypes.c_char_p,                      # g_imp_path
+        ctypes.c_double,                      # fnex
+        ctypes.c_double,                      # chi_offset
+        ctypes.c_double,                      # omega_scale
+        ctypes.POINTER(ctypes.c_double),      # lambda_flat
+        ctypes.POINTER(ctypes.c_double),      # ensweight_flat
+        ctypes.c_int,                         # n_frames
+        ctypes.POINTER(ctypes.c_double),      # x_prev_flat
+        ctypes.POINTER(ctypes.c_double),      # s_prev_flat
+        ctypes.c_int,                         # nblocks_sq
+    ]
+    lib.lmalf_from_memory.restype = ctypes.c_int
 
     _wham_lib_cache = lib
     return lib
@@ -592,63 +635,294 @@ def check_lmalf_available() -> bool:
         return False
 
 
-def prepare_lmalf_input(
-    analysis_dir: str | Path,
-    lambda_files: list[str | Path],
-    weight_files: list[str | Path] | None = None,
-) -> None:
-    """Prepare input files for LMALF analysis.
+def _pack_wham_data(
+    lambda_arrays: list[np.ndarray],
+    energy_matrix: list[list[np.ndarray]],
+    nblocks: int,
+    nf: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, int]:
+    """Pack lambda trajectories and cross-energies into flat D_h layout for CUDA.
 
-    Concatenates multiple lambda trajectory files into a single Lambda.dat
-    and optionally prepares ensemble weights.
+    Matches the readdata() packing in wham.cu (lines 420-456):
+    - D[t*ndim + 0]           = E_self (energy_matrix[nf-1][i] for sim i)
+    - D[t*ndim + 1..NL]       = lambda values
+    - D[t*ndim + NL+1..NL+nf] = cross-energies (energy_matrix[j][i] for all j)
+    - D[t*ndim + NL+nf+1]     = 0.0  (reserved bin_1D)
+    - D[t*ndim + NL+nf+2]     = 0.0  (reserved bin_2D)
+
+    ndim = nblocks + nf + 3  (NL + NF + 1 (E_self) + 2 (bins))
 
     Args:
-        analysis_dir: Target analysis directory.
-        lambda_files: List of lambda trajectory files to concatenate.
-        weight_files: Optional list of weight files (same length as lambda_files).
-            If not provided, all frames are weighted equally.
+        lambda_arrays: Per-simulation lambda trajectories. lambda_arrays[i] has
+            shape (n_frames_i, nblocks).
+        energy_matrix: Cross-simulation energies. energy_matrix[j][i] has shape
+            (n_frames_i, 1): bias energy of simulation i's frames under
+            simulation j's parameters.
+        nblocks: Total number of lambda blocks (NL).
+        nf: Number of simulations (NF).
 
-    Example:
-        >>> from cphmd.wham import prepare_lmalf_input
-        >>> lambda_files = [f"data/Lambda.{k}.{r}.dat" for k in range(3) for r in range(4)]
-        >>> prepare_lmalf_input("./analysis/5", lambda_files)
+    Returns:
+        D_flat: float64 array of shape (total_frames * ndim,).
+        sim_indices: int32 array of shape (total_frames,) — simulation index per frame.
+        frame_counts: int32 array of shape (nf,) — frames per simulation.
+        total_frames: Total number of frames across all simulations.
     """
-    analysis_dir = Path(analysis_dir)
-    analysis_dir.mkdir(parents=True, exist_ok=True)
+    NL = nblocks
+    ndim = NL + nf + 3
 
-    # Concatenate lambda files
-    all_lambda = []
-    for lf in lambda_files:
-        lf = Path(lf)
-        if lf.exists():
-            data = np.loadtxt(lf)
-            if data.ndim == 1:
-                data = data.reshape(1, -1)
-            all_lambda.append(data)
+    # Count total frames and per-sim frame counts
+    frame_counts = np.array([lambda_arrays[i].shape[0] for i in range(nf)], dtype=np.int32)
+    total_frames = int(frame_counts.sum())
 
-    if not all_lambda:
-        raise ValueError("No valid lambda files found")
+    # Pre-allocate contiguous output arrays
+    D_flat = np.zeros(total_frames * ndim, dtype=np.float64)
+    sim_indices = np.empty(total_frames, dtype=np.int32)
 
-    combined_lambda = np.vstack(all_lambda)
-    np.savetxt(analysis_dir / "Lambda.dat", combined_lambda, fmt="%.8f")
-    logger.info(f"Created Lambda.dat with {combined_lambda.shape[0]} frames, {combined_lambda.shape[1]} blocks")
+    offset = 0
+    for i in range(nf):
+        n_i = frame_counts[i]
+        # Slice for this simulation's block in D_flat
+        idx = np.arange(offset, offset + n_i)
 
-    # Handle weights
-    if weight_files:
-        all_weights = []
-        for wf in weight_files:
-            wf = Path(wf)
-            if wf.exists():
-                weights = np.loadtxt(wf)
-                if weights.ndim == 0:
-                    weights = np.array([weights])
-                all_weights.extend(weights.flatten())
+        # sim_indices[offset:offset+n_i] = i
+        sim_indices[offset:offset + n_i] = i
 
-        if all_weights:
-            np.savetxt(analysis_dir / "ensweight.dat", all_weights, fmt="%.8f")
-            logger.info(f"Created ensweight.dat with {len(all_weights)} weights")
+        # Column 0: E_self = energy_matrix[nf-1][i][:, 0]
+        D_flat[idx * ndim] = energy_matrix[nf - 1][i][:n_i, 0]
+
+        # Columns 1..NL: lambda values
+        for b in range(NL):
+            D_flat[idx * ndim + 1 + b] = lambda_arrays[i][:n_i, b]
+
+        # Columns NL+1..NL+nf: cross energies
+        for j in range(nf):
+            D_flat[idx * ndim + NL + 1 + j] = energy_matrix[j][i][:n_i, 0]
+
+        # Columns NL+nf+1, NL+nf+2 are already 0.0 (reserved bins)
+
+        offset += n_i
+
+    return D_flat, sim_indices, frame_counts, total_frames
+
+
+def run_wham_from_memory(
+    lambda_arrays: list[np.ndarray],
+    energy_matrix: list[list[np.ndarray]],
+    nblocks: int,
+    nf: int,
+    temp: float,
+    nts0: int = 1,
+    nts1: int = 1,
+    use_gshift: bool = False,
+    nsubs: np.ndarray | list[int] | None = None,
+    g_imp_path: str | Path | None = None,
+    gshift_data: np.ndarray | None = None,
+    output_dir: str | Path | None = None,
+    log_file: str | Path | None = None,
+    fnex: float = 5.5,
+    cutlsum: float = 0.8,
+) -> None:
+    """Run WHAM analysis from in-memory numpy arrays (no file I/O for input).
+
+    Packs lambda trajectories and cross-simulation energies into the flat D_h
+    layout expected by the CUDA kernel, then calls wham_from_memory().
+
+    Output files (C.dat, V.dat, f.dat) are still written by CUDA to output_dir.
+
+    Args:
+        lambda_arrays: Per-simulation lambda trajectories. lambda_arrays[i] has
+            shape (n_frames_i, nblocks).
+        energy_matrix: Cross-simulation energies. energy_matrix[j][i] has shape
+            (n_frames_i, 1).
+        nblocks: Total number of lambda blocks.
+        nf: Number of simulations.
+        temp: Temperature in Kelvin.
+        nts0: First terminal site index.
+        nts1: Second terminal site index.
+        use_gshift: If True, apply G_imp shifts.
+        nsubs: Array of subsites per site.
+        g_imp_path: Path to G_imp directory.
+        gshift_data: G_imp shift array, or None for zero shifts.
+        output_dir: Directory for C.dat/V.dat/f.dat output. Defaults to cwd.
+        log_file: Optional log file for CUDA stdout/stderr.
+        fnex: FNEX parameter for bias constants.
+        cutlsum: G12 conditional threshold (must be in (0, 1)).
+
+    Raises:
+        ValueError: If cutlsum is out of range.
+        RuntimeError: If CUDA wham_from_memory returns non-zero.
+    """
+    if cutlsum <= 0.0 or cutlsum >= 1.0:
+        raise ValueError(
+            f"cutlsum must be in (0, 1), got {cutlsum}. "
+            "Typical value is 0.8 (exclude frames where lambda_i + lambda_j < 0.8)."
+        )
+
+    # Pack data into flat layout
+    D_flat, sim_indices, frame_counts, total_frames = _pack_wham_data(
+        lambda_arrays, energy_matrix, nblocks, nf,
+    )
+
+    # Prepare gshift
+    if gshift_data is not None:
+        gshift_flat = np.ascontiguousarray(gshift_data.ravel(), dtype=np.float64)
     else:
-        # Default uniform weights
-        n_frames = combined_lambda.shape[0]
-        np.savetxt(analysis_dir / "ensweight.dat", np.ones(n_frames), fmt="%.8f")
-        logger.info(f"Created ensweight.dat with {n_frames} uniform weights")
+        gshift_flat = np.zeros(1, dtype=np.float64)
+
+    # Load library
+    lib = _get_wham_lib()
+
+    # Prepare ctypes arguments
+    nsubs_arr, nsubs_ptr, nsites = _prepare_nsubs(nsubs)
+    g_imp_path_bytes = _to_bytes(g_imp_path)
+    log_path = Path(log_file).resolve() if log_file is not None else None
+
+    from cphmd.core.bias_constants import derive_bias_constants
+    constants = derive_bias_constants(fnex)
+
+    # Prepare output directory
+    if output_dir is not None:
+        out_path = Path(output_dir)
+    else:
+        out_path = Path.cwd()
+    out_path.mkdir(parents=True, exist_ok=True)
+    (out_path / "multisite").mkdir(exist_ok=True)
+
+    # ctypes data pointers — keep arrays alive in local scope
+    D_ptr = D_flat.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+    si_ptr = sim_indices.ctypes.data_as(ctypes.POINTER(ctypes.c_int))
+    fc_ptr = frame_counts.ctypes.data_as(ctypes.POINTER(ctypes.c_int))
+    gs_ptr = gshift_flat.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+
+    logger.info(
+        f"Running WHAM (in-memory) with nf={nf}, temp={temp}, "
+        f"total_frames={total_frames}, fnex={fnex}"
+    )
+
+    with _chdir_context(out_path):
+        with _redirect_c_output(log_path):
+            result = lib.wham_from_memory(
+                nf, temp, nts0, nts1, int(use_gshift),
+                nsubs_ptr, nsites, g_imp_path_bytes,
+                constants.chi_offset, constants.omega_scale, cutlsum,
+                D_ptr, si_ptr, fc_ptr,
+                total_frames, gs_ptr,
+            )
+        if result != 0:
+            raise RuntimeError(f"WHAM (in-memory) returned error code: {result}")
+
+    logger.info("WHAM (in-memory) analysis completed successfully")
+
+
+def run_lmalf_from_memory(
+    lambda_combined: np.ndarray,
+    ensweight: np.ndarray | None,
+    nf: int,
+    temp: float,
+    ms: int = 0,
+    msprof: int = 0,
+    max_iter: int = 0,
+    tolerance: float = 0.0,
+    nsubs: np.ndarray | list[int] | None = None,
+    g_imp_path: str | Path | None = None,
+    x_prev: np.ndarray | None = None,
+    s_prev: np.ndarray | None = None,
+    output_dir: str | Path | None = None,
+    log_file: str | Path | None = None,
+    fnex: float = 5.5,
+) -> None:
+    """Run LMALF analysis from in-memory numpy arrays (no file I/O for input).
+
+    Passes lambda trajectories and optional ensemble weights directly to the
+    CUDA lmalf_from_memory() kernel.
+
+    Output file (OUT.dat) is still written by CUDA to output_dir.
+
+    Args:
+        lambda_combined: Combined lambda trajectory, shape (n_frames, nblocks).
+        ensweight: Ensemble weights, shape (n_frames,), or None for uniform.
+        nf: Number of simulations.
+        temp: Temperature in Kelvin.
+        ms: Multisite coupling flag.
+        msprof: Multisite profiles flag.
+        max_iter: Maximum L-BFGS iterations (0 = default).
+        tolerance: Convergence tolerance (0 = default).
+        nsubs: Array of subsites per site.
+        g_imp_path: Path to G_imp directory.
+        x_prev: Previous x parameters, shape (nblocks, nblocks), or None.
+        s_prev: Previous s parameters, shape (nblocks, nblocks), or None.
+        output_dir: Directory for OUT.dat output. Defaults to cwd.
+        log_file: Optional log file for CUDA stdout/stderr.
+        fnex: FNEX parameter for bias constants.
+
+    Raises:
+        RuntimeError: If CUDA lmalf_from_memory returns non-zero.
+    """
+    # Ensure contiguous float64
+    lambda_flat = np.ascontiguousarray(lambda_combined, dtype=np.float64)
+    n_frames = lambda_flat.shape[0]
+
+    # Ensemble weights: contiguous or NULL
+    if ensweight is not None:
+        ens_flat = np.ascontiguousarray(ensweight.ravel(), dtype=np.float64)
+        ens_ptr = ens_flat.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+    else:
+        ens_flat = None  # noqa: F841 — keep name for clarity
+        ens_ptr = ctypes.POINTER(ctypes.c_double)()  # NULL
+
+    # Previous coupling parameters
+    if x_prev is not None:
+        x_flat = np.ascontiguousarray(x_prev.ravel(), dtype=np.float64)
+        x_ptr = x_flat.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+        nblocks_sq = x_flat.size
+    else:
+        x_flat = None  # noqa: F841
+        x_ptr = ctypes.POINTER(ctypes.c_double)()  # NULL
+        nblocks_sq = 0
+
+    if s_prev is not None:
+        s_flat = np.ascontiguousarray(s_prev.ravel(), dtype=np.float64)
+        s_ptr = s_flat.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+    else:
+        s_flat = None  # noqa: F841
+        s_ptr = ctypes.POINTER(ctypes.c_double)()  # NULL
+
+    # Load library
+    lib = _get_wham_lib()
+
+    # Prepare ctypes arguments
+    nsubs_arr, nsubs_ptr, nsites = _prepare_nsubs(nsubs)
+    g_imp_path_bytes = _to_bytes(g_imp_path)
+    log_path = Path(log_file).resolve() if log_file is not None else None
+
+    from cphmd.core.bias_constants import derive_bias_constants
+    constants = derive_bias_constants(fnex)
+
+    # Prepare output directory
+    if output_dir is not None:
+        out_path = Path(output_dir)
+    else:
+        out_path = Path.cwd()
+    out_path.mkdir(parents=True, exist_ok=True)
+
+    # Lambda data pointer
+    lam_ptr = lambda_flat.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+
+    logger.info(
+        f"Running LMALF (in-memory) with nf={nf}, temp={temp}, "
+        f"n_frames={n_frames}, ms={ms}, msprof={msprof}, fnex={fnex}"
+    )
+
+    with _chdir_context(out_path):
+        with _redirect_c_output(log_path):
+            result = lib.lmalf_from_memory(
+                nf, temp, ms, msprof, max_iter, tolerance,
+                nsubs_ptr, nsites, g_imp_path_bytes,
+                constants.fnex, constants.chi_offset, constants.omega_scale,
+                lam_ptr, ens_ptr, n_frames,
+                x_ptr, s_ptr, nblocks_sq,
+            )
+        if result != 0:
+            raise RuntimeError(f"LMALF (in-memory) returned error code: {result}")
+
+    logger.info("LMALF (in-memory) analysis completed successfully")

@@ -1795,6 +1795,298 @@ void getfofq(struct_data *data, double beta)
   free(V);
 }
 
+// ============================================================================
+// In-memory WHAM entry point
+// ============================================================================
+
+/**
+ * readdata_from_memory: populate struct_data from host pointers (no file I/O).
+ *
+ * Produces IDENTICAL struct_data to readdata(), but the caller supplies the
+ * pre-packed arrays directly.
+ *
+ * @param nf           Number of simulations (Nsim / NF)
+ * @param temp         Temperature (K) — same for all sims
+ * @param ms           Multisite coupling flag
+ * @param msprof       Multisite profiles flag
+ * @param use_gshift   0 = legacy (zeros), 1 = apply G_imp shifts from gshift_flat
+ * @param nsubs_in     Subsites per site [nsites]
+ * @param nsites_in    Number of titratable sites
+ * @param g_imp_path   Path to G_imp directory (NULL → "G_imp")
+ * @param D_flat       Pre-packed data [total_frames × Ndim], row-major
+ *                       col 0        = E_self
+ *                       cols 1..NL   = lambda[0..NL-1]
+ *                       cols NL+1..NL+NF = cross_energies[0..NF-1]
+ *                       cols NL+NF+1, NL+NF+2 = reserved (bin_1D, bin_2D)
+ * @param sim_indices  Frame→simulation mapping [total_frames]
+ * @param frame_counts Frames per simulation [nf]
+ * @param total_frames Sum of frame_counts
+ * @param gshift_flat  G_imp shifts [nf × NL] (only used when use_gshift=1)
+ */
+static struct_data *readdata_from_memory(
+    int nf, double temp, int ms, int msprof, int use_gshift,
+    int *nsubs_in, int nsites_in, const char *g_imp_path,
+    double *D_flat, int *sim_indices, int *frame_counts,
+    int total_frames, double *gshift_flat)
+{
+  int i, s1, s2, j, jN, iN;
+  struct_data *data = (struct_data *)malloc(sizeof(struct_data));
+  if (!data) return NULL;
+  data->gimp_cache = (struct_gimp_cache *)malloc(sizeof(struct_gimp_cache));
+  gimp_cache_init(data->gimp_cache);
+
+  data->Nsim = nf;
+
+  // G_imp path
+  if (g_imp_path && strlen(g_imp_path) > 0)
+  {
+    strncpy(data->g_imp_path, g_imp_path, sizeof(data->g_imp_path) - 1);
+    data->g_imp_path[sizeof(data->g_imp_path) - 1] = '\0';
+  }
+  else
+  {
+    strcpy(data->g_imp_path, "G_imp");
+  }
+
+  // --- nsubs / blocks / sites (identical to readdata lines 329-370) ---
+  data->Nsites = nsites_in;
+  data->Nsubs = (int *)malloc(data->Nsites * sizeof(int));
+  data->block0 = (int *)malloc((data->Nsites + 1) * sizeof(int));
+  data->Nblocks = 0;
+  data->block0[0] = 0;
+  for (i = 0; i < data->Nsites; i++)
+  {
+    data->Nsubs[i] = nsubs_in[i];
+    data->Nblocks += data->Nsubs[i];
+    data->block0[i + 1] = data->block0[i] + data->Nsubs[i];
+  }
+  fprintf(stderr, "readdata_from_memory: nsites=%d, nblocks=%d, total_frames=%d\n",
+          data->Nsites, data->Nblocks, total_frames);
+
+  // --- ms / dimensions ---
+  data->ms = ms;
+  data->msprof = msprof;
+  data->NL = data->Nblocks;
+  data->NF = data->Nsim;
+  data->Ndim = data->Nsim + data->NL + 1 + 2;
+
+  // --- temperature (all sims share the same T) ---
+  data->T_h = (double *)malloc(data->NF * sizeof(double));
+  data->beta_h = (double *)malloc(data->NF * sizeof(double));
+  CUDA_CHECK(cudaMalloc(&(data->beta_d), data->NF * sizeof(double)));
+  for (i = 0; i < data->NF; i++)
+  {
+    data->T_h[i] = temp;
+    data->beta_h[i] = 1.0 / (kB * data->T_h[i]);
+  }
+  CUDA_CHECK(cudaMemcpy(data->beta_d, data->beta_h, data->NF * sizeof(double), cudaMemcpyHostToDevice));
+  data->beta_t = 1.0 / (kB * temp);
+
+  // --- histogram bin widths (same as readdata) ---
+  data->B[0].dx = 0.1;
+  data->B[1].dx = 0.0009765625;
+  data->B2d[0].dx = 0.1;
+  data->B2d[1].dx = 0.03125031875;
+  data->B2d[2].dx = 0.03125031875;
+
+  // --- copy frame data from caller's arrays ---
+  data->ND = total_frames;
+  data->NDmax = total_frames;
+
+  data->n_h = (int *)malloc(data->NF * sizeof(int));
+  CUDA_CHECK(cudaMalloc(&(data->n_d), data->NF * sizeof(int)));
+  memcpy(data->n_h, frame_counts, data->NF * sizeof(int));
+
+  data->D_h = (double *)malloc(data->NDmax * data->Ndim * sizeof(double));
+  memcpy(data->D_h, D_flat, (size_t)total_frames * data->Ndim * sizeof(double));
+
+  data->i_h = (int *)malloc(data->NDmax * sizeof(int));
+  memcpy(data->i_h, sim_indices, total_frames * sizeof(int));
+
+  data->lnw_h = (double *)malloc(data->NF * sizeof(double));
+  for (i = 0; i < data->NF; i++)
+    data->lnw_h[i] = 0.0;  // (NF - i - 1) * log(1.0) == 0
+
+  // --- scan energy column for B0_MIN / B0_MAX ---
+  int B0_MIN = INT_MAX, B0_MAX = INT_MIN;
+  for (i = 0; i < total_frames; i++)
+  {
+    double E = D_flat[(size_t)i * data->Ndim];
+    int iB0 = (int)floor(E / data->B[0].dx);
+    if (iB0 < B0_MIN) B0_MIN = iB0;
+    if (iB0 > B0_MAX) B0_MAX = iB0;
+  }
+
+  // --- histogram extents (identical to readdata lines 462-476) ---
+  data->B[0].min = B0_MIN * data->B[0].dx;
+  data->B[0].max = (B0_MAX + 1) * data->B[0].dx;
+  data->B[0].N = (B0_MAX - B0_MIN) + 1;
+  data->B2d[0].min = data->B[0].min;
+  data->B2d[0].max = data->B[0].max;
+  data->B2d[0].N = data->B[0].N;
+  data->B[1].min = 0;
+  data->B[1].max = 1;
+  data->B[1].N = 1024;
+  data->B2d[1].min = 0;
+  data->B2d[1].max = 1;
+  data->B2d[1].N = 32;
+  data->B2d[2].min = 0;
+  data->B2d[2].max = 1;
+  data->B2d[2].N = 32;
+
+  // --- auto-detect G_imp dimensions ---
+  auto_detect_profile_dimensions(data);
+
+  int B_N = data->B[1].N;
+  if (data->B2d[1].N * data->B2d[2].N > B_N)
+    B_N = data->B2d[1].N * data->B2d[2].N;
+
+  // --- CUDA mallocs + copies (identical to readdata lines 485-565) ---
+  CUDA_CHECK(cudaMemcpy(data->n_d, data->n_h, data->NF * sizeof(int), cudaMemcpyHostToDevice));
+  CUDA_CHECK(cudaMalloc(&(data->D_d), data->NDmax * data->Ndim * sizeof(double)));
+  CUDA_CHECK(cudaMemcpy(data->D_d, data->D_h, data->NDmax * data->Ndim * sizeof(double), cudaMemcpyHostToDevice));
+  CUDA_CHECK(cudaMalloc(&(data->i_d), data->NDmax * sizeof(int)));
+  CUDA_CHECK(cudaMemcpy(data->i_d, data->i_h, data->NDmax * sizeof(int), cudaMemcpyHostToDevice));
+  CUDA_CHECK(cudaMalloc(&(data->lnw_d), data->NF * sizeof(double)));
+  CUDA_CHECK(cudaMemcpy(data->lnw_d, data->lnw_h, data->NF * sizeof(double), cudaMemcpyHostToDevice));
+  data->lnDenom_h = (double *)malloc(data->NDmax * sizeof(double));
+  CUDA_CHECK(cudaMalloc(&(data->lnDenom_d), data->NDmax * sizeof(double)));
+
+  data->f_h = (double *)malloc(data->NF * sizeof(double));
+  CUDA_CHECK(cudaMalloc(&(data->f_d), data->NF * sizeof(double)));
+  for (i = 0; i < data->NF; i++)
+    data->f_h[i] = 0.0;
+  CUDA_CHECK(cudaMemcpy(data->f_d, data->f_h, data->NF * sizeof(double), cudaMemcpyHostToDevice));
+
+  fprintf(stderr, "Warning, DOS allocation is not sparse, requesting %d doubles\n", data->B[0].N * B_N);
+  data->lnZ_h = (double *)malloc(B_N * sizeof(double));
+  CUDA_CHECK(cudaMalloc(&(data->lnZ_d), B_N * sizeof(double)));
+
+  // --- profile count (iN) ---
+  iN = 0;
+  for (s1 = 0; s1 < data->Nsites; s1++)
+  {
+    for (s2 = s1; s2 < data->Nsites; s2++)
+    {
+      if (s1 == s2)
+      {
+        if (data->Nsubs[s1] == 2)
+          iN += data->Nsubs[s1] + data->Nsubs[s1] * (data->Nsubs[s1] - 1) / 2;
+        else
+          iN += data->Nsubs[s1] + 2 * data->Nsubs[s1] * (data->Nsubs[s1] - 1) / 2;
+      }
+      else if (data->msprof)
+      {
+        iN += data->Nsubs[s1] * data->Nsubs[s2];
+      }
+    }
+  }
+  data->iN = iN;
+
+  // --- param count (jN) ---
+  jN = 0;
+  for (s1 = 0; s1 < data->Nsites; s1++)
+  {
+    for (s2 = s1; s2 < data->Nsites; s2++)
+    {
+      if (s1 == s2)
+        jN += data->Nsubs[s1] + 5 * data->Nsubs[s1] * (data->Nsubs[s1] - 1) / 2;
+      else if (data->ms == 1)
+        jN += 5 * data->Nsubs[s1] * data->Nsubs[s2];
+      else if (data->ms == 2)
+        jN += data->Nsubs[s1] * data->Nsubs[s2];
+    }
+  }
+  data->jN = jN;
+
+  data->dlnZ_hN = (double **)malloc(jN * sizeof(double *));
+  for (j = 0; j < jN; j++)
+    data->dlnZ_hN[j] = (double *)malloc(B_N * sizeof(double));
+  CUDA_CHECK(cudaMalloc(&(data->dlnZ_d), B_N * sizeof(double)));
+  CUDA_CHECK(cudaMalloc(&(data->dlnZ_dN), jN * B_N * sizeof(double)));
+  data->Gimp_h = (double *)malloc(B_N * sizeof(double));
+  CUDA_CHECK(cudaMalloc(&(data->Gimp_d), B_N * sizeof(double)));
+  data->C_h = (double *)malloc(jN * sizeof(double));
+  CUDA_CHECK(cudaMalloc(&(data->C_d), jN * sizeof(double)));
+  data->CV_h = (double *)malloc(jN * sizeof(double));
+  CUDA_CHECK(cudaMalloc(&(data->CV_d), jN * sizeof(double)));
+  data->CC_h = (double *)malloc(jN * jN * sizeof(double));
+  CUDA_CHECK(cudaMalloc(&(data->CC_d), jN * jN * sizeof(double)));
+
+  // --- gshift ---
+  int nblocks_tot = data->Nblocks;
+  data->gshift_h = (double *)malloc(data->NF * nblocks_tot * sizeof(double));
+  data->use_gshift = use_gshift;
+
+  if (use_gshift && gshift_flat)
+  {
+    memcpy(data->gshift_h, gshift_flat, data->NF * nblocks_tot * sizeof(double));
+    VERBOSE_PRINT("G_imp shifts enabled (from memory)\n");
+  }
+  else
+  {
+    for (i = 0; i < data->NF * nblocks_tot; i++)
+      data->gshift_h[i] = 0.0;
+    VERBOSE_PRINT("G_imp shifts disabled, using zeros\n");
+  }
+
+  CUDA_CHECK(cudaMalloc(&(data->gshift_d), data->NF * nblocks_tot * sizeof(double)));
+  CUDA_CHECK(cudaMemcpy(data->gshift_d, data->gshift_h,
+                        data->NF * nblocks_tot * sizeof(double), cudaMemcpyHostToDevice));
+
+  return data;
+}
+
+/**
+ * wham_from_memory: extern "C" entry point — identical flow to wham() but
+ * reads all data from host pointers instead of files.
+ */
+extern "C" int wham_from_memory(
+    int nf, double temp, int nts0, int nts1, int use_gshift,
+    int *nsubs, int nsites, const char *g_imp_path,
+    double chi_offset, double omega_scale, double cutlsum,
+    double *D_flat, int *sim_indices, int *frame_counts,
+    int total_frames, double *gshift_flat)
+{
+  validate_and_setup_gpu();
+
+  struct_data *data = readdata_from_memory(
+      nf, temp, nts0, nts1, use_gshift,
+      nsubs, nsites, g_imp_path,
+      D_flat, sim_indices, frame_counts, total_frames, gshift_flat);
+  if (data)
+  {
+    data->chi_offset = chi_offset;
+    data->omega_scale = omega_scale;
+    data->cutlsum = cutlsum;
+  }
+  if (!data)
+  {
+    fprintf(stderr, "Error: Failed to create data from memory\n");
+    return -1;
+  }
+
+  build_profile_descs(data);
+  build_param_descs(data);
+
+  CUDA_CHECK(cudaDeviceSynchronize());
+
+  iteratedata(data);
+
+  CUDA_CHECK(cudaDeviceSynchronize());
+
+  getfofq(data, data->beta_t);
+
+  CUDA_CHECK(cudaDeviceSynchronize());
+  gimp_cache_free(data->gimp_cache);
+  free(data->gimp_cache);
+  free(data->profiles);
+  free(data->params);
+  CUDA_CHECK(cudaDeviceReset());
+
+  return 0;
+}
+
 extern "C" int wham(int arg1, double arg2, int arg3, int arg4, int use_gshift,
                    int *nsubs, int nsites, const char *g_imp_path,
                    double chi_offset, double omega_scale, double cutlsum)
@@ -3084,6 +3376,332 @@ extern "C" int lmalf(int nf, double temp, int ms, int msprof, int max_iter, doub
   }
 
   // Override defaults if specified
+  if (max_iter > 0)
+    lm->max_iter = max_iter;
+  if (tolerance > 0)
+    lm->criteria = tolerance;
+
+  CUDA_CHECK(cudaDeviceSynchronize());
+
+  lmalf_run(lm);
+
+  CUDA_CHECK(cudaDeviceSynchronize());
+
+  lmalf_finish(lm);
+
+  CUDA_CHECK(cudaDeviceSynchronize());
+  CUDA_CHECK(cudaDeviceReset());
+
+  return 0;
+}
+
+// ============================================================================
+// In-memory LMALF entry point
+// ============================================================================
+
+/**
+ * lmalf_setup_from_memory: populate struct_lmalf from host pointers (no file I/O).
+ *
+ * Produces IDENTICAL struct_lmalf to lmalf_setup(), but accepts lambda,
+ * ensemble weights, and previous x/s parameters directly from the caller.
+ *
+ * @param nf            Number of simulations (unused by LMALF internals, kept for API symmetry)
+ * @param temp          Temperature (K)
+ * @param ms            Multisite coupling flag (0, 1, or 2)
+ * @param msprof        Multisite profiles flag
+ * @param nsubs_in      Subsites per site [nsites]
+ * @param nsites_in     Number of titratable sites
+ * @param g_imp_path    Path to G_imp directory (NULL → "G_imp")
+ * @param fnex          FNEX softmax parameter (set BEFORE MC reference generation)
+ * @param lambda_flat   Lambda values [n_frames × nblocks], row-major
+ * @param ensweight_flat Ensemble weights [n_frames] (NULL → uniform 1.0)
+ * @param n_frames      Number of frames
+ * @param x_prev_flat   Previous x parameters [nblocks × nblocks] (NULL if ms != 1)
+ * @param s_prev_flat   Previous s parameters [nblocks × nblocks] (NULL if ms != 1)
+ * @param nblocks_sq    nblocks*nblocks (size of x_prev/s_prev, 0 if NULL)
+ */
+static struct_lmalf *lmalf_setup_from_memory(
+    int nf, double temp, int ms, int msprof,
+    int *nsubs_in, int nsites_in, const char *g_imp_path,
+    double fnex,
+    double *lambda_flat, double *ensweight_flat, int n_frames,
+    double *x_prev_flat, double *s_prev_flat, int nblocks_sq)
+{
+  struct_lmalf *lm = (struct_lmalf *)malloc(sizeof(struct_lmalf));
+  if (!lm) return NULL;
+  int i, j, k, si, sj;
+  double kp, k0;
+
+  // G_imp path
+  if (g_imp_path && strlen(g_imp_path) > 0)
+  {
+    strncpy(lm->g_imp_path, g_imp_path, sizeof(lm->g_imp_path) - 1);
+    lm->g_imp_path[sizeof(lm->g_imp_path) - 1] = '\0';
+  }
+  else
+  {
+    strcpy(lm->g_imp_path, "G_imp");
+  }
+
+  // --- nsubs / blocks / sites (identical to lmalf_setup lines 2264-2309) ---
+  lm->nsites = nsites_in;
+  lm->nsubs = (int *)calloc(lm->nsites, sizeof(int));
+  lm->block0 = (int *)calloc(lm->nsites + 1, sizeof(int));
+  lm->nblocks = 0;
+  for (i = 0; i < lm->nsites; i++)
+  {
+    lm->nsubs[i] = nsubs_in[i];
+    lm->block0[i] = lm->nblocks;
+    lm->nblocks += lm->nsubs[i];
+  }
+  lm->block0[lm->nsites] = lm->nblocks;
+  fprintf(stderr, "LMALF from_memory: nsites=%d, nblocks=%d, n_frames=%d\n",
+          lm->nsites, lm->nblocks, n_frames);
+
+  CUDA_CHECK(cudaMalloc(&lm->block0_d, (lm->nsites + 1) * sizeof(int)));
+  CUDA_CHECK(cudaMemcpy(lm->block0_d, lm->block0, (lm->nsites + 1) * sizeof(int), cudaMemcpyHostToDevice));
+
+  lm->ms = ms;
+  lm->msprof = msprof;
+  lm->kT = kB * temp;
+
+  // Set fnex BEFORE lmalf_monte_carlo_Z (which uses lm->fnex)
+  lm->fnex = fnex;
+
+  // --- frame count ---
+  lm->B = n_frames;
+  fprintf(stdout, "LMALF: %d frames (from memory)\n", lm->B);
+
+  // --- allocate and copy lambda / ensweight ---
+  lm->lambda_h = (double *)calloc(lm->B * lm->nblocks, sizeof(double));
+  lm->ensweight_h = (double *)calloc(lm->B, sizeof(double));
+  lm->mc_lambda_h = (double *)calloc(lm->B * lm->nblocks, sizeof(double));
+  lm->mc_ensweight_h = (double *)calloc(lm->B, sizeof(double));
+
+  memcpy(lm->lambda_h, lambda_flat, (size_t)lm->B * lm->nblocks * sizeof(double));
+
+  if (ensweight_flat)
+  {
+    memcpy(lm->ensweight_h, ensweight_flat, lm->B * sizeof(double));
+  }
+  else
+  {
+    for (i = 0; i < lm->B; i++)
+      lm->ensweight_h[i] = 1.0;
+  }
+  for (i = 0; i < lm->B; i++)
+    lm->mc_ensweight_h[i] = 1.0;
+
+  // --- MC reference distribution ---
+  lmalf_monte_carlo_Z(lm);
+
+  // --- CUDA copies for lambda / ensweight ---
+  CUDA_CHECK(cudaMalloc(&lm->lambda_d, lm->B * lm->nblocks * sizeof(double)));
+  CUDA_CHECK(cudaMalloc(&lm->mc_lambda_d, lm->B * lm->nblocks * sizeof(double)));
+  CUDA_CHECK(cudaMalloc(&lm->ensweight_d, lm->B * sizeof(double)));
+  CUDA_CHECK(cudaMalloc(&lm->mc_ensweight_d, lm->B * sizeof(double)));
+  CUDA_CHECK(cudaMemcpy(lm->lambda_d, lm->lambda_h, lm->B * lm->nblocks * sizeof(double), cudaMemcpyHostToDevice));
+  CUDA_CHECK(cudaMemcpy(lm->mc_lambda_d, lm->mc_lambda_h, lm->B * lm->nblocks * sizeof(double), cudaMemcpyHostToDevice));
+  CUDA_CHECK(cudaMemcpy(lm->ensweight_d, lm->ensweight_h, lm->B * sizeof(double), cudaMemcpyHostToDevice));
+  CUDA_CHECK(cudaMemcpy(lm->mc_ensweight_d, lm->mc_ensweight_h, lm->B * sizeof(double), cudaMemcpyHostToDevice));
+
+  // --- count bias parameters (identical to lmalf_setup lines 2386-2404) ---
+  lm->nbias = 0;
+  for (i = 0; i < lm->nsites; i++)
+  {
+    for (j = i; j < lm->nsites; j++)
+    {
+      if (i == j)
+        lm->nbias += lm->nsubs[i] + (5 * lm->nsubs[i] * (lm->nsubs[i] - 1)) / 2;
+      else if (lm->ms == 1)
+        lm->nbias += 5 * lm->nsubs[i] * lm->nsubs[j];
+      else if (lm->ms == 2)
+        lm->nbias += lm->nsubs[i] * lm->nsubs[j];
+    }
+  }
+
+  // --- count profile types (identical to lmalf_setup lines 2407-2428) ---
+  lm->nprof = 0;
+  for (i = 0; i < lm->nsites; i++)
+  {
+    for (j = i; j < lm->nsites; j++)
+    {
+      if (i == j)
+      {
+        if (lm->nsubs[i] == 2)
+          lm->nprof += lm->nsubs[i] + lm->nsubs[i] * (lm->nsubs[i] - 1) / 2;
+        else
+          lm->nprof += lm->nsubs[i] + 2 * lm->nsubs[i] * (lm->nsubs[i] - 1) / 2;
+      }
+      else if (msprof)
+      {
+        lm->nprof += lm->nsubs[i] * lm->nsubs[j];
+      }
+    }
+  }
+
+  lm->nx = lm->nbias;
+
+  // --- regularization setup (identical to lmalf_setup lines 2433-2517) ---
+  kp = 1.0 / (lm->kT * lm->kT);
+  k0 = kp / 400;
+
+  lm->kx_h = (double *)calloc(lm->nx, sizeof(double));
+  lm->xr_h = (double *)calloc(lm->nx, sizeof(double));
+
+  // Load previous x/s from caller's arrays (instead of files)
+  double *xr_x = NULL, *xr_s = NULL;
+  if (lm->ms == 1 && x_prev_flat && s_prev_flat && nblocks_sq > 0)
+  {
+    xr_x = (double *)calloc(lm->nblocks * lm->nblocks, sizeof(double));
+    xr_s = (double *)calloc(lm->nblocks * lm->nblocks, sizeof(double));
+    int copy_size = lm->nblocks * lm->nblocks;
+    if (nblocks_sq < copy_size) copy_size = nblocks_sq;
+    memcpy(xr_x, x_prev_flat, copy_size * sizeof(double));
+    memcpy(xr_s, s_prev_flat, copy_size * sizeof(double));
+  }
+
+  // Set regularization constants (identical enumeration to lmalf_setup)
+  k = 0;
+  for (si = 0; si < lm->nsites; si++)
+  {
+    for (sj = si; sj < lm->nsites; sj++)
+    {
+      if (si == sj)
+      {
+        for (i = 0; i < lm->nsubs[si]; i++)
+        {
+          lm->kx_h[k++] = k0 / 4;  // b
+          for (j = i + 1; j < lm->nsubs[sj]; j++)
+          {
+            lm->kx_h[k++] = k0 / 64; // c
+            lm->kx_h[k++] = k0 / 4;  // x
+            lm->kx_h[k++] = k0 / 4;  // x
+            lm->kx_h[k++] = k0 / 1;  // s
+            lm->kx_h[k++] = k0 / 1;  // s
+          }
+        }
+      }
+      else if (lm->ms)
+      {
+        for (i = 0; i < lm->nsubs[si]; i++)
+        {
+          for (j = 0; j < lm->nsubs[sj]; j++)
+          {
+            lm->kx_h[k++] = k0 / 4;  // c
+            if (lm->ms == 1)
+            {
+              if (xr_x)
+                lm->xr_h[k] = xr_x[(lm->block0[si] + i) * lm->nblocks + lm->block0[sj] + j];
+              lm->kx_h[k++] = k0 / 0.25; // x
+              if (xr_x)
+                lm->xr_h[k] = xr_x[(lm->block0[sj] + j) * lm->nblocks + lm->block0[si] + i];
+              lm->kx_h[k++] = k0 / 0.25; // x
+              if (xr_s)
+                lm->xr_h[k] = xr_s[(lm->block0[si] + i) * lm->nblocks + lm->block0[sj] + j];
+              lm->kx_h[k++] = k0 / 0.25; // s
+              if (xr_s)
+                lm->xr_h[k] = xr_s[(lm->block0[sj] + j) * lm->nblocks + lm->block0[si] + i];
+              lm->kx_h[k++] = k0 / 0.25; // s
+            }
+          }
+        }
+      }
+    }
+  }
+
+  if (xr_x) free(xr_x);
+  if (xr_s) free(xr_s);
+
+  CUDA_CHECK(cudaMalloc(&lm->kx_d, lm->nx * sizeof(double)));
+  CUDA_CHECK(cudaMemcpy(lm->kx_d, lm->kx_h, lm->nx * sizeof(double), cudaMemcpyHostToDevice));
+  CUDA_CHECK(cudaMalloc(&lm->xr_d, lm->nx * sizeof(double)));
+  CUDA_CHECK(cudaMemcpy(lm->xr_d, lm->xr_h, lm->nx * sizeof(double), cudaMemcpyHostToDevice));
+
+  // --- allocate calculation arrays (identical to lmalf_setup lines 2528-2572) ---
+  lm->L_h = (double *)calloc(1, sizeof(double));
+  lm->dLds_h = (double *)calloc(1, sizeof(double));
+  CUDA_CHECK(cudaMalloc(&lm->L_d, sizeof(double)));
+  CUDA_CHECK(cudaMalloc(&lm->dLds_d, sizeof(double)));
+
+  lm->x_h = (double *)calloc(lm->nx, sizeof(double));
+  lm->dLdx_h = (double *)calloc(lm->nx, sizeof(double));
+  CUDA_CHECK(cudaMalloc(&lm->dLdx_d, lm->nx * sizeof(double)));
+
+  // L-BFGS memory
+  lm->Nmemax = 50;
+  lm->Nmem = 0;
+  lm->d_x = (double *)calloc(lm->nx * lm->Nmemax, sizeof(double));
+  lm->d_dLdx = (double *)calloc(lm->nx * lm->Nmemax, sizeof(double));
+  lm->rho = (double *)calloc(lm->Nmemax, sizeof(double));
+  lm->alpha = (double *)calloc(lm->Nmemax, sizeof(double));
+  lm->beta = (double *)calloc(lm->Nmemax, sizeof(double));
+  lm->hi_h = (double *)calloc(lm->nx, sizeof(double));
+  lm->x0_h = (double *)calloc(lm->nx, sizeof(double));
+  lm->dLdx0_h = (double *)calloc(lm->nx, sizeof(double));
+
+  CUDA_CHECK(cudaMalloc(&lm->E_d, lm->B * sizeof(double)));
+  CUDA_CHECK(cudaMalloc(&lm->dEds_d, lm->B * sizeof(double)));
+  CUDA_CHECK(cudaMalloc(&lm->mc_E_d, lm->B * sizeof(double)));
+  CUDA_CHECK(cudaMalloc(&lm->mc_dEds_d, lm->B * sizeof(double)));
+  CUDA_CHECK(cudaMalloc(&lm->weight_d, lm->B * sizeof(double)));
+  CUDA_CHECK(cudaMalloc(&lm->mc_weight_d, lm->B * sizeof(double)));
+  CUDA_CHECK(cudaMalloc(&lm->x_d, lm->nx * sizeof(double)));
+  CUDA_CHECK(cudaMalloc(&lm->dxds_d, lm->nx * sizeof(double)));
+  CUDA_CHECK(cudaMalloc(&lm->Z_d, sizeof(double)));
+  CUDA_CHECK(cudaMalloc(&lm->mc_Z_d, sizeof(double)));
+  CUDA_CHECK(cudaMalloc(&lm->Esum_d, sizeof(double)));
+  CUDA_CHECK(cudaMalloc(&lm->dEdssum_d, sizeof(double)));
+  CUDA_CHECK(cudaMalloc(&lm->mc_dEdssum_d, sizeof(double)));
+  CUDA_CHECK(cudaMalloc(&lm->moments_d, lm->nbias * sizeof(double)));
+  CUDA_CHECK(cudaMalloc(&lm->mc_moments_d, lm->nbias * sizeof(double)));
+  CUDA_CHECK(cudaMalloc(&lm->sumensweight_d, sizeof(double)));
+
+  // Convergence settings
+  lm->criteria = 1.25e-3;
+  lm->max_iter = 250;
+  lm->done = 0;
+  lm->doneCount = 0;
+
+  return lm;
+}
+
+/**
+ * lmalf_from_memory: extern "C" entry point — identical flow to lmalf() but
+ * reads all data from host pointers instead of files.
+ */
+extern "C" int lmalf_from_memory(
+    int nf, double temp, int ms, int msprof, int max_iter, double tolerance,
+    int *nsubs, int nsites, const char *g_imp_path,
+    double fnex, double chi_offset, double omega_scale,
+    double *lambda_flat, double *ensweight_flat, int n_frames,
+    double *x_prev_flat, double *s_prev_flat, int nblocks_sq)
+{
+  fprintf(stdout, "LMALF from_memory: Likelihood Maximization ALF\n");
+  fprintf(stdout, "  nf=%d, temp=%.2f, ms=%d, msprof=%d\n", nf, temp, ms, msprof);
+  fprintf(stdout, "  max_iter=%d, tolerance=%g\n", max_iter, tolerance);
+  fprintf(stdout, "  fnex=%.4f, chi_offset=%.6f, omega_scale=%.6f\n", fnex, chi_offset, omega_scale);
+  fprintf(stdout, "  n_frames=%d, nblocks_sq=%d\n", n_frames, nblocks_sq);
+
+  validate_and_setup_gpu();
+
+  struct_lmalf *lm = lmalf_setup_from_memory(
+      nf, temp, ms, msprof,
+      nsubs, nsites, g_imp_path, fnex,
+      lambda_flat, ensweight_flat, n_frames,
+      x_prev_flat, s_prev_flat, nblocks_sq);
+  if (lm)
+  {
+    lm->chi_offset = chi_offset;
+    lm->omega_scale = omega_scale;
+    // fnex already set in lmalf_setup_from_memory
+  }
+  if (!lm)
+  {
+    fprintf(stderr, "Error: Failed to setup LMALF from memory\n");
+    return -1;
+  }
+
   if (max_iter > 0)
     lm->max_iter = max_iter;
   if (tolerance > 0)

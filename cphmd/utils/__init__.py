@@ -8,13 +8,15 @@ Provides utilities for:
 
 from .lambda_io import (
     LambdaFileMetadata,
+    concatenate_lambda_files,
+    convert_lambda_to_parquet,
+    find_lambda_files,
+    get_lambda_columns_for_sites,
     read_lambda,
     read_lambda_binary,
     read_lambda_parquet,
+    read_lambda_values,
     write_lambda_parquet,
-    convert_lambda_to_parquet,
-    concatenate_lambda_files,
-    get_lambda_columns_for_sites,
 )
 
 __all__ = [
@@ -23,8 +25,10 @@ __all__ = [
     "read_lambda",
     "read_lambda_binary",
     "read_lambda_parquet",
+    "read_lambda_values",
     "write_lambda_parquet",
     "convert_lambda_to_parquet",
     "concatenate_lambda_files",
+    "find_lambda_files",
     "get_lambda_columns_for_sites",
 ]

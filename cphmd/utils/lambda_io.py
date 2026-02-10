@@ -13,7 +13,6 @@ Key Features:
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
 
 import numpy as np
 
@@ -93,27 +92,39 @@ def read_lambda_binary(filepath: str | Path) -> tuple[np.ndarray, LambdaFileMeta
     # Skip more unused data
     _ = fp.read_record(dtype=np.float32)
 
-    # Read lambda values
-    Lambda = np.zeros((nfile, nblocks - 1))
-    actual_steps = 0
+    # Bulk-read lambda values: each frame is a (lambda, theta) record pair.
+    # Fortran records: [4B marker][payload][4B marker]
+    # Lambda has nblocks float32s, theta has (nblocks-1) float32s.
+    from numpy.lib.stride_tricks import as_strided
 
-    for i in range(nfile):
-        try:
-            lambdav = fp.read_record(dtype=np.float32)
-            _ = fp.read_record(dtype=np.float32)  # theta
-            Lambda[i, :] = lambdav[1:]  # Skip environment block
-            actual_steps += 1
-        except Exception:
-            # File ended prematurely
-            Lambda = Lambda[:actual_steps]
-            break
-
+    pos = fp._fp.tell()
     fp.close()
+
+    lambda_rec_bytes = nblocks * 4 + 8           # lambda payload + 2 markers
+    theta_rec_bytes = (nblocks - 1) * 4 + 8      # theta payload + 2 markers
+    frame_bytes = lambda_rec_bytes + theta_rec_bytes
+
+    with open(str(filepath), 'rb') as f:
+        f.seek(pos)
+        buf = f.read()
+
+    actual_steps = len(buf) // frame_bytes
+    if actual_steps > 0:
+        raw = np.frombuffer(buf[:actual_steps * frame_bytes], dtype=np.float32)
+        # Lambda data starts at byte 4 (skip first marker) within each frame.
+        # Stride between frames = frame_bytes.
+        Lambda = as_strided(
+            raw[1:],  # skip first marker (1 float32 = 4 bytes)
+            shape=(actual_steps, nblocks),
+            strides=(frame_bytes, 4),
+        ).copy()[:, 1:]     # copy to contiguous array, drop env block (col 0)
+    else:
+        Lambda = np.zeros((0, nblocks - 1))
 
     # Calculate timestamps
     timestart = npriv * delta_t * nsavl
     timestep = nsavl * delta_t
-    timestamps = np.array([timestart + i * timestep for i in range(len(Lambda))])
+    timestamps = timestart + np.arange(len(Lambda)) * timestep
 
     # Prepend timestamps as first column
     lambda_data = np.column_stack([timestamps, Lambda])
@@ -146,7 +157,9 @@ def read_lambda_parquet(filepath: str | Path) -> np.ndarray:
 
     filepath = Path(filepath)
     table = pq.read_table(str(filepath))
-    return table.to_pandas().values
+    return np.column_stack(
+        [col.to_numpy() for col in table.columns]
+    )
 
 
 def write_lambda_parquet(
@@ -166,7 +179,6 @@ def write_lambda_parquet(
     Returns:
         Path to written file
     """
-    import pandas as pd
     import pyarrow as pa
     import pyarrow.parquet as pq
 
@@ -177,8 +189,9 @@ def write_lambda_parquet(
         n_lambdas = lambda_data.shape[1] - 1
         column_names = ["time"] + [f"λ{i+1}" for i in range(n_lambdas)]
 
-    df = pd.DataFrame(lambda_data, columns=column_names)
-    table = pa.Table.from_pandas(df)
+    table = pa.table(
+        {column_names[i]: pa.array(lambda_data[:, i]) for i in range(lambda_data.shape[1])}
+    )
     pq.write_table(table, str(filepath), compression=compression)
 
     return filepath
@@ -202,6 +215,62 @@ def read_lambda(filepath: str | Path) -> np.ndarray:
         return read_lambda_parquet(filepath)
     else:
         raise ValueError(f"Unknown lambda file format: {filepath.suffix}")
+
+
+def read_lambda_values(filepath: str | Path) -> np.ndarray:
+    """Read lambda values only (no time column) from any supported format.
+
+    Handles .parquet (named columns, drops 'time'), .dat (strips col 0),
+    and .lmd (binary, strips col 0).
+
+    Args:
+        filepath: Path to lambda file (.parquet, .dat, or .lmd)
+
+    Returns:
+        Lambda values array with shape (nsteps, nblocks) — no time column.
+    """
+    filepath = Path(filepath)
+
+    if filepath.suffix == '.parquet':
+        import pyarrow.parquet as pq
+        table = pq.read_table(str(filepath))
+        # Drop 'time' column if present (named columns make this unambiguous)
+        if "time" in table.column_names:
+            table = table.drop("time")
+        return np.column_stack(
+            [col.to_numpy() for col in table.columns]
+        )
+    elif filepath.suffix == '.lmd':
+        data, _ = read_lambda_binary(filepath)
+        # Binary reader prepends time as column 0
+        return data[:, 1:]
+    elif filepath.suffix == '.dat':
+        data = np.loadtxt(filepath)
+        if data.ndim == 1:
+            data = data.reshape(1, -1)
+        # Text files have time in column 0
+        if data.shape[1] > 1:
+            return data[:, 1:]
+        return data
+    else:
+        raise ValueError(f"Unknown lambda file format: {filepath.suffix}")
+
+
+def find_lambda_files(data_dir: Path, pattern: str = "Lambda.*.*") -> list[Path]:
+    """Find lambda data files, preferring .parquet over .dat (backwards compat).
+
+    Args:
+        data_dir: Directory containing lambda files.
+        pattern: Base glob pattern without extension.
+
+    Returns:
+        Sorted list of lambda file paths (.parquet preferred, .dat fallback).
+    """
+    parquet_files = sorted(data_dir.glob(f"{pattern}.parquet"))
+    if parquet_files:
+        return parquet_files
+    # Fallback to text format for old runs
+    return sorted(data_dir.glob(f"{pattern}.dat"))
 
 
 def convert_lambda_to_parquet(

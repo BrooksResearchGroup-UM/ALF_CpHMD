@@ -22,7 +22,7 @@ import os
 import re
 import shutil
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -109,14 +109,15 @@ def _process_folder(
     iteration = int(folder.split("analysis")[1])
     data_path = input_folder / folder / "data"
 
-    # Find and load Lambda files
-    data_files = [f for f in os.listdir(data_path) if "Lambda" in f]
-    if not data_files:
+    # Find and load Lambda files (prefer .parquet, fall back to .dat)
+    from cphmd.utils.lambda_io import find_lambda_files, read_lambda_values
+    data_fpaths = find_lambda_files(data_path)
+    if not data_fpaths:
         return None
 
     all_data = []
-    for data_file in data_files:
-        dat = np.loadtxt(data_path / data_file)
+    for fpath in data_fpaths:
+        dat = read_lambda_values(fpath)
         all_data.append(dat)
 
     data = np.concatenate(all_data, axis=0)
@@ -132,7 +133,7 @@ def _process_folder(
 
     log_str = (
         f"Run {iteration}:\n"
-        f"  Files processed: {len(data_files)}\t Rows: {num_rows}\n"
+        f"  Files processed: {len(data_fpaths)}\t Rows: {num_rows}\n"
         f"  Fraction > {cutoff}: {pct_counts} %\n"
         f"  Column means: {pct_means} %\n"
     )
@@ -324,7 +325,7 @@ def run_bias_search(config: BiasSearchConfig) -> BiasSearchResult:
     print(f"\nBias Search Results for {input_folder}")
     print("=" * 60)
     print(f"Analyzed {len(folders)} runs with cutoff = {config.cutoff}")
-    print(f"\nTop 5 runs:")
+    print("\nTop 5 runs:")
     for rank, (iter_val, score) in enumerate(zip(top5_iterations, top5_scores)):
         pop = all_populations[iterations.index(iter_val)]
         avg_pct = np.round(np.mean(pop) * 100, 2)
@@ -380,7 +381,7 @@ def run_bias_search(config: BiasSearchConfig) -> BiasSearchResult:
     # Save detailed log
     log_file = input_folder / "bias_search.log"
     with open(log_file, "w") as f:
-        f.write(f"Bias Search Analysis\n")
+        f.write("Bias Search Analysis\n")
         f.write(f"Input: {input_folder}\n")
         f.write(f"Cutoff: {config.cutoff}\n")
         f.write(f"Temperature: {config.temperature} K\n")

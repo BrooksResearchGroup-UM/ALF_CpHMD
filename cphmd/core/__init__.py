@@ -4,6 +4,46 @@
 # so that mpi4py can initialize MPI before pyCHARMM does.
 
 from .alf_runner import ALFConfig, ALFSimulation, run_alf_simulation
+from .alf_utils import (
+    ALFInfo,
+    compute_bias_energy,
+    compute_wham_inputs,
+    convert_lambda_binary_to_parquet,
+    get_energy_from_analysis_dir,
+    init_vars,
+    set_vars,
+    set_vars_from_analysis_dir,
+)
+from .bias_constants import (
+    CHI_OFFSET,
+    DEFAULT_FNEX,
+    OMEGA_DECAY,
+    OMEGA_SCALE,
+    BiasConstants,
+    derive_bias_constants,
+)
+from .bias_search import (
+    BiasSearchConfig,
+    BiasSearchResult,
+    run_bias_search,
+)
+from .block_builder import (
+    BlockConfig,
+    build_block_command,
+    read_variable_file,
+)
+from .charmm_utils import (
+    BoxParameters,
+    CHARMMSession,
+    FFTParameters,
+    NonBondedConfig,
+    define_selections,
+    execute_block_command,
+    read_structure,
+    read_topology_files,
+    setup_crystal,
+    setup_nonbonded,
+)
 from .cphmd_params import (
     CpHMDParameters,
     SiteParameters,
@@ -11,110 +51,76 @@ from .cphmd_params import (
     compute_bias_shifts,
     get_delta_pKa_for_phase,
 )
-from .block_builder import (
-    BlockConfig,
-    build_block_command,
-    read_variable_file,
+from .entropy import (
+    clear_cache,
+    compute_g_imp,
+    ensure_g_imp_available,
+    get_cache_dir,
+    get_cache_path,
 )
-from .restraints import (
-    generate_scat_restraints,
-    generate_noe_restraints,
-    write_restraint_file,
-)
-from .charmm_utils import (
-    BoxParameters,
-    FFTParameters,
-    NonBondedConfig,
-    CHARMMSession,
-    read_topology_files,
-    read_structure,
-    setup_crystal,
-    setup_nonbonded,
-    define_selections,
-    execute_block_command,
-)
-from .bias_search import (
-    BiasSearchConfig,
-    BiasSearchResult,
-    run_bias_search,
+from .free_energy import (
+    FreeEnergyResult,
+    fallback_bias_update,
+    get_free_energy5,
+    get_populations_from_lambda,
 )
 from .generate_block import (
     BlockGeneratorConfig,
     BlockGeneratorResult,
     generate_block_files,
 )
-from .bias_constants import (
-    BiasConstants,
-    derive_bias_constants,
-    DEFAULT_FNEX,
-    OMEGA_DECAY,
-    CHI_OFFSET,
-    OMEGA_SCALE,
+from .phase_switcher import (
+    EWBSState,
+    PhaseTransitionConfig,
+    PKaFitResult,
+    ReplicaLambdaData,
+    StopCriteriaConfig,
+    StopCriteriaResult,
+    calculate_populations,
+    check_phase3_stop,
+    check_phase_transition,
+    check_pka_convergence,
+    check_pka_convergence_simple,
+    check_stop_criteria,
+    compute_block_variance,
+    compute_entropy,
+    compute_replica_populations,
+    compute_rms_changes,
+    compute_spread,
+    ewbs_bottleneck_type,
+    fit_pka_from_replicas,
+    load_lambda_data,
+    load_lambda_data_per_replica,
+    update_ewbs_state,
+    write_populations_file,
 )
-from .alf_utils import (
-    ALFInfo,
-    init_vars,
-    set_vars,
-    set_vars_from_analysis_dir,
-    get_energy_from_analysis_dir,
-    compute_bias_energy,
-    write_lambda_text,
-    convert_lambda_binary_to_text,
+from .restraints import (
+    generate_noe_restraints,
+    generate_scat_restraints,
+    write_restraint_file,
 )
-from .free_energy import (
-    FreeEnergyResult,
-    get_free_energy5,
-    fallback_bias_update,
-    get_populations_from_lambda,
+from .rmsd_convergence import (
+    PairwiseRMSD,
+    RMSDConvergenceConfig,
+    RMSDState,
+    check_rmsd_phase_transition,
+    check_rmsd_stop,
+    compute_pairwise_rmsd,
+    compute_site_rmsd,
 )
-from .entropy import (
-    compute_g_imp,
-    ensure_g_imp_available,
-    get_cache_path,
-    get_cache_dir,
-    clear_cache,
+from .transitions import (
+    TransitionResult,
+    compute_connectivity_metric,
+    compute_transition_matrix,
+    find_weakest_transitions,
+    get_transitions,
+    save_transition_matrix,
+    summarize_transitions,
+    transition_matrix_to_coupling_weights,
 )
 from .variance import (
     VarianceResult,
     get_variance,
-)
-from .transitions import (
-    TransitionResult,
-    get_transitions,
-    summarize_transitions,
-    compute_transition_matrix,
-    transition_matrix_to_coupling_weights,
-    save_transition_matrix,
-    compute_connectivity_metric,
-    find_weakest_transitions,
-)
-from .rmsd_convergence import (
-    RMSDConvergenceConfig,
-    RMSDState,
-    PairwiseRMSD,
-    compute_site_rmsd,
-    compute_pairwise_rmsd,
-    check_rmsd_phase_transition,
-    check_rmsd_stop,
-)
-from .phase_switcher import (
-    PhaseTransitionConfig,
-    StopCriteriaConfig,
-    ReplicaLambdaData,
-    PKaFitResult,
-    StopCriteriaResult,
-    check_phase_transition,
-    check_phase3_stop,
-    check_stop_criteria,
-    check_pka_convergence,
-    check_pka_convergence_simple,
-    load_lambda_data,
-    load_lambda_data_per_replica,
-    compute_replica_populations,
-    compute_spread,
-    fit_pka_from_replicas,
-    calculate_populations,
-    write_populations_file,
 )
 
 # Lazy-loaded names from .patching (has top-level pyCHARMM imports)
@@ -188,9 +194,9 @@ __all__ = [
     "set_vars",
     "set_vars_from_analysis_dir",
     "get_energy_from_analysis_dir",
+    "compute_wham_inputs",
     "compute_bias_energy",
-    "write_lambda_text",
-    "convert_lambda_binary_to_text",
+    "convert_lambda_binary_to_parquet",
     # Free Energy Optimization
     "FreeEnergyResult",
     "get_free_energy5",
@@ -218,6 +224,7 @@ __all__ = [
     "check_rmsd_phase_transition",
     "check_rmsd_stop",
     # Phase Switching
+    "EWBSState",
     "PhaseTransitionConfig",
     "StopCriteriaConfig",
     "ReplicaLambdaData",
@@ -230,9 +237,14 @@ __all__ = [
     "check_pka_convergence_simple",
     "load_lambda_data",
     "load_lambda_data_per_replica",
+    "compute_block_variance",
+    "compute_entropy",
+    "compute_rms_changes",
     "compute_replica_populations",
     "compute_spread",
+    "ewbs_bottleneck_type",
     "fit_pka_from_replicas",
+    "update_ewbs_state",
     "calculate_populations",
     "write_populations_file",
 ]

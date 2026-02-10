@@ -9,10 +9,8 @@ its own plot with per-site normalization.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Sequence
 
 import numpy as np
-
 
 # Phase → alpha mapping for visual emphasis:
 # Phase 1 (exploration) is faint, Phase 3 (production) is fully opaque
@@ -107,7 +105,7 @@ def read_populations_from_runs(
     hits_relaxed_list: list[np.ndarray] = []
     hits_strict_list: list[np.ndarray] = []
 
-    for run_idx in range(1, max_run + 1):
+    for run_idx in range(0, max_run + 1):
         pop_file = input_folder / f"analysis{run_idx}" / "populations.dat"
         if not pop_file.exists():
             continue
@@ -245,12 +243,15 @@ def plot_population_convergence(
     if site_label:
         title += f" — {site_label}"
 
+    from matplotlib.ticker import MaxNLocator
+
     ax.set_xlabel("Run", fontsize=12)
     ax.set_ylabel("Normalized Population", fontsize=12)
     ax.set_title(title, fontsize=14, fontweight='bold')
     ax.legend(loc="best", fontsize=9, ncol=max(1, n_substates // 5))
     ax.grid(True, linestyle='--', alpha=0.3)
     ax.set_xlim(runs[0] - 0.5, runs[-1] + 0.5)
+    ax.xaxis.set_major_locator(MaxNLocator(integer=True))
     ax.set_ylim(bottom=0)
 
     # Clean up spines
@@ -282,8 +283,7 @@ def generate_population_plots(
     if not run_data:
         return
 
-    # Need at least 2 runs for a meaningful convergence plot
-    if len(run_data["runs"]) < 2:
+    if len(run_data["runs"]) < 1:
         return
 
     runs = run_data["runs"]

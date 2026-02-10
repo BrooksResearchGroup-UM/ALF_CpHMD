@@ -13,9 +13,8 @@ Also implements Phase 3 → STOP criteria based on:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from math import sqrt
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 
 import numpy as np
 from scipy.optimize import curve_fit
@@ -53,6 +52,19 @@ class PhaseTransitionConfig:
     # Prevents premature transition when sampling is poor
     min_connectivity_2to3: float = 0.2
 
+    # Per-state minimum normalized fraction at strict threshold for 2→3
+    # Prevents transition when any state has near-zero population
+    min_state_fraction_2to3: float = 0.01  # 1% per state
+    strict_threshold_2to3: float = 0.985
+
+    # Minimum runs in Phase 2 before allowing 2→3 transition
+    # Ensures x/s coupling cutoffs reach near-target values
+    min_phase2_runs: int = 15
+
+    # EWBS threshold for 2→3 transition (bias stability gate)
+    ewbs_2to3: float = 0.10
+    ewbs_2to3_window: int = 5  # Consecutive runs below threshold
+
 
 @dataclass
 class StopCriteriaConfig:
@@ -82,6 +94,19 @@ class StopCriteriaConfig:
     # Bias stability: rolling window and max std tolerance
     bias_window: int = 10
     bias_max_std: float = 0.5
+
+    # Minimum normalized entropy per site (S/log(N), range [0,1])
+    # Catches trapped states where frac_diff looks fine but one state is unsampled
+    min_entropy: float = 0.85
+
+    # Block averaging: number of blocks and max allowed per-state variance
+    n_blocks: int = 5
+    max_block_variance: float = 0.01
+
+    # EWBS (Energy-Weighted Bias Stability) threshold
+    # Max per-type smoothed RMS bias change for convergence
+    max_ewbs: float = 0.03  # ~kT/20 at 300K
+    ewbs_window: int = 10   # Consecutive runs below threshold required
 
     # Scoring parameters (step5-style combined score)
     # score = avg_frac - alpha * frac_diff
@@ -150,6 +175,9 @@ class StopCriteriaResult:
         score: Combined score (avg - alpha * diff)
         bias_stable: True if bias parameters are stable
         bias_rolling_std: Rolling std of bias parameters (if checked)
+        entropy: Raw population entropy S = -Σ pᵢ log(pᵢ)
+        entropy_normalized: Worst-site normalized entropy S/log(N) in [0,1]
+        block_variance: Worst per-state population variance across blocks
         reasons: List of reasons for not stopping (empty if should_stop)
     """
     should_stop: bool
@@ -162,6 +190,11 @@ class StopCriteriaResult:
     score: float = 0.0
     bias_stable: bool = True
     bias_rolling_std: float = 0.0
+    entropy: float = 0.0
+    entropy_normalized: float = 0.0
+    block_variance: float = 0.0
+    ewbs: float = float("inf")
+    ewbs_bottleneck: str = ""
     reasons: list[str] = field(default_factory=list)
 
 
@@ -228,29 +261,33 @@ def enough_samples(mask: np.ndarray, min_hits: int = 200) -> bool:
 def load_lambda_data(data_dir: Path) -> tuple[np.ndarray | None, list[str]]:
     """Load and combine lambda data from all replica files.
 
+    Supports .parquet (preferred) with .dat fallback for old runs.
+
     Args:
-        data_dir: Path to data/ directory containing Lambda.*.*.dat files
+        data_dir: Path to data/ directory containing Lambda.*.*.{parquet,dat} files
 
     Returns:
         Tuple of (combined lambda data array, list of representative files)
     """
+    from cphmd.utils.lambda_io import find_lambda_files, read_lambda_values
+
     if not data_dir.exists():
         return None, []
 
-    # Find all lambda files and organize by replica
-    replica_files: dict[int, list[str]] = {}
+    lambda_fpaths = find_lambda_files(data_dir)
+    if not lambda_fpaths:
+        return None, []
 
-    for fpath in sorted(data_dir.glob("Lambda.*.*.dat")):
-        fname = fpath.name
+    # Organize by replica
+    replica_files: dict[int, list[Path]] = {}
+    for fpath in lambda_fpaths:
         try:
-            parts = fname.split('.')
+            parts = fpath.name.split('.')
             if len(parts) >= 4:
-                repeat_idx = int(parts[1])
                 replica_idx = int(parts[2])
-
                 if replica_idx not in replica_files:
                     replica_files[replica_idx] = []
-                replica_files[replica_idx].append(fname)
+                replica_files[replica_idx].append(fpath)
         except (ValueError, IndexError):
             continue
 
@@ -262,14 +299,11 @@ def load_lambda_data(data_dir: Path) -> tuple[np.ndarray | None, list[str]]:
     l_files: list[str] = []
 
     for replica_idx in sorted(replica_files.keys()):
-        repeat_files = sorted(replica_files[replica_idx])
+        repeat_fpaths = sorted(replica_files[replica_idx])
 
         replica_combined = None
-        for fname in repeat_files:
-            l = np.loadtxt(data_dir / fname)
-            # Strip time column (column 0) — keep only lambda values
-            if l.ndim == 2 and l.shape[1] > 1:
-                l = l[:, 1:]
+        for fpath in repeat_fpaths:
+            l = read_lambda_values(fpath)
             if replica_combined is None:
                 replica_combined = l
             else:
@@ -281,8 +315,7 @@ def load_lambda_data(data_dir: Path) -> tuple[np.ndarray | None, list[str]]:
             else:
                 lambda_data = np.vstack([lambda_data, replica_combined])
 
-            # Keep first repeat file as representative
-            l_files.append(repeat_files[0])
+            l_files.append(repeat_fpaths[0].name)
 
     return lambda_data, l_files
 
@@ -296,12 +329,10 @@ def load_lambda_data_per_replica(
 ) -> list[ReplicaLambdaData]:
     """Load lambda data organized by replica with per-replica pH values.
 
-    This is the key function for pKa convergence checking. Each replica samples
-    a different effective pH based on the replica exchange scheme:
-        replica_pH = effective_pH + delta_pKa * (replica_idx - ncentral)
+    Supports .parquet (preferred) with .dat fallback for old runs.
 
     Args:
-        data_dir: Path to data/ directory containing Lambda.*.*.dat files
+        data_dir: Path to data/ directory containing Lambda.*.*.{parquet,dat} files
         effective_pH: Base pH for the central replica
         delta_pKa: pH increment between adjacent replicas
         nreps: Total number of replicas
@@ -310,23 +341,25 @@ def load_lambda_data_per_replica(
     Returns:
         List of ReplicaLambdaData objects, one per replica with valid data
     """
+    from cphmd.utils.lambda_io import find_lambda_files, read_lambda_values
+
     if not data_dir.exists():
         return []
 
     if ncentral is None:
         ncentral = nreps // 2
 
+    lambda_fpaths = find_lambda_files(data_dir)
+    if not lambda_fpaths:
+        return []
+
     # Organize files by replica
     replica_files: dict[int, list[Path]] = {}
-
-    for fpath in sorted(data_dir.glob("Lambda.*.*.dat")):
-        fname = fpath.name
+    for fpath in lambda_fpaths:
         try:
-            parts = fname.split('.')
+            parts = fpath.name.split('.')
             if len(parts) >= 4:
-                repeat_idx = int(parts[1])
                 replica_idx = int(parts[2])
-
                 if replica_idx not in replica_files:
                     replica_files[replica_idx] = []
                 replica_files[replica_idx].append(fpath)
@@ -343,19 +376,14 @@ def load_lambda_data_per_replica(
         if replica_idx >= nreps:
             continue
 
-        # Compute pH for this replica
         replica_pH = effective_pH + delta_pKa * (replica_idx - ncentral)
 
-        # Combine all repeat files for this replica
         replica_lambda = None
         for fpath in sorted(replica_files[replica_idx]):
             try:
-                data = np.loadtxt(fpath)
+                data = read_lambda_values(fpath)
                 if data.ndim == 1:
                     data = data.reshape(1, -1)
-                # Strip time column (column 0) — keep only lambda values
-                if data.shape[1] > 1:
-                    data = data[:, 1:]
                 if replica_lambda is None:
                     replica_lambda = data
                 else:
@@ -502,6 +530,251 @@ def calculate_populations(
     }
 
 
+
+@dataclass
+class EWBSState:
+    """Exponentially Weighted Bias Stability tracking.
+
+    Tracks per-type RMS bias changes with exponential moving average (EWMA).
+    EWBS = max(ema_b, ema_c, ema_x, ema_s) — the worst-type smoothed
+    per-parameter RMS change. All types must converge for EWBS to be low.
+
+    Units are in CHARMM LDBV bias units (effectively kT at simulation temp).
+    """
+
+    ema_b: float = 0.0
+    ema_c: float = 0.0
+    ema_x: float = 0.0
+    ema_s: float = 0.0
+    ewbs: float = float("inf")
+    history: list[float] = field(default_factory=list)
+    alpha: float = 0.3  # EWMA smoothing (α=0.3 ≈ 5-run memory)
+
+    def save(self, path: Path) -> None:
+        """Save state to JSON file."""
+        import json
+        import math
+
+        def _sanitize(v: float) -> float | None:
+            """Convert inf/nan to None for JSON compatibility."""
+            if not math.isfinite(v):
+                return None
+            return v
+
+        data = {
+            "ema_b": _sanitize(self.ema_b),
+            "ema_c": _sanitize(self.ema_c),
+            "ema_x": _sanitize(self.ema_x),
+            "ema_s": _sanitize(self.ema_s),
+            "ewbs": _sanitize(self.ewbs),
+            "history": [_sanitize(h) for h in self.history],
+            "alpha": self.alpha,
+        }
+        with open(path, "w") as f:
+            json.dump(data, f, indent=2)
+
+    @classmethod
+    def load(cls, path: Path) -> "EWBSState":
+        """Load state from JSON file."""
+        import json
+
+        with open(path) as f:
+            data = json.load(f)
+        state = cls()
+        def _restore(v, default=0.0):
+            """Restore None back to default (inf/nan were saved as None)."""
+            return default if v is None else float(v)
+
+        state.ema_b = _restore(data.get("ema_b"), 0.0)
+        state.ema_c = _restore(data.get("ema_c"), 0.0)
+        state.ema_x = _restore(data.get("ema_x"), 0.0)
+        state.ema_s = _restore(data.get("ema_s"), 0.0)
+        state.ewbs = _restore(data.get("ewbs"), float("inf"))
+        raw_history = data.get("history", [])
+        if not isinstance(raw_history, list):
+            raw_history = []
+        state.history = [_restore(h, float("inf")) for h in raw_history]
+        state.alpha = _restore(data.get("alpha"), 0.3)
+        return state
+
+
+def compute_rms_changes(
+    b: np.ndarray,
+    c: np.ndarray,
+    x: np.ndarray,
+    s: np.ndarray,
+) -> tuple[float, float, float, float]:
+    """Compute per-type RMS magnitude of bias changes.
+
+    Each type's RMS is computed over its nonzero entries (zero entries
+    indicate disabled or reference parameters).
+
+    Args:
+        b: Linear bias changes (1 x nblocks or flat).
+        c: Quadratic bias changes (nblocks x nblocks).
+        x: Cross-term x bias changes (nblocks x nblocks).
+        s: Cross-term s bias changes (nblocks x nblocks).
+
+    Returns:
+        Tuple of (rms_b, rms_c, rms_x, rms_s).
+    """
+
+    def _rms_nonzero(arr: np.ndarray) -> float:
+        vals = arr.ravel()
+        vals = vals[np.isfinite(vals) & (vals != 0)]
+        if vals.size == 0:
+            return 0.0
+        return float(np.sqrt(np.mean(vals**2)))
+
+    return _rms_nonzero(b), _rms_nonzero(c), _rms_nonzero(x), _rms_nonzero(s)
+
+
+def update_ewbs_state(
+    state: EWBSState,
+    b: np.ndarray,
+    c: np.ndarray,
+    x: np.ndarray,
+    s: np.ndarray,
+) -> float:
+    """Update EWBS state with new bias changes and return current EWBS.
+
+    EWBS is the worst-type smoothed per-parameter RMS change. When all
+    four types (b, c, x, s) have small smoothed RMS, the biases are stable.
+
+    Args:
+        state: EWBSState to update in-place.
+        b: Linear bias changes from current analysis.
+        c: Quadratic bias changes from current analysis.
+        x: Cross-term x bias changes from current analysis.
+        s: Cross-term s bias changes from current analysis.
+
+    Returns:
+        Current EWBS value.
+    """
+    rms_b, rms_c, rms_x, rms_s = compute_rms_changes(b, c, x, s)
+
+    a = state.alpha
+    if not state.history:
+        # First update: initialize directly
+        state.ema_b = rms_b
+        state.ema_c = rms_c
+        state.ema_x = rms_x
+        state.ema_s = rms_s
+    else:
+        state.ema_b = a * rms_b + (1 - a) * state.ema_b
+        state.ema_c = a * rms_c + (1 - a) * state.ema_c
+        state.ema_x = a * rms_x + (1 - a) * state.ema_x
+        state.ema_s = a * rms_s + (1 - a) * state.ema_s
+
+    state.ewbs = max(state.ema_b, state.ema_c, state.ema_x, state.ema_s)
+    state.history.append(state.ewbs)
+    return state.ewbs
+
+
+def ewbs_bottleneck_type(state: EWBSState) -> str:
+    """Return which parameter type is the EWBS bottleneck."""
+    emas = {"b": state.ema_b, "c": state.ema_c, "x": state.ema_x, "s": state.ema_s}
+    return max(emas, key=emas.get)
+
+
+def compute_entropy(
+    fractions: np.ndarray,
+    nsubs: list[int] | None = None,
+) -> tuple[float, float]:
+    """Compute population entropy and worst-site normalized entropy.
+
+    For per-site systems, computes entropy per site and returns the worst
+    (lowest) normalized entropy. Catches trapped states where frac_diff
+    looks fine but the distribution is far from uniform.
+
+    Args:
+        fractions: Per-state population fractions (normalized per site).
+        nsubs: Number of substates per site.
+
+    Returns:
+        (raw_entropy, worst_site_normalized_entropy) where normalized
+        is S/log(N) in [0, 1]. A value of 1.0 means perfectly uniform.
+    """
+    if fractions.size == 0 or fractions.sum() == 0:
+        return 0.0, 0.0
+
+    if nsubs is not None:
+        worst_norm = 1.0
+        for start, end in _per_site_ranges(nsubs):
+            site_fracs = fractions[start:end]
+            nonzero = site_fracs[site_fracs > 0]
+            if len(nonzero) == 0:
+                worst_norm = 0.0
+                continue
+            s = float(-np.sum(nonzero * np.log(nonzero)))
+            s_max = np.log(end - start)
+            norm = s / s_max if s_max > 0 else 1.0  # 1-substate is trivially uniform
+            worst_norm = min(worst_norm, norm)
+        # Raw entropy over all states
+        nonzero_all = fractions[fractions > 0]
+        raw = float(-np.sum(nonzero_all * np.log(nonzero_all)))
+        return raw, worst_norm
+    else:
+        nonzero = fractions[fractions > 0]
+        raw = float(-np.sum(nonzero * np.log(nonzero)))
+        s_max = np.log(len(fractions))
+        norm = raw / s_max if s_max > 0 else 0.0
+        return raw, norm
+
+
+def compute_block_variance(
+    lambda_data: np.ndarray,
+    n_blocks: int,
+    threshold: float,
+    nsubs: list[int] | None = None,
+) -> float:
+    """Compute worst per-state population variance across blocks.
+
+    Splits lambda data into equal blocks, computes per-site normalized
+    populations in each block, then returns the maximum per-state
+    variance across blocks. High variance means populations are still
+    drifting even though their average looks converged.
+
+    Args:
+        lambda_data: Combined lambda data array (samples x states).
+        n_blocks: Number of blocks to split into.
+        threshold: Lambda threshold for physical state detection.
+        nsubs: Number of substates per site.
+
+    Returns:
+        Maximum per-state population variance across blocks.
+        Returns 0.0 if too few samples for meaningful blocking.
+    """
+    n_samples = lambda_data.shape[0]
+    block_size = n_samples // n_blocks
+    if block_size < 50:
+        return 0.0
+
+    block_pops = []
+    for i in range(n_blocks):
+        block = lambda_data[i * block_size : (i + 1) * block_size]
+        mask = block > threshold
+        fracs = mask.mean(axis=0)
+
+        if nsubs is not None:
+            norm_fracs = np.zeros_like(fracs)
+            for start, end in _per_site_ranges(nsubs):
+                site_total = fracs[start:end].sum()
+                if site_total > 0:
+                    norm_fracs[start:end] = fracs[start:end] / site_total
+            fracs = norm_fracs
+        else:
+            total = fracs.sum()
+            if total > 0:
+                fracs = fracs / total
+
+        block_pops.append(fracs)
+
+    block_pops_arr = np.array(block_pops)  # (n_blocks, n_states)
+    per_state_var = np.var(block_pops_arr, axis=0)
+    return float(per_state_var.max())
+
+
 def compute_spread(counts: np.ndarray) -> float:
     """Compute normalized spread: (max - min) / (max + min).
 
@@ -524,6 +797,7 @@ def check_stop_criteria(
     config: StopCriteriaConfig | None = None,
     bias_history: np.ndarray | None = None,
     nsubs: list[int] | None = None,
+    ewbs_state: EWBSState | None = None,
 ) -> StopCriteriaResult:
     """Check if Phase 3 → STOP criteria are met.
 
@@ -547,6 +821,7 @@ def check_stop_criteria(
                       Shape: (n_iterations, n_bias_params) or 1D for single param
         nsubs: Number of substates per site (e.g. [2, 3]). If None,
                uses global metrics (legacy behavior).
+        ewbs_state: Optional EWBSState for bias stability metric.
 
     Returns:
         StopCriteriaResult with detailed metrics and decision
@@ -604,6 +879,14 @@ def check_stop_criteria(
             bias_rolling_std = float(rolling_std)
             bias_stable = bias_rolling_std <= config.bias_max_std
 
+    # Compute population entropy (catches trapped states)
+    entropy_raw, entropy_norm = compute_entropy(fractions, nsubs)
+
+    # Compute block variance (catches drifting populations)
+    block_var = compute_block_variance(
+        lambda_data, config.n_blocks, config.threshold_strict, nsubs,
+    )
+
     # Determine if all criteria are met
     reasons: list[str] = []
 
@@ -616,6 +899,28 @@ def check_stop_criteria(
 
     if not bias_stable:
         reasons.append(f"bias_std={bias_rolling_std:.3f}>{config.bias_max_std}")
+
+    if entropy_norm < config.min_entropy:
+        reasons.append(f"entropy={entropy_norm:.2f}<{config.min_entropy}")
+
+    if block_var > config.max_block_variance:
+        reasons.append(f"block_var={block_var:.4f}>{config.max_block_variance}")
+
+    # EWBS check: bias changes must be small for sufficient consecutive runs
+    ewbs_val = float("inf")
+    ewbs_btn = ""
+    if ewbs_state is not None:
+        if not ewbs_state.history:
+            reasons.append("ewbs: no history available")
+        else:
+            ewbs_val = ewbs_state.ewbs
+            ewbs_btn = ewbs_bottleneck_type(ewbs_state)
+            window = min(config.ewbs_window, len(ewbs_state.history))
+            recent = ewbs_state.history[-window:]
+            if any(v > config.max_ewbs for v in recent):
+                reasons.append(
+                    f"ewbs={ewbs_val:.4f}>{config.max_ewbs}({ewbs_btn})"
+                )
 
     should_stop = len(reasons) == 0
 
@@ -630,6 +935,11 @@ def check_stop_criteria(
         score=score,
         bias_stable=bias_stable,
         bias_rolling_std=bias_rolling_std,
+        entropy=entropy_raw,
+        entropy_normalized=entropy_norm,
+        block_variance=block_var,
+        ewbs=ewbs_val,
+        ewbs_bottleneck=ewbs_btn,
         reasons=reasons,
     )
 
@@ -657,19 +967,19 @@ def write_populations_file(
     nsubs = pop_data.get("nsubs")
 
     with open(filepath, "w") as f:
-        f.write(f"# Lambda Population Analysis\n")
+        f.write("# Lambda Population Analysis\n")
         f.write(f"# Total samples: {n_samples}\n")
         if nsubs is not None:
             f.write(f"# Sites: {len(nsubs)}, nsubs={nsubs}\n")
         f.write(f"# Relaxed threshold: {thresh_r} (total physical: {total_r})\n")
         f.write(f"# Strict threshold: {thresh_s} (total physical: {total_s})\n")
-        f.write(f"#\n")
-        f.write(f"# Raw = fraction of ALL samples in physical state\n")
+        f.write("#\n")
+        f.write("# Raw = fraction of ALL samples in physical state\n")
         if nsubs is not None:
-            f.write(f"# Norm = fraction among physical samples per site (each site sums to 1)\n")
+            f.write("# Norm = fraction among physical samples per site (each site sums to 1)\n")
         else:
-            f.write(f"# Norm = fraction among physical samples only (sums to 1)\n")
-        f.write(f"#\n")
+            f.write("# Norm = fraction among physical samples only (sums to 1)\n")
+        f.write("#\n")
 
         # Header
         f.write(f"# State  Raw(>{thresh_r})  Norm(>{thresh_r})  Hits(>{thresh_r})  ")
@@ -687,7 +997,7 @@ def write_populations_file(
             )
 
         # Summary statistics
-        f.write(f"#\n")
+        f.write("#\n")
         f.write(f"# Raw summary (>{thresh_r}): "
                 f"min={pop_data['pop_relaxed_raw'].min():.4f}, "
                 f"max={pop_data['pop_relaxed_raw'].max():.4f}, "
@@ -696,7 +1006,7 @@ def write_populations_file(
                 f"min={pop_data['pop_strict_raw'].min():.4f}, "
                 f"max={pop_data['pop_strict_raw'].max():.4f}, "
                 f"spread={pop_data['pop_strict_raw'].max() - pop_data['pop_strict_raw'].min():.4f}\n")
-        f.write(f"#\n")
+        f.write("#\n")
         if nsubs is not None:
             # Per-site norm summaries
             for site_idx, (start, end) in enumerate(_per_site_ranges(nsubs)):
@@ -763,6 +1073,8 @@ def check_phase_transition(
     nreps: int | None = None,
     nsubs: list[int] | None = None,
     connectivity: float | None = None,
+    phase2_run_count: int | None = None,
+    ewbs_state: EWBSState | None = None,
 ) -> tuple[int, str]:
     """Check if phase transition criteria are met.
 
@@ -771,6 +1083,8 @@ def check_phase_transition(
     2. Enough samples per state
     3. pKa convergence (if CpHMD parameters provided)
     4. Minimum transition connectivity (for 2→3, if provided)
+    5. Per-state minimum fraction at strict threshold (for 2→3)
+    6. Minimum Phase 2 duration (for 2→3)
 
     Args:
         current_phase: Current simulation phase (1, 2, or 3)
@@ -783,6 +1097,9 @@ def check_phase_transition(
         nreps: Number of replicas (for pKa check)
         nsubs: Number of substates per site (e.g. [2, 3]). If None,
                uses global spread check (legacy behavior).
+        connectivity: Transition matrix connectivity metric.
+        phase2_run_count: Number of runs completed in Phase 2 (for min duration).
+        ewbs_state: Optional EWBSState for bias stability gate (for 2→3).
 
     Returns:
         Tuple of (new_phase, reason_string)
@@ -871,7 +1188,62 @@ def check_phase_transition(
                 conn_reason = (f"connectivity={connectivity:.2f}"
                                f"<{config.min_connectivity_2to3}")
 
-        if overlap_ok and samples_ok and pka_ok and conn_ok:
+        # Check per-state minimum fraction at strict threshold
+        # Prevents 2→3 when any state has near-zero physical-state population
+        state_frac_ok = True
+        state_frac_reason = ""
+        if nsubs is not None:
+            strict_mask = lambda_data > config.strict_threshold_2to3
+            strict_fracs = strict_mask.mean(axis=0)
+            for si, (start, end) in enumerate(_per_site_ranges(nsubs)):
+                site_raw = strict_fracs[start:end]
+                site_total = site_raw.sum()
+                if site_total > 0:
+                    site_norm = site_raw / site_total
+                else:
+                    site_norm = np.zeros_like(site_raw)
+                min_frac = float(site_norm.min())
+                if min_frac < config.min_state_fraction_2to3:
+                    state_frac_ok = False
+                    worst_sub = int(np.argmin(site_norm))
+                    state_frac_reason = (
+                        f"site{si} sub{worst_sub} frac={min_frac:.1%}"
+                        f"<{config.min_state_fraction_2to3:.0%}")
+                    break
+
+        # Check minimum Phase 2 duration
+        phase2_dur_ok = True
+        phase2_dur_reason = ""
+        if phase2_run_count is not None:
+            phase2_dur_ok = phase2_run_count >= config.min_phase2_runs
+            if not phase2_dur_ok:
+                phase2_dur_reason = (
+                    f"phase2_runs={phase2_run_count}"
+                    f"<{config.min_phase2_runs}")
+
+        # Check EWBS bias stability
+        ewbs_ok = True
+        ewbs_reason = ""
+        if ewbs_state is not None:
+            if not ewbs_state.history:
+                ewbs_ok = False
+                ewbs_reason = "ewbs: no history available"
+            else:
+                window = min(config.ewbs_2to3_window, len(ewbs_state.history))
+                recent = ewbs_state.history[-window:]
+                if window < config.ewbs_2to3_window:
+                    ewbs_ok = False
+                    ewbs_reason = (
+                        f"ewbs_history={window}<{config.ewbs_2to3_window}")
+                elif any(v > config.ewbs_2to3 for v in recent):
+                    ewbs_ok = False
+                    btn = ewbs_bottleneck_type(ewbs_state)
+                    ewbs_reason = (
+                        f"ewbs={ewbs_state.ewbs:.3f}>{config.ewbs_2to3}({btn})")
+
+        all_ok = (overlap_ok and samples_ok and pka_ok and conn_ok
+                  and state_frac_ok and phase2_dur_ok and ewbs_ok)
+        if all_ok:
             return 3, f"Phase 2→3: spread={spread:.3f}, min_hits={min_sample_count}"
         else:
             reasons = []
@@ -883,6 +1255,12 @@ def check_phase_transition(
                 reasons.append(pka_reason)
             if not conn_ok:
                 reasons.append(conn_reason)
+            if not state_frac_ok:
+                reasons.append(state_frac_reason)
+            if not phase2_dur_ok:
+                reasons.append(phase2_dur_reason)
+            if not ewbs_ok:
+                reasons.append(ewbs_reason)
             return 2, f"Staying in phase 2: {', '.join(reasons)}"
 
     # Phase 3 - no further transitions
@@ -894,6 +1272,7 @@ def check_phase3_stop(
     stop_config: StopCriteriaConfig | None = None,
     bias_history: np.ndarray | None = None,
     nsubs: list[int] | None = None,
+    ewbs_state: EWBSState | None = None,
 ) -> tuple[bool, str, StopCriteriaResult]:
     """Check if Phase 3 simulation should stop.
 
@@ -907,6 +1286,7 @@ def check_phase3_stop(
                       Shape: (n_iterations, n_bias_params)
         nsubs: Number of substates per site (e.g. [2, 3]). If None,
                uses global metrics (legacy behavior).
+        ewbs_state: Optional EWBSState for bias stability metric.
 
     Returns:
         Tuple of (should_stop, reason_string, full_result)
@@ -917,13 +1297,21 @@ def check_phase3_stop(
         >>> if should_stop:
         ...     print(f"Converged: diff={result.frac_diff_pct:.2f}%")
     """
-    result = check_stop_criteria(lambda_data, stop_config, bias_history, nsubs=nsubs)
+    result = check_stop_criteria(
+        lambda_data, stop_config, bias_history, nsubs=nsubs,
+        ewbs_state=ewbs_state,
+    )
 
     if result.should_stop:
+        ewbs_info = ""
+        if result.ewbs < float("inf"):
+            ewbs_info = f", ewbs={result.ewbs:.4f}({result.ewbs_bottleneck})"
         reason = (
             f"STOP: converged with {result.n_states} states, "
             f"samples={result.n_samples:,}, "
             f"frac_diff={result.frac_diff_pct:.2f}%, "
+            f"entropy={result.entropy_normalized:.2f}, "
+            f"block_var={result.block_variance:.4f}{ewbs_info}, "
             f"score={result.score:.4f}"
         )
     else:

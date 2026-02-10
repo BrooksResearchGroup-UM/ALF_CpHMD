@@ -71,3 +71,4 @@ plots/
 # Local configuration
 .env
 *.local
+CLAUDE.md

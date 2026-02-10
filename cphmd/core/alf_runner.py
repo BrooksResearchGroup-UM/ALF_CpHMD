@@ -29,8 +29,7 @@ import numpy as np
 import pandas as pd
 
 from cphmd.core.alf_utils import (
-    convert_lambda_binary_to_text,
-    get_energy_from_analysis_dir,
+    convert_lambda_binary_to_parquet,
     init_vars,
     set_vars_from_analysis_dir,
 )
@@ -293,6 +292,10 @@ class SimulationState:
 
     # RMSD convergence state (used when convergence_mode="rmsd")
     rmsd_state: Any = None  # RMSDState instance, lazy-initialized
+
+    # EWBS (Energy-Weighted Bias Stability) state — tracks per-type
+    # smoothed RMS bias changes for convergence detection
+    ewbs_state: Any = None  # EWBSState instance, lazy-initialized
 
 
 class ALFSimulation:
@@ -1805,29 +1808,54 @@ class ALFSimulation:
     ) -> None:
         """Run WHAM analysis using bundled GPU library.
 
+        Uses in-memory data passing when available (self._wham_lambda set by
+        _alf_analysis), falls back to file-based path otherwise.
+
         Args:
             nf: Number of simulation files
             ms: Multisite parameter
             msprof: Multisite profile parameter
             cut_params: Cutoff parameters
         """
-        from cphmd.wham import run_wham
-
         nsubs = self.state.alf_info["nsubs"]
+        nblocks = self.state.alf_info["nblocks"]
 
-        run_wham(
-            analysis_dir=Path.cwd(),
-            nf=nf,
-            temp=self.config.temperature,
-            nts0=ms,
-            nts1=msprof,
-            use_gshift=False,
-            nsubs=nsubs,
-            g_imp_path="../G_imp",
-            log_file="analysis.log",
-            fnex=self.config.fnex,
-            cutlsum=self.config.cutlsum,
-        )
+        if hasattr(self, '_wham_lambda') and self._wham_lambda:
+            from cphmd.wham import run_wham_from_memory
+
+            run_wham_from_memory(
+                lambda_arrays=self._wham_lambda,
+                energy_matrix=self._wham_energy,
+                nblocks=nblocks,
+                nf=nf,
+                temp=self.config.temperature,
+                nts0=ms,
+                nts1=msprof,
+                use_gshift=False,
+                nsubs=nsubs,
+                g_imp_path="../G_imp",
+                gshift_data=self._wham_gshift,
+                output_dir=Path.cwd(),
+                log_file="analysis.log",
+                fnex=self.config.fnex,
+                cutlsum=self.config.cutlsum,
+            )
+        else:
+            from cphmd.wham import run_wham
+
+            run_wham(
+                analysis_dir=Path.cwd(),
+                nf=nf,
+                temp=self.config.temperature,
+                nts0=ms,
+                nts1=msprof,
+                use_gshift=False,
+                nsubs=nsubs,
+                g_imp_path="../G_imp",
+                log_file="analysis.log",
+                fnex=self.config.fnex,
+                cutlsum=self.config.cutlsum,
+            )
         get_free_energy5(
             self.state.alf_info, ms=ms, msprof=msprof, **cut_params
         )
@@ -1837,9 +1865,8 @@ class ALFSimulation:
     ) -> None:
         """Run LMALF analysis using bundled GPU library.
 
-        LMALF expects:
-        - Lambda.dat: Combined lambda trajectory
-        - ensweight.dat: Ensemble weights (optional)
+        Uses in-memory data passing when available (self._wham_lambda set by
+        _alf_analysis), falls back to file-based path otherwise.
 
         Args:
             nf: Number of simulation files
@@ -1847,48 +1874,83 @@ class ALFSimulation:
             msprof: Multisite profile parameter
             cut_params: Cutoff parameters for GetFreeEnergyLM
         """
-        # LMALF needs a combined Lambda.dat file
-        # Collect all data/Lambda.*.*.dat files
         import sys
 
         from cphmd.core.alf_utils import get_free_energy_lm
-        from cphmd.wham import prepare_lmalf_input, run_lmalf
+
         print("[LMALF] Starting analysis...", flush=True)
         sys.stdout.flush()
-        data_dir = Path("data")
-        lambda_files = sorted(data_dir.glob("Lambda.*.*.dat"))
 
-        if not lambda_files:
-            raise FileNotFoundError("No Lambda.*.*.dat files found in data/")
-
-        print(f"[LMALF] Found {len(lambda_files)} lambda files")
-
-        # Prepare combined Lambda.dat for LMALF
-        print("[LMALF] Preparing input files...")
-        prepare_lmalf_input(
-            analysis_dir=Path.cwd(),
-            lambda_files=lambda_files,
-            weight_files=None,  # Use uniform weights
-        )
-
-        # Get nsubs from alf_info
         nsubs = self.state.alf_info["nsubs"]
 
-        # Run LMALF optimization
-        print("[LMALF] Running LMALF optimization...")
-        run_lmalf(
-            analysis_dir=Path.cwd(),
-            nf=nf,
-            temp=self.config.temperature,
-            ms=ms,
-            msprof=msprof,
-            max_iter=self.config.lmalf_max_iter,
-            tolerance=self.config.lmalf_tolerance,
-            nsubs=nsubs,
-            g_imp_path="../G_imp",
-            log_file="analysis.log",
-            fnex=self.config.fnex,
-        )
+        if hasattr(self, '_wham_lambda') and self._wham_lambda:
+            from cphmd.wham import run_lmalf_from_memory
+
+            # Concatenate lambda arrays for LMALF
+            lambda_combined = np.vstack(self._wham_lambda)
+            print(f"[LMALF] {lambda_combined.shape[0]} frames, {lambda_combined.shape[1]} blocks (in-memory)")
+
+            # Load x_prev/s_prev if they exist (small files, keep as disk reads)
+            x_prev_file = Path("x_prev.dat")
+            s_prev_file = Path("s_prev.dat")
+            x_prev = np.loadtxt(x_prev_file) if x_prev_file.exists() else None
+            s_prev = np.loadtxt(s_prev_file) if s_prev_file.exists() else None
+
+            print("[LMALF] Running LMALF optimization (in-memory)...")
+            run_lmalf_from_memory(
+                lambda_combined=lambda_combined,
+                ensweight=None,
+                nf=nf,
+                temp=self.config.temperature,
+                ms=ms,
+                msprof=msprof,
+                max_iter=self.config.lmalf_max_iter,
+                tolerance=self.config.lmalf_tolerance,
+                nsubs=nsubs,
+                g_imp_path="../G_imp",
+                x_prev=x_prev,
+                s_prev=s_prev,
+                output_dir=Path.cwd(),
+                log_file="analysis.log",
+                fnex=self.config.fnex,
+            )
+        else:
+            from cphmd.utils.lambda_io import find_lambda_files, read_lambda_values
+            from cphmd.wham import run_lmalf_from_memory
+
+            data_dir = Path("data")
+            lambda_files = find_lambda_files(data_dir)
+
+            if not lambda_files:
+                raise FileNotFoundError("No Lambda.*.*.parquet (or .dat) files found in data/")
+
+            print(f"[LMALF] Found {len(lambda_files)} lambda files (parquet fallback)")
+            lambda_arrays = [read_lambda_values(f) for f in lambda_files]
+            lambda_combined = np.vstack(lambda_arrays)
+
+            x_prev_file = Path("x_prev.dat")
+            s_prev_file = Path("s_prev.dat")
+            x_prev = np.loadtxt(x_prev_file) if x_prev_file.exists() else None
+            s_prev = np.loadtxt(s_prev_file) if s_prev_file.exists() else None
+
+            print(f"[LMALF] Running LMALF optimization ({lambda_combined.shape[0]} frames)...")
+            run_lmalf_from_memory(
+                lambda_combined=lambda_combined,
+                ensweight=None,
+                nf=nf,
+                temp=self.config.temperature,
+                ms=ms,
+                msprof=msprof,
+                max_iter=self.config.lmalf_max_iter,
+                tolerance=self.config.lmalf_tolerance,
+                nsubs=nsubs,
+                g_imp_path="../G_imp",
+                x_prev=x_prev,
+                s_prev=s_prev,
+                output_dir=Path.cwd(),
+                log_file="analysis.log",
+                fnex=self.config.fnex,
+            )
         print("[LMALF] LMALF optimization finished")
 
         # Check if LMALF produced valid output (not all zeros)
@@ -1928,19 +1990,22 @@ class ALFSimulation:
         # Step 2: If Phase 1, refine with short LMALF
         if self.state.phase == 1:
             from cphmd.core.alf_utils import get_free_energy_lm
-            from cphmd.wham import prepare_lmalf_input, run_lmalf
 
-            lambda_files = sorted(Path("data").glob("Lambda.*.*.dat"))
-            if lambda_files:
-                prepare_lmalf_input(
-                    analysis_dir=Path.cwd(),
-                    lambda_files=lambda_files,
-                    weight_files=None,
-                )
-                nsubs = self.state.alf_info["nsubs"]
-                print("[Hybrid] LMALF refinement (5 iterations)...")
-                run_lmalf(
-                    analysis_dir=Path.cwd(),
+            nsubs = self.state.alf_info["nsubs"]
+            print("[Hybrid] LMALF refinement (5 iterations)...")
+
+            if hasattr(self, '_wham_lambda') and self._wham_lambda:
+                from cphmd.wham import run_lmalf_from_memory
+
+                lambda_combined = np.vstack(self._wham_lambda)
+                x_prev_file = Path("x_prev.dat")
+                s_prev_file = Path("s_prev.dat")
+                x_prev = np.loadtxt(x_prev_file) if x_prev_file.exists() else None
+                s_prev = np.loadtxt(s_prev_file) if s_prev_file.exists() else None
+
+                run_lmalf_from_memory(
+                    lambda_combined=lambda_combined,
+                    ensweight=None,
                     nf=nf,
                     temp=self.config.temperature,
                     ms=ms,
@@ -1948,24 +2013,61 @@ class ALFSimulation:
                     max_iter=5,
                     nsubs=nsubs,
                     g_imp_path="../G_imp",
+                    x_prev=x_prev,
+                    s_prev=s_prev,
+                    output_dir=Path.cwd(),
                     log_file="analysis.log",
                     fnex=self.config.fnex,
                 )
-                # Check if LMALF produced valid output before overwriting WHAM result
-                out_file = Path("OUT.dat")
-                if out_file.exists():
-                    out_data = np.loadtxt(out_file)
-                    if np.all(out_data == 0):
-                        print("[Hybrid] LMALF produced all zeros - keeping WHAM output")
-                        return
+            else:
+                from cphmd.utils.lambda_io import find_lambda_files as _find_lf
+                from cphmd.utils.lambda_io import read_lambda_values
+                from cphmd.wham import run_lmalf_from_memory
 
-                # Re-run GetFreeEnergy on LMALF's output
-                lm_keys = {"cutb", "cutc", "cutx", "cuts", "cutc2", "cutx2", "cuts2"}
-                lm_params = {k: v for k, v in cut_params.items() if k in lm_keys}
-                get_free_energy_lm(
-                    self.state.alf_info, ms=ms, msprof=msprof, **lm_params
+                lambda_files = _find_lf(Path("data"))
+                if not lambda_files:
+                    print("[Hybrid] No lambda files found, skipping LMALF refinement")
+                    return
+                lambda_arrays = [read_lambda_values(f) for f in lambda_files]
+                lambda_combined = np.vstack(lambda_arrays)
+
+                x_prev_file = Path("x_prev.dat")
+                s_prev_file = Path("s_prev.dat")
+                x_prev = np.loadtxt(x_prev_file) if x_prev_file.exists() else None
+                s_prev = np.loadtxt(s_prev_file) if s_prev_file.exists() else None
+
+                run_lmalf_from_memory(
+                    lambda_combined=lambda_combined,
+                    ensweight=None,
+                    nf=nf,
+                    temp=self.config.temperature,
+                    ms=ms,
+                    msprof=msprof,
+                    max_iter=5,
+                    nsubs=nsubs,
+                    g_imp_path="../G_imp",
+                    x_prev=x_prev,
+                    s_prev=s_prev,
+                    output_dir=Path.cwd(),
+                    log_file="analysis.log",
+                    fnex=self.config.fnex,
                 )
-                print("[Hybrid] LMALF refinement complete")
+
+            # Check if LMALF produced valid output before overwriting WHAM result
+            out_file = Path("OUT.dat")
+            if out_file.exists():
+                out_data = np.loadtxt(out_file)
+                if np.all(out_data == 0):
+                    print("[Hybrid] LMALF produced all zeros - keeping WHAM output")
+                    return
+
+            # Re-run GetFreeEnergy on LMALF's output
+            lm_keys = {"cutb", "cutc", "cutx", "cuts", "cutc2", "cutx2", "cuts2"}
+            lm_params = {k: v for k, v in cut_params.items() if k in lm_keys}
+            get_free_energy_lm(
+                self.state.alf_info, ms=ms, msprof=msprof, **lm_params
+            )
+            print("[Hybrid] LMALF refinement complete")
 
     def _detect_phase_from_logs(self, run_idx: int) -> int | None:
         """Detect simulation phase from NSTEP in log files.
@@ -2091,20 +2193,30 @@ class ALFSimulation:
                             else:
                                 fnmsin = [f"../run{run_idx}/res/{name}_prod.{kk}.{j}.lmd"]
 
-                            fnmout = f"data/Lambda.{kk}.{j}.dat"
+                            fnmout = f"data/Lambda.{kk}.{j}.parquet"
 
                             if Path(fnmsin[0]).exists():
-                                convert_lambda_binary_to_text(
+                                convert_lambda_binary_to_parquet(
                                     self.state.alf_info, fnmout, fnmsin
                                 )
+                                # Delete source .lmd to save disk space
+                                for lmd_path in fnmsin:
+                                    p = Path(lmd_path)
+                                    if p.exists() and p.suffix == '.lmd':
+                                        p.unlink()
 
-                    # Run energy calculation (verbose)
-                    # Phase 2/3 generate many more samples per run, so we need to subsample
+                    # Compute WHAM inputs in memory (no intermediate text files)
                     if self.state.phase == 1:
                         skipE = 10   # 40K samples → 4K per simulation
                     else:
                         skipE = 100  # 450K+ samples → 4.5K per simulation
-                    nf = get_energy_from_analysis_dir(
+                    from cphmd.core.alf_utils import compute_wham_inputs
+                    (
+                        self._wham_lambda,
+                        self._wham_energy,
+                        self._wham_gshift,
+                        nf,
+                    ) = compute_wham_inputs(
                         self.state.alf_info, im5, run_idx, skipE=skipE
                     )
 
@@ -2263,6 +2375,40 @@ class ALFSimulation:
                 np.savetxt("c.dat", np.zeros((nblocks, nblocks)), fmt=" %10.5f")
                 np.savetxt("x.dat", np.zeros((nblocks, nblocks)), fmt=" %10.5f")
                 np.savetxt("s.dat", np.zeros((nblocks, nblocks)), fmt=" %10.5f")
+
+            # Update EWBS (Energy-Weighted Bias Stability) from b/c/x/s.dat
+            from cphmd.core.phase_switcher import (
+                EWBSState,
+                ewbs_bottleneck_type,
+                update_ewbs_state,
+            )
+            if self.state.ewbs_state is None:
+                ewbs_path = Path("..") / "ewbs_state.json"
+                if ewbs_path.exists():
+                    self.state.ewbs_state = EWBSState.load(ewbs_path)
+                else:
+                    self.state.ewbs_state = EWBSState()
+            try:
+                b_dat = np.loadtxt("b.dat")
+                c_dat = np.loadtxt("c.dat")
+                x_dat = np.loadtxt("x.dat")
+                s_dat = np.loadtxt("s.dat")
+            except (FileNotFoundError, ValueError, OSError) as e:
+                print(f"Warning: Cannot read bias files for EWBS: {e}")
+                b_dat = c_dat = x_dat = s_dat = None
+
+            if b_dat is not None:
+                ewbs_val = update_ewbs_state(
+                    self.state.ewbs_state, b_dat, c_dat, x_dat, s_dat
+                )
+                btn = ewbs_bottleneck_type(self.state.ewbs_state)
+                st = self.state.ewbs_state
+                print(f"EWBS: {ewbs_val:.4f} (b={st.ema_b:.4f} c={st.ema_c:.4f} "
+                      f"x={st.ema_x:.4f} s={st.ema_s:.4f}, bottleneck={btn})")
+                try:
+                    self.state.ewbs_state.save(Path("..") / "ewbs_state.json")
+                except OSError as e:
+                    print(f"Warning: Could not save EWBS state: {e}")
 
             # Load lambda data for phase checking and population stats
             data_dir = Path("data")
@@ -2529,12 +2675,20 @@ class ALFSimulation:
                         print(f"  Phase 1 check: accumulated {len(accumulated)} runs "
                               f"({lambda_data_for_check.shape[0]} frames)")
 
+                # Compute Phase 2 run count for minimum duration check
+                p2_run_count = None
+                if (self.state.phase == 2
+                        and self.state.phase2_start_run is not None):
+                    p2_run_count = run_idx - self.state.phase2_start_run
+
                 new_phase, reason = check_phase_transition(
                     self.state.phase,
                     lambda_data_for_check,
                     **cphmd_kwargs,
                     nsubs=nsubs,
                     connectivity=cut_params.get("connectivity"),
+                    phase2_run_count=p2_run_count,
+                    ewbs_state=self.state.ewbs_state,
                 )
 
                 if new_phase != self.state.phase:
@@ -2562,8 +2716,25 @@ class ALFSimulation:
                     max_frac_diff=0.02,  # 2% population difference threshold
                 )
 
+                # Build bias history from recent b_sum.dat files
+                bias_history = None
+                bias_rows = []
+                for prev_r in range(max(1, run_idx - stop_config.bias_window + 1),
+                                    run_idx + 1):
+                    bsum_file = Path("..") / f"analysis{prev_r}" / "b_sum.dat"
+                    if bsum_file.exists():
+                        try:
+                            row = np.loadtxt(bsum_file).ravel()
+                            bias_rows.append(row)
+                        except Exception:
+                            pass
+                if len(bias_rows) >= 2:
+                    bias_history = np.array(bias_rows)
+
                 should_stop, stop_reason, stop_result = check_phase3_stop(
-                    lambda_data, stop_config, nsubs=nsubs,
+                    lambda_data, stop_config,
+                    bias_history=bias_history, nsubs=nsubs,
+                    ewbs_state=self.state.ewbs_state,
                 )
 
                 if confirmation:
@@ -2578,6 +2749,13 @@ class ALFSimulation:
                         print(f"  {stop_reason}")
                         print(f"  Fractions (λ>{stop_config.threshold_strict}): {stop_result.fractions}")
                         print(f"  Fraction diff: {stop_result.frac_diff_pct:.2f}%")
+                        print(f"  Entropy (norm): {stop_result.entropy_normalized:.2f}")
+                        print(f"  Block variance: {stop_result.block_variance:.4f}")
+                        if stop_result.ewbs < float("inf"):
+                            print(f"  EWBS: {stop_result.ewbs:.4f} "
+                                  f"(bottleneck={stop_result.ewbs_bottleneck})")
+                        print(f"  Bias stable: {stop_result.bias_stable} "
+                              f"(std={stop_result.bias_rolling_std:.3f})")
                         print(f"  Score: {stop_result.score:.4f}")
                         print(f"{'='*60}\n")
 
@@ -2586,6 +2764,12 @@ class ALFSimulation:
                             f.write(f"Converged at run {run_idx}\n")
                             f.write(f"{stop_reason}\n")
                             f.write(f"Fractions: {stop_result.fractions}\n")
+                            f.write(f"Entropy (norm): {stop_result.entropy_normalized:.2f}\n")
+                            f.write(f"Block variance: {stop_result.block_variance:.4f}\n")
+                            if stop_result.ewbs < float("inf"):
+                                f.write(f"EWBS: {stop_result.ewbs:.4f} "
+                                        f"({stop_result.ewbs_bottleneck})\n")
+                            f.write(f"Bias stable: {stop_result.bias_stable}\n")
                             f.write(f"Score: {stop_result.score:.4f}\n")
                     else:
                         # Confirmation failed - continue search
@@ -2605,10 +2789,23 @@ class ALFSimulation:
                         print(f"  {stop_reason}")
                         print(f"  Fractions: {stop_result.fractions}")
                         print(f"  Fraction diff: {stop_result.frac_diff_pct:.2f}%")
+                        print(f"  Entropy (norm): {stop_result.entropy_normalized:.2f}")
+                        print(f"  Block variance: {stop_result.block_variance:.4f}")
+                        if stop_result.ewbs < float("inf"):
+                            print(f"  EWBS: {stop_result.ewbs:.4f} "
+                                  f"(bottleneck={stop_result.ewbs_bottleneck})")
                         print("  Triggering confirmation repeat...")
                         print(f"{'='*60}\n")
                     else:
-                        print(f"Stop check: {stop_reason}")
+                        # Print compact diagnostics alongside reason
+                        diag = (f"entropy={stop_result.entropy_normalized:.2f}, "
+                                f"block_var={stop_result.block_variance:.4f}")
+                        if stop_result.ewbs < float("inf"):
+                            diag += (f", ewbs={stop_result.ewbs:.4f}"
+                                     f"({stop_result.ewbs_bottleneck})")
+                        if stop_result.bias_rolling_std > 0:
+                            diag += f", bias_std={stop_result.bias_rolling_std:.3f}"
+                        print(f"Stop check: {stop_reason} [{diag}]")
 
             # Generate Henderson-Hasselbalch plots if enabled
             # Guard: require nreps > 3 for meaningful multi-point HH fitting
