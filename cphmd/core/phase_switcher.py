@@ -48,6 +48,18 @@ class PhaseTransitionConfig:
     # pKa tolerance for phase 2→3 (strict)
     pka_tolerance_2to3: float = 0.3
 
+    # Minimum transition connectivity for phase 1→2 transition
+    # Prevents transition when no actual within-run transitions occur
+    # (catches random-init false positives where accumulated spread looks OK
+    # but every individual run is trapped in a single state)
+    min_connectivity_1to2: float = 0.01
+
+    # Minimum number of individual runs (out of accumulated window) that must
+    # show multi-state behavior (2+ states visited) for the accumulated
+    # Phase 1 check to be valid. Prevents random initialization from
+    # creating fake balanced populations across runs.
+    min_multistate_runs_1to2: int = 3
+
     # Minimum transition connectivity for phase 2→3 transition
     # Prevents premature transition when sampling is poor
     min_connectivity_2to3: float = 0.2
@@ -1082,7 +1094,7 @@ def check_phase_transition(
     1. Good overlap (spread within tolerance) — checked per site
     2. Enough samples per state
     3. pKa convergence (if CpHMD parameters provided)
-    4. Minimum transition connectivity (for 2→3, if provided)
+    4. Minimum transition connectivity (for 1→2 and 2→3, if provided)
     5. Per-state minimum fraction at strict threshold (for 2→3)
     6. Minimum Phase 2 duration (for 2→3)
 
@@ -1146,7 +1158,16 @@ def check_phase_transition(
                 worst_dev = _compute_worst_pka_deviation(fit_results, patch_info)
                 pka_reason = f"pKa_dev={worst_dev:.2f}>{config.pka_tolerance_1to2}"
 
-        if overlap_ok and samples_ok and pka_ok:
+        # Check transition connectivity (requires actual within-run transitions)
+        conn_ok = True
+        conn_reason = ""
+        if connectivity is not None:
+            conn_ok = connectivity >= config.min_connectivity_1to2
+            if not conn_ok:
+                conn_reason = (f"connectivity={connectivity:.2f}"
+                               f"<{config.min_connectivity_1to2}")
+
+        if overlap_ok and samples_ok and pka_ok and conn_ok:
             return 2, f"Phase 1→2: spread={spread:.3f}, min_hits={min_sample_count}"
         else:
             reasons = []
@@ -1156,6 +1177,8 @@ def check_phase_transition(
                 reasons.append(f"min_hits={min_sample_count}<{config.min_hits_1to2}")
             if not pka_ok:
                 reasons.append(pka_reason)
+            if not conn_ok:
+                reasons.append(conn_reason)
             return 1, f"Staying in phase 1: {', '.join(reasons)}"
 
     # Phase 2 → 3 transition
