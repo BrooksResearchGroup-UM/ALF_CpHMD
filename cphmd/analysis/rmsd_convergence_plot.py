@@ -18,13 +18,12 @@ import numpy as np
 
 from .population_convergence import _PHASE_ALPHA, _read_phases_from_runs
 
-
 _RMSD_YTICKS = [0.01, 0.1, 1, 10, 20, 30, 50, 100]
 
 
 def _apply_rmsd_yticks(ax):
     """Set fixed y-axis ticks for semilog RMSD plots."""
-    from matplotlib.ticker import FixedLocator, FixedFormatter
+    from matplotlib.ticker import FixedFormatter, FixedLocator
 
     ax.yaxis.set_major_locator(FixedLocator(_RMSD_YTICKS))
     ax.yaxis.set_major_formatter(FixedFormatter(
@@ -249,8 +248,12 @@ def plot_rmsd_convergence(
         # Clean up spines
         ax.spines['top'].set_visible(False)
 
+    from matplotlib.ticker import MaxNLocator
+
     axes[-1, 0].set_xlabel("Run", fontsize=12)
-    title = f"G-file RMSD Convergence (vs previous run)"
+    for ax_row in axes:
+        ax_row[0].xaxis.set_major_locator(MaxNLocator(integer=True))
+    title = "G-file RMSD Convergence (vs previous run)"
     if lag != 1:
         title = f"G-file RMSD Convergence (lag={lag})"
     fig.suptitle(title, fontsize=14, fontweight='bold', y=1.01)
@@ -293,7 +296,7 @@ def plot_pairwise_rmsd_convergence(
         print("matplotlib not available, skipping pairwise RMSD plots")
         return
 
-    if len(runs) < 2 or not pair_data:
+    if len(runs) < 1 or not pair_data:
         return
 
     _configure_plot_style()
@@ -407,8 +410,12 @@ def plot_pairwise_rmsd_convergence(
                 title_fontsize=9,
             )
 
+    from matplotlib.ticker import MaxNLocator
+
     axes[-1, 0].set_xlabel("Run", fontsize=12)
-    title = f"Per-pair RMSD Convergence (vs previous run)"
+    for ax_row in axes:
+        ax_row[0].xaxis.set_major_locator(MaxNLocator(integer=True))
+    title = "Per-pair RMSD Convergence (vs previous run)"
     if lag != 1:
         title = f"Per-pair RMSD Convergence (lag={lag})"
     fig.suptitle(title, fontsize=14, fontweight='bold', y=1.01)
@@ -527,7 +534,11 @@ def plot_b_bias_convergence(
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
 
+    from matplotlib.ticker import MaxNLocator
+
     axes[-1, 0].set_xlabel("Run", fontsize=12)
+    for ax_row in axes:
+        ax_row[0].xaxis.set_major_locator(MaxNLocator(integer=True))
     fig.suptitle("Cumulative b Bias Over Runs", fontsize=14, fontweight='bold', y=1.01)
     plt.tight_layout()
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -569,7 +580,7 @@ def generate_rmsd_convergence_plots(
     max_run: int,
     output_dir: Path,
     nsubs: list[int],
-    lag: int = 1,
+    lag: int = 5,
     rmsd_state: object | None = None,
 ) -> None:
     """Generate RMSD convergence plots from analysis directories or precomputed state.
@@ -578,15 +589,15 @@ def generate_rmsd_convergence_plots(
     1. ``rmsd_convergence.png`` — per-site summary (one line per site)
     2. ``rmsd_pairwise.png`` — per-pair detail (one line per lambda pair)
 
-    By default uses lag=1, showing RMSD between each run and its previous run
-    (previous vs current comparison).
+    By default uses lag=5, showing RMSD between runs separated by 5 iterations
+    (smooths out run-to-run noise).
 
     Args:
         input_folder: Parent directory containing analysisN/ subdirectories.
         max_run: Highest run index to consider.
         output_dir: Directory for output PNG files (created if needed).
         nsubs: Number of substates per site.
-        lag: Lag for RMSD computation. Default 1 compares consecutive runs.
+        lag: Lag for RMSD computation. Default 5 compares runs separated by 5.
         rmsd_state: Optional RMSDState with precomputed history.
     """
     # --- Per-site summary plot ---
@@ -594,7 +605,7 @@ def generate_rmsd_convergence_plots(
         history = rmsd_state.rmsd_history
         cov_history = rmsd_state.coverage_history
         run_indices = rmsd_state.run_indices
-        if len(history) < 2:
+        if len(history) < 1:
             return
         runs = np.array(run_indices)
         rmsds = np.array(history)
@@ -606,7 +617,7 @@ def generate_rmsd_convergence_plots(
         )
         effective_lag = lag
 
-    if len(runs) < 2:
+    if len(runs) < 1:
         return
 
     # Read per-run phase info for transparency
@@ -627,7 +638,7 @@ def generate_rmsd_convergence_plots(
     pair_runs, pair_data = _collect_pairwise_rmsd_from_dirs(
         input_folder, max_run, nsubs, effective_lag,
     )
-    if len(pair_runs) >= 2:
+    if len(pair_runs) >= 1:
         pair_phases = _read_phases_from_runs(input_folder, pair_runs)
         plot_pairwise_rmsd_convergence(
             runs=pair_runs,
@@ -641,7 +652,7 @@ def generate_rmsd_convergence_plots(
 
     # --- b bias convergence plot ---
     b_runs, b_values = _collect_b_biases_from_dirs(input_folder, max_run, nsubs)
-    if len(b_runs) >= 2:
+    if len(b_runs) >= 1:
         b_phases = _read_phases_from_runs(input_folder, b_runs)
         plot_b_bias_convergence(
             runs=b_runs,

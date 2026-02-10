@@ -12,17 +12,16 @@ Key Features:
 - Create 2D/3D visualizations with matplotlib/plotly
 """
 
-from dataclasses import dataclass, field
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from dataclasses import dataclass
+from itertools import product
 from pathlib import Path
 from typing import Literal
-from itertools import product
-from concurrent.futures import ProcessPoolExecutor, as_completed
-import os
 
-import numpy as np
 import matplotlib.pyplot as plt
+import numpy as np
 
-from cphmd.core.bias_constants import OMEGA_DECAY, CHI_OFFSET
+from cphmd.core.bias_constants import CHI_OFFSET, OMEGA_DECAY
 
 # Optional plotly import for interactive plots
 try:
@@ -300,9 +299,12 @@ def _plot_rmsd_convergence(
         marker='o', color=colors[0], linewidth=2, markersize=7,
         markeredgecolor='black', markeredgewidth=0.5,
     )
+    from matplotlib.ticker import MaxNLocator
+
     ax.set_xlabel("Iteration", fontsize=12)
     ax.set_ylabel("RMSD (kcal/mol)", fontsize=12)
     ax.set_title("Energy Profile RMSD Convergence", fontsize=14, fontweight='bold')
+    ax.xaxis.set_major_locator(MaxNLocator(integer=True))
     ax.grid(True, which='both', linestyle='--', alpha=0.3)
 
     # Annotate final value
@@ -707,7 +709,7 @@ def main():
     print(f"Analyzing energy profiles in {config.input_folder}")
     result = analyze_energy_profiles(config)
 
-    print(f"\nResults:")
+    print("\nResults:")
     print(f"  Iterations analyzed: {len(result.iterations)}")
     print(f"  Number of states: {result.n_states}")
     print(f"  Final RMSD: {result.rmsd_values[-1]:.4f} kcal/mol")

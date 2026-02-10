@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from .bias_constants import OMEGA_DECAY, CHI_OFFSET
+from .bias_constants import CHI_OFFSET, OMEGA_DECAY
 
 if TYPE_CHECKING:
     from .alf_utils import ALFInfo
@@ -51,7 +51,7 @@ def get_variance(
     """Compute free energies using histogram estimator with bootstrap.
 
     Estimates free energy changes using the histogram-based estimator and
-    alchemical trajectories in analysis/{idx}/data/Lambda.[idupl].[irep].dat.
+    alchemical trajectories in analysis/{idx}/data/Lambda.[idupl].[irep].{parquet,dat}.
     The histogram estimator uses a lambda cutoff (default 0.99) to count
     endpoint occupancy.
 
@@ -173,14 +173,17 @@ def _compute_variance(
     lndenom = np.zeros((nreps, nf, nlig))
     nframes = np.zeros((nreps, nf))
 
+    from cphmd.utils.lambda_io import read_lambda_values
+
     data_dir = analysis_dir / "data"
 
     for irep in range(nreps):
         for itrial in range(nf):
             isim = itrial * nreps + irep
-            L = np.loadtxt(data_dir / f"Lambda.{itrial}.{irep}.dat")
-            if L.ndim == 2 and L.shape[1] > 1:
-                L = L[:, 1:]  # Strip time column
+            lf = data_dir / f"Lambda.{itrial}.{irep}.parquet"
+            if not lf.exists():
+                lf = data_dir / f"Lambda.{itrial}.{irep}.dat"
+            L = read_lambda_values(lf)
             nframes[irep, itrial] = L.shape[0]
 
             for j in range(nlig):
@@ -219,9 +222,10 @@ def _compute_variance(
         G = np.zeros((nf, nlig))
 
         for itrial in range(nf):
-            L = np.loadtxt(data_dir / f"Lambda.{itrial}.{irep}.dat")
-            if L.ndim == 2 and L.shape[1] > 1:
-                L = L[:, 1:]  # Strip time column
+            lf2 = data_dir / f"Lambda.{itrial}.{irep}.parquet"
+            if not lf2.exists():
+                lf2 = data_dir / f"Lambda.{itrial}.{irep}.dat"
+            L = read_lambda_values(lf2)
 
             for j in range(nlig):
                 # Count frames where all site lambdas > cutoff

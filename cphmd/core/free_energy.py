@@ -149,12 +149,17 @@ def get_populations_from_lambda(
 
     data_dir = analysis_dir / "data"
 
+    from cphmd.utils.lambda_io import read_lambda_values
+
     for tag in range(ndupl):
-        data_file = data_dir / f"Lambda.{tag}.0.dat"
+        # Prefer .parquet, fall back to .dat for old runs
+        data_file = data_dir / f"Lambda.{tag}.0.parquet"
+        if not data_file.exists():
+            data_file = data_dir / f"Lambda.{tag}.0.dat"
         if not data_file.exists():
             continue
 
-        data = np.loadtxt(data_file)
+        data = read_lambda_values(data_file)
         if data.ndim == 1:
             data = data.reshape(1, -1)
         total_frames += data.shape[0]

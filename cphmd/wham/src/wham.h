@@ -219,6 +219,31 @@ typedef struct struct_lmalf
   double omega_scale;      // x-term reciprocal decay (1/FNEX)
 } struct_lmalf;
 
+// In-memory entry points: accept pre-packed data from host pointers
+// instead of reading files, enabling zero-file-I/O WHAM/LMALF calls.
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+int wham_from_memory(
+    int nf, double temp, int nts0, int nts1, int use_gshift,
+    int *nsubs, int nsites, const char *g_imp_path,
+    double chi_offset, double omega_scale, double cutlsum,
+    double *D_flat, int *sim_indices, int *frame_counts,
+    int total_frames, double *gshift_flat);
+
+int lmalf_from_memory(
+    int nf, double temp, int ms, int msprof, int max_iter, double tolerance,
+    int *nsubs, int nsites, const char *g_imp_path,
+    double fnex, double chi_offset, double omega_scale,
+    double *lambda_flat, double *ensweight_flat, int n_frames,
+    double *x_prev_flat, double *s_prev_flat, int nblocks_sq);
+
+#ifdef __cplusplus
+}
+#endif
+
 // LMALF bin size constants (matching original lmalf.cu)
 #define LMALF_NBINS 256
 #define LMALF_NBINS2 16
