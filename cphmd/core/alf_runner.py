@@ -2519,7 +2519,7 @@ class ALFSimulation:
                     nsubs=self.state.alf_info.get("nsubs"),
                 )
 
-                # Generate RMSD convergence plot (works with both convergence modes)
+                # Generate RMSD convergence plots (need multisite/ G-files)
                 try:
                     if (Path("..") / f"analysis{run_idx}" / "multisite").is_dir():
                         from cphmd.analysis.rmsd_convergence_plot import (
@@ -2534,6 +2534,30 @@ class ALFSimulation:
                         )
                 except Exception as e:
                     print(f"Warning: RMSD convergence plots failed: {e}")
+
+                # Generate b-bias convergence plot (only needs b_sum.dat)
+                try:
+                    from cphmd.analysis.population_convergence import (
+                        _read_phases_from_runs,
+                    )
+                    from cphmd.analysis.rmsd_convergence_plot import (
+                        _collect_b_biases_from_dirs,
+                        plot_b_bias_convergence,
+                    )
+                    b_runs, b_values = _collect_b_biases_from_dirs(
+                        Path(".."), run_idx, list(nsubs),
+                    )
+                    if len(b_runs) >= 1:
+                        b_phases = _read_phases_from_runs(Path(".."), b_runs)
+                        plot_b_bias_convergence(
+                            runs=b_runs,
+                            b_values=b_values,
+                            nsubs=list(nsubs),
+                            output_path=Path(home_path) / "plots" / "b_bias_convergence.png",
+                            phases=b_phases,
+                        )
+                except Exception as e:
+                    print(f"Warning: b-bias convergence plot failed: {e}")
 
                 # Generate 1D energy profile plots in current analysis dir
                 try:

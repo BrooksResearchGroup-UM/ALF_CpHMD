@@ -650,15 +650,5 @@ def generate_rmsd_convergence_plots(
         )
         print(f"Pairwise RMSD plot saved to {output_dir / 'rmsd_pairwise.png'}")
 
-    # --- b bias convergence plot ---
-    b_runs, b_values = _collect_b_biases_from_dirs(input_folder, max_run, nsubs)
-    if len(b_runs) >= 1:
-        b_phases = _read_phases_from_runs(input_folder, b_runs)
-        plot_b_bias_convergence(
-            runs=b_runs,
-            b_values=b_values,
-            nsubs=nsubs,
-            output_path=output_dir / "b_bias_convergence.png",
-            phases=b_phases,
-        )
-        print(f"b-bias convergence plot saved to {output_dir / 'b_bias_convergence.png'}")
+    # NOTE: b-bias convergence is generated separately by alf_runner
+    # (doesn't require multisite/ directory, only b_sum.dat)
