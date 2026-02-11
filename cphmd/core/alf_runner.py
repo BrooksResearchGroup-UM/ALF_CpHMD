@@ -98,6 +98,7 @@ class ALFConfig:
     no_pka_bias: bool = False  # Disable pKa-based bias shifts
     auto_phase_switch: bool = False  # Enable automatic phase switching
     auto_stop: bool = False  # Enable automatic stop when converged in Phase 3
+    phase_transition: PhaseTransitionConfig = field(default_factory=PhaseTransitionConfig)
     convergence_mode: ConvergenceMode = "population"  # "population" or "rmsd"
     cleanup_old_analysis: bool = False  # Remove old analysis directories to save disk space
     generate_hh_plots: bool = False  # Generate Henderson-Hasselbalch plots
@@ -2699,8 +2700,8 @@ class ALFSimulation:
                         # show genuine multi-state behavior (2+ states visited).
                         # This prevents random init from creating fake balanced
                         # populations when runs are concatenated.
-                        lam_thresh = self.config.phase_transition.lambda_threshold
-                        min_ms = self.config.phase_transition.min_multistate_runs_1to2
+                        lam_thresh = 0.8   # PhaseTransitionConfig.lambda_threshold
+                        min_ms = 3         # PhaseTransitionConfig.min_multistate_runs_1to2
                         multistate_count = 0
                         for run_data in accumulated:
                             run_mask = run_data > lam_thresh
