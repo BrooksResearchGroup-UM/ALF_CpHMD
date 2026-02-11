@@ -15,7 +15,6 @@ from typing import Literal
 
 import numpy as np
 import pandas as pd
-
 import pycharmm
 import pycharmm.coor as coor
 import pycharmm.crystal as crystal
@@ -30,7 +29,6 @@ import pycharmm.settings as settings
 import pycharmm.write as write
 
 from cphmd import TOPPAR_DIR
-
 
 # Crystal type aliases
 CrystalType = Literal[
@@ -482,6 +480,9 @@ def solvate_system(config: SolvationConfig) -> Path:
         title="Molecule with Minimization (part with waterbox.*)",
         select=".not. (segid SOLV .or. segid IONS) end",
     )
+    # Suppress non-integer charge warnings during cleanup splits
+    # (solute or waterbox alone may have fractional charge)
+    settings.set_bomb_level(-1)
     psf.delete_atoms(molecule)
     write.coor_card(
         str(output_dir / "waterbox.crd"),
@@ -493,6 +494,7 @@ def solvate_system(config: SolvationConfig) -> Path:
         title=f"{config.crystal_type} Waterbox with box size {BoxSizeX}:{BoxSizeY}:{BoxSizeZ}",
         select="segid SOLV .or. segid IONS end",
     )
+    settings.set_bomb_level(0)
 
     print("Solvation completed")
     return output_dir

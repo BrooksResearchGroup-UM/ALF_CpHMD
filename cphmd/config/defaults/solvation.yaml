@@ -1,0 +1,5 @@
+crystal_type: OCTAHEDRAL
+padding: 10.0
+salt_concentration: 0.15
+temperature: 298.15
+ion_method: SLTCAP

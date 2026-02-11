@@ -48,11 +48,18 @@ class PhaseTransitionConfig:
     # pKa tolerance for phase 2→3 (strict)
     pka_tolerance_2to3: float = 0.3
 
-    # Minimum transition connectivity for phase 1→2 transition
-    # Prevents transition when no actual within-run transitions occur
-    # (catches random-init false positives where accumulated spread looks OK
-    # but every individual run is trapped in a single state)
-    min_connectivity_1to2: float = 0.01
+    # Minimum states visited per site for phase 1→2 transition.
+    # Some states may be kinetically inaccessible in Phase 1 (e.g., ASP
+    # state 1 with a high 0→1 barrier). Phase 2 activates x/s coupling
+    # biases that can help overcome kinetic barriers. Requiring all-pairs
+    # connectivity would block transition forever for such systems.
+    # Default 2 means at least 2 out of N substates must be sampled.
+    min_visited_1to2: int = 2
+
+    # Minimum fraction (of total frames) for a state to count as "visited"
+    # in the Phase 1→2 check. States below this threshold are excluded
+    # from spread and min_hits calculations.
+    min_visited_frac_1to2: float = 0.01
 
     # Minimum number of individual runs (out of accumulated window) that must
     # show multi-state behavior (2+ states visited) for the accumulated
@@ -227,18 +234,29 @@ def _per_site_ranges(nsubs: list[int]) -> list[tuple[int, int]]:
     return ranges
 
 
-def good_overlap(fracs: np.ndarray, spread_tol: float, nsubs: list[int] | None = None) -> bool:
+def good_overlap(
+    fracs: np.ndarray,
+    spread_tol: float,
+    nsubs: list[int] | None = None,
+    visited_mask: np.ndarray | None = None,
+) -> bool:
     """Check if lambda fractions have good overlap across states.
 
     When nsubs is provided, checks spread **per site** and requires ALL
     sites to pass. This prevents multi-site systems from producing
     meaningless global spread values.
 
+    When visited_mask is provided, only states marked True are included
+    in the spread calculation. This allows Phase 1 to tolerate kinetically
+    inaccessible states (e.g., ASP state 1).
+
     Args:
         fracs: Array of fraction of samples above threshold per state
         spread_tol: Maximum allowed spread (max - min)
         nsubs: Number of substates per site (e.g. [2, 3]). If None,
                treats all states as one site (legacy behavior).
+        visited_mask: Boolean array indicating which states to include.
+               If None, all states are included (default behavior).
 
     Returns:
         True if spread is within tolerance (for every site when nsubs given)
@@ -246,9 +264,16 @@ def good_overlap(fracs: np.ndarray, spread_tol: float, nsubs: list[int] | None =
     if fracs.size == 0:
         return False
     if nsubs is None:
-        return float(np.max(fracs) - np.min(fracs)) < spread_tol
+        f = fracs[visited_mask] if visited_mask is not None else fracs
+        if f.size < 2:
+            return f.size == 1  # single visited state is trivially OK
+        return float(np.max(f) - np.min(f)) < spread_tol
     for start, end in _per_site_ranges(nsubs):
         site_fracs = fracs[start:end]
+        if visited_mask is not None:
+            site_fracs = site_fracs[visited_mask[start:end]]
+        if site_fracs.size < 2:
+            continue  # single or no visited state — nothing to compare
         if float(np.max(site_fracs) - np.min(site_fracs)) >= spread_tol:
             return False
     return True
@@ -1139,8 +1164,51 @@ def check_phase_transition(
 
     # Phase 1 → 2 transition
     if current_phase == 1:
-        overlap_ok = good_overlap(col_fracs, config.spread_1to2, nsubs=nsubs)
-        samples_ok = enough_samples(mask, config.min_hits_1to2)
+        # Phase 1 allows kinetically inaccessible states: compute spread
+        # and min_hits only over states that are actually visited.
+        # A state is "visited" if its occupancy fraction exceeds a minimum.
+        min_vf = config.min_visited_frac_1to2
+        visited = col_fracs > min_vf  # bool mask over columns
+
+        # Check that enough states are visited per site
+        visited_ok = True
+        visited_reason = ""
+        if nsubs is not None:
+            for si, (start, end) in enumerate(_per_site_ranges(nsubs)):
+                n_visited = int(visited[start:end].sum())
+                required = min(config.min_visited_1to2, nsubs[si])
+                if n_visited < required:
+                    visited_ok = False
+                    visited_reason = (
+                        f"site{si}: {n_visited}/{nsubs[si]} states visited "
+                        f"(need {required})")
+                    break
+        else:
+            n_visited = int(visited.sum())
+            n_total = len(col_fracs)
+            required = min(config.min_visited_1to2, n_total)
+            if n_visited < required:
+                visited_ok = False
+                visited_reason = (
+                    f"{n_visited}/{n_total} states visited (need {required})")
+
+        # Spread check on visited states only (per site)
+        overlap_ok = good_overlap(
+            col_fracs, config.spread_1to2, nsubs=nsubs,
+            visited_mask=visited,
+        )
+
+        # Min hits check on visited states only
+        samples_ok = enough_samples(mask[:, visited], config.min_hits_1to2)
+
+        # Compute summary stats for reporting
+        visited_fracs = col_fracs[visited]
+        if len(visited_fracs) >= 2:
+            spread_visited = float(
+                np.max(visited_fracs) - np.min(visited_fracs))
+        else:
+            spread_visited = spread
+        min_hits_visited = int(mask[:, visited].sum(axis=0).min()) if visited.any() else 0
 
         # Check pKa convergence if CpHMD
         pka_ok = True
@@ -1158,27 +1226,24 @@ def check_phase_transition(
                 worst_dev = _compute_worst_pka_deviation(fit_results, patch_info)
                 pka_reason = f"pKa_dev={worst_dev:.2f}>{config.pka_tolerance_1to2}"
 
-        # Check transition connectivity (requires actual within-run transitions)
-        conn_ok = True
-        conn_reason = ""
-        if connectivity is not None:
-            conn_ok = connectivity >= config.min_connectivity_1to2
-            if not conn_ok:
-                conn_reason = (f"connectivity={connectivity:.2f}"
-                               f"<{config.min_connectivity_1to2}")
-
-        if overlap_ok and samples_ok and pka_ok and conn_ok:
-            return 2, f"Phase 1→2: spread={spread:.3f}, min_hits={min_sample_count}"
+        if visited_ok and overlap_ok and samples_ok and pka_ok:
+            n_vis = int(visited.sum())
+            n_tot = len(col_fracs)
+            return 2, (f"Phase 1→2: spread={spread_visited:.3f}, "
+                       f"min_hits={min_hits_visited}, "
+                       f"visited={n_vis}/{n_tot}")
         else:
             reasons = []
+            if not visited_ok:
+                reasons.append(visited_reason)
             if not overlap_ok:
-                reasons.append(f"spread={spread:.3f}>{config.spread_1to2}")
+                reasons.append(
+                    f"spread={spread_visited:.3f}>={config.spread_1to2}")
             if not samples_ok:
-                reasons.append(f"min_hits={min_sample_count}<{config.min_hits_1to2}")
+                reasons.append(
+                    f"min_hits={min_hits_visited}<{config.min_hits_1to2}")
             if not pka_ok:
                 reasons.append(pka_reason)
-            if not conn_ok:
-                reasons.append(conn_reason)
             return 1, f"Staying in phase 1: {', '.join(reasons)}"
 
     # Phase 2 → 3 transition

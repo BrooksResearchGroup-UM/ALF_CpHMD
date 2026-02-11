@@ -1,0 +1,15 @@
+temperature: 298.15
+phase: 1
+start: 1
+end: 200
+restrains: SCAT
+restrain_hydrogens: false
+auto_phase_switch: true
+auto_stop: true
+analysis_method: wham
+elec_type: pmeex
+vdw_type: vswitch
+fnex: 5.5
+hmr: true
+cleanup: true
+coupling: 0

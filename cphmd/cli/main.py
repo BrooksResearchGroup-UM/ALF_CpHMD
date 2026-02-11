@@ -15,7 +15,7 @@ Usage:
 import typer
 from rich.console import Console
 
-from cphmd import __version__, TOPPAR_DIR
+from cphmd import __version__
 
 app = typer.Typer(
     name="cphmd",
@@ -71,68 +71,71 @@ def create_aa(
 
 @setup_app.command("solvate")
 def solvate(
-    input_file: str = typer.Option(..., "-i", "--input", help="Input structure (without extension)"),
-    output: str = typer.Option("solvated", "-o", "--output", help="Output folder"),
-    padding: float = typer.Option(10.0, "--pad", help="Padding around molecule (Angstroms)"),
-    salt: float = typer.Option(0.10, "-s", "--salt", help="Salt concentration (M)"),
-    crystal_type: str = typer.Option("OCTAHEDRAL", "--crystal", help="Crystal type"),
-    temperature: float = typer.Option(298.15, "-t", "--temp", help="Temperature (K)"),
-    no_ions: bool = typer.Option(False, "--no-ions", help="Skip ion placement"),
-    ion_method: str = typer.Option("SLTCAP", "--ion-method", help="Ion method: AN or SLTCAP"),
+    input_file: str = typer.Option(None, "-i", "--input", help="Input structure (without extension)"),
+    output: str = typer.Option(None, "-o", "--output", help="Output folder"),
+    padding: float = typer.Option(None, "--pad", help="Padding around molecule (Angstroms)"),
+    salt: float = typer.Option(None, "-s", "--salt", help="Salt concentration (M)"),
+    crystal_type: str = typer.Option(None, "--crystal", help="Crystal type"),
+    temperature: float = typer.Option(None, "-t", "--temp", help="Temperature (K)"),
+    no_ions: bool = typer.Option(None, "--no-ions", help="Skip ion placement"),
+    ion_method: str = typer.Option(None, "--ion-method", help="Ion method: AN or SLTCAP"),
+    config: str = typer.Option(None, "-c", "--config", help="YAML config file"),
 ):
     """Solvate a molecular system in a water box."""
-    from cphmd.setup import SolvationConfig, solvate_system
+    from cphmd.config import config_to_solvation
 
-    console.print(f"[cyan]Solvating {input_file} → {output}/[/cyan]")
-    console.print(f"[dim]Crystal: {crystal_type}, Pad: {padding}Å, Salt: {salt}M[/dim]")
+    cli = {
+        "input_file": input_file,
+        "output_dir": output,
+        "padding": padding,
+        "salt": salt,
+        "crystal_type": crystal_type,
+        "temperature": temperature,
+        "skip_ions": no_ions,
+        "ion_method": ion_method,
+    }
+    solvation_config = config_to_solvation(config, cli)
 
-    config = SolvationConfig(
-        input_file=input_file,
-        output_dir=output,
-        crystal_type=crystal_type,  # type: ignore
-        padding=padding,
-        salt_concentration=salt,
-        temperature=temperature,
-        skip_ions=no_ions,
-        ion_method=ion_method,  # type: ignore
-    )
+    console.print(f"[cyan]Solvating {solvation_config.input_file} → {solvation_config.output_dir}/[/cyan]")
 
-    result_dir = solvate_system(config)
+    from cphmd.setup import solvate_system
+
+    result_dir = solvate_system(solvation_config)
     console.print(f"[green]Solvation complete: {result_dir}/solvated.pdb[/green]")
 
 
 # Run commands
 @run_app.command("patch")
 def patch(
-    input_folder: str = typer.Option(..., "-i", "--input", help="Input folder"),
-    structure: str = typer.Option("solvated", "-f", "--file", help="Structure file name"),
-    hmr: bool = typer.Option(True, "--hmr/--no-hmr", help="Enable hydrogen mass repartitioning"),
-    hmr_waters: bool = typer.Option(False, "--hmr-waters/--no-hmr-waters", help="Apply HMR to waters"),
+    input_folder: str = typer.Option(None, "-i", "--input", help="Input folder"),
+    structure: str = typer.Option(None, "-f", "--file", help="Structure file name"),
+    hmr: bool = typer.Option(None, "--hmr/--no-hmr", help="Enable hydrogen mass repartitioning"),
+    hmr_waters: bool = typer.Option(None, "--hmr-waters/--no-hmr-waters", help="Apply HMR to waters"),
     residues: list[str] = typer.Option(None, "-s", "--select", help="Residues to patch (e.g., ASP GLU PROA:15)"),
     extra_files: list[str] = typer.Option(None, "--extra-files", help="Extra topology/parameter files (repeatable)"),
     toppar_dir: str = typer.Option(None, "--toppar-dir", help="Topology/parameter directory (default: bundled toppar)"),
+    config: str = typer.Option(None, "-c", "--config", help="YAML config file"),
 ):
     """Apply CpHMD patches to titratable residues."""
-    from cphmd.core import PatchConfig, patch_system
+    from cphmd.config import config_to_patch
 
-    console.print(f"[cyan]Patching titratable residues in {input_folder}/[/cyan]")
-    console.print(f"[dim]HMR: {hmr}, HMR waters: {hmr_waters}[/dim]")
+    cli = {
+        "input_folder": input_folder,
+        "structure_file": structure,
+        "hmr": hmr,
+        "hmr_waters": hmr_waters,
+        "selected_residues": residues,
+        "extra_files": extra_files,
+        "toppar_dir": toppar_dir,
+    }
+    patch_config = config_to_patch(config, cli)
 
-    kwargs = {}
-    if toppar_dir is not None:
-        kwargs["toppar_dir"] = toppar_dir
+    console.print(f"[cyan]Patching titratable residues in {patch_config.input_folder}/[/cyan]")
+    console.print(f"[dim]HMR: {patch_config.hmr}, HMR waters: {patch_config.hmr_waters}[/dim]")
 
-    config = PatchConfig(
-        input_folder=input_folder,
-        structure_file=structure,
-        hmr=hmr,
-        hmr_waters=hmr_waters,
-        selected_residues=residues or [],
-        extra_files=extra_files or [],
-        **kwargs,
-    )
+    from cphmd.core import patch_system
 
-    result_dir = patch_system(config)
+    result_dir = patch_system(patch_config)
     console.print(f"[green]Patching complete: {result_dir}/prep/system.pdb[/green]")
 
 
@@ -152,36 +155,37 @@ def _parse_g_imp_bins(value: str | None) -> "int | list[int] | None":
 
 @run_app.command("alf")
 def alf(
-    input_folder: str = typer.Option(..., "-i", "--input", help="Input folder with prep/ directory"),
-    temperature: float = typer.Option(298.15, "-t", "--temp", help="Temperature (K)"),
+    input_folder: str = typer.Option(None, "-i", "--input", help="Input folder with prep/ directory"),
+    temperature: float = typer.Option(None, "-t", "--temp", help="Temperature (K)"),
     pH: float = typer.Option(None, "-pH", "--pH", help="Target pH for CpHMD (None for standard ALF)"),
-    hmr: bool = typer.Option(True, "--hmr/--no-hmr", help="Use hydrogen mass repartitioning"),
-    start: int = typer.Option(1, "-s", "--start", help="Start run number"),
-    end: int = typer.Option(20, "-e", "--end", help="End run number"),
-    phase: int = typer.Option(1, "-p", "--phase", help="Initial phase (1, 2, or 3)"),
+    hmr: bool = typer.Option(None, "--hmr/--no-hmr", help="Use hydrogen mass repartitioning"),
+    start: int = typer.Option(None, "-s", "--start", help="Start run number"),
+    end: int = typer.Option(None, "-e", "--end", help="End run number"),
+    phase: int = typer.Option(None, "-p", "--phase", help="Initial phase (1, 2, or 3)"),
     nreps: int = typer.Option(None, "-n", "--nreps", help="Number of replicas (default: MPI size)"),
-    restrains: str = typer.Option("SCAT", "-r", "--restrains", help="Restraint type: SCAT or NOE"),
-    restrain_hydrogens: bool = typer.Option(False, "--hydrogens/--no-hydrogens", help="Include hydrogens in restraints"),
-    no_pka_bias: bool = typer.Option(False, "--no-pka-bias/--pka-bias", help="Disable pKa-based bias shifts (use zero shifts)"),
-    auto_phase: bool = typer.Option(False, "--auto-phase/--no-auto-phase", help="Enable automatic phase switching"),
-    auto_stop: bool = typer.Option(False, "--auto-stop/--no-auto-stop", help="Enable automatic stop when converged in Phase 3"),
-    convergence_mode: str = typer.Option("population", "--convergence-mode", help="Convergence mode: population or rmsd"),
-    hh_plots: bool = typer.Option(False, "--hh-plots/--no-hh-plots", help="Generate Henderson-Hasselbalch plots"),
-    cleanup: bool = typer.Option(True, "--cleanup/--no-cleanup", help="Remove old analysis directories"),
-    elec_type: str = typer.Option("pmeex", "--elec", help="Electrostatics: pmeex, pmeon, pmenn, fshift, fswitch"),
-    vdw_type: str = typer.Option("vswitch", "--vdw", help="VDW method: vswitch or vfswitch"),
-    coupling: int = typer.Option(0, "--coupling", help="Inter-site coupling: 0=none, 1=full, 2=c-only"),
+    restrains: str = typer.Option(None, "-r", "--restrains", help="Restraint type: SCAT or NOE"),
+    restrain_hydrogens: bool = typer.Option(None, "--hydrogens/--no-hydrogens", help="Include hydrogens in restraints"),
+    no_pka_bias: bool = typer.Option(None, "--no-pka-bias/--pka-bias", help="Disable pKa-based bias shifts (use zero shifts)"),
+    auto_phase: bool = typer.Option(None, "--auto-phase/--no-auto-phase", help="Enable automatic phase switching"),
+    auto_stop: bool = typer.Option(None, "--auto-stop/--no-auto-stop", help="Enable automatic stop when converged in Phase 3"),
+    convergence_mode: str = typer.Option(None, "--convergence-mode", help="Convergence mode: population or rmsd"),
+    hh_plots: bool = typer.Option(None, "--hh-plots/--no-hh-plots", help="Generate Henderson-Hasselbalch plots"),
+    cleanup: bool = typer.Option(None, "--cleanup/--no-cleanup", help="Remove old analysis directories"),
+    elec_type: str = typer.Option(None, "--elec", help="Electrostatics: pmeex, pmeon, pmenn, fshift, fswitch"),
+    vdw_type: str = typer.Option(None, "--vdw", help="VDW method: vswitch or vfswitch"),
+    coupling: int = typer.Option(None, "--coupling", help="Inter-site coupling: 0=none, 1=full, 2=c-only"),
     coupling_profile: bool = typer.Option(None, "--coupling-profile/--no-coupling-profile", help="Inter-site profile monitoring (default: follows coupling)"),
-    analysis_method: str = typer.Option("wham", "--analysis-method", help="Analysis method: wham or lmalf"),
-    lmalf_max_iter: int = typer.Option(0, "--lmalf-max-iter", help="LMALF max iterations (0=default)"),
-    lmalf_tolerance: float = typer.Option(0.0, "--lmalf-tolerance", help="LMALF tolerance (0=default)"),
-    lambda_mass: float = typer.Option(None, "--lambda-mass", help="Lambda mass in amu·Å² (default: 12.0 for HMR, 5.0 for non-HMR)"),
-    lambda_fbeta: float = typer.Option(None, "--lambda-fbeta", help="Lambda friction in ps⁻¹ (default: 5.0 for HMR, 7.0 for non-HMR)"),
-    fnex: float = typer.Option(5.5, "--fnex", help="FNEX softmax constraint parameter"),
-    gscale: float = typer.Option(10.0, "--gscale", help="Global Langevin friction coefficient (ps⁻¹)"),
+    analysis_method: str = typer.Option(None, "--analysis-method", help="Analysis method: wham or lmalf"),
+    lmalf_max_iter: int = typer.Option(None, "--lmalf-max-iter", help="LMALF max iterations (0=default)"),
+    lmalf_tolerance: float = typer.Option(None, "--lmalf-tolerance", help="LMALF tolerance (0=default)"),
+    lambda_mass: float = typer.Option(None, "--lambda-mass", help="Lambda mass in amu*A^2"),
+    lambda_fbeta: float = typer.Option(None, "--lambda-fbeta", help="Lambda friction in ps^-1"),
+    fnex: float = typer.Option(None, "--fnex", help="FNEX softmax constraint parameter"),
+    gscale: float = typer.Option(None, "--gscale", help="Global Langevin friction coefficient (ps^-1)"),
     extra_files: list[str] = typer.Option(None, "--extra-files", help="Extra topology/parameter files (repeatable)"),
     g_imp_bins: str = typer.Option(None, "--g-imp-bins", help="G_imp bins: single int or comma-separated per-phase (e.g. '16,32,32')"),
-    cutlsum: float = typer.Option(0.8, "--cutlsum", help="G12 conditional threshold (λ_i + λ_j > cutlsum)"),
+    cutlsum: float = typer.Option(None, "--cutlsum", help="G12 conditional threshold"),
+    config: str = typer.Option(None, "-c", "--config", help="YAML config file"),
 ):
     """Run ALF simulation with optional CpHMD.
 
@@ -192,63 +196,62 @@ def alf(
     # pyCHARMM detects MPI is already initialized and skips its own MPI_Init.
     from mpi4py import MPI
 
-    from cphmd.core import ALFConfig, run_alf_simulation
+    from cphmd.config import config_to_alf
 
-    console.print(f"[cyan]Starting ALF simulation for {input_folder}/[/cyan]")
-    console.print(f"[dim]Temp: {temperature}K, pH: {pH}, Phase: {phase}, Runs: {start}-{end}[/dim]")
-    console.print(f"[dim]HMR: {hmr}, Restraints: {restrains} (hydrogens: {restrain_hydrogens})[/dim]")
-    console.print(f"[dim]Electrostatics: {elec_type}, VDW: {vdw_type}[/dim]")
-    if no_pka_bias:
-        console.print(f"[yellow]pKa bias disabled (no PHMD pH, no TAG values)[/yellow]")
-    if auto_phase:
-        console.print(f"[green]Automatic phase switching enabled[/green]")
-    if auto_stop:
-        console.print(f"[green]Automatic stop on convergence enabled[/green]")
-    if hh_plots:
-        console.print(f"[green]Henderson-Hasselbalch plots enabled[/green]")
-    if coupling > 0:
-        console.print(f"[cyan]Inter-site coupling: {'full' if coupling == 1 else 'c-only'} (profile: {coupling_profile})[/cyan]")
-    if convergence_mode == "rmsd":
-        console.print(f"[cyan]Using RMSD-based convergence (G-file profiles)[/cyan]")
-    if analysis_method == "lmalf":
-        console.print(f"[cyan]Using LMALF analysis method[/cyan]")
+    cli = {
+        "input_folder": input_folder,
+        "temperature": temperature,
+        "pH": pH,
+        "hmr": hmr,
+        "start": start,
+        "end": end,
+        "phase": phase,
+        "nreps": nreps,
+        "restrains": restrains,
+        "restrain_hydrogens": restrain_hydrogens,
+        "no_pka_bias": no_pka_bias,
+        "auto_phase": auto_phase,
+        "auto_stop": auto_stop,
+        "convergence_mode": convergence_mode,
+        "hh_plots": hh_plots,
+        "cleanup": cleanup,
+        "elec_type": elec_type,
+        "vdw_type": vdw_type,
+        "coupling": coupling,
+        "coupling_profile": coupling_profile,
+        "analysis_method": analysis_method,
+        "lmalf_max_iter": lmalf_max_iter,
+        "lmalf_tolerance": lmalf_tolerance,
+        "lambda_mass": lambda_mass,
+        "lambda_fbeta": lambda_fbeta,
+        "fnex": fnex,
+        "gscale": gscale,
+        "extra_files": extra_files,
+        "g_imp_bins": _parse_g_imp_bins(g_imp_bins),
+        "cutlsum": cutlsum,
+    }
+    alf_config = config_to_alf(config, cli)
 
-    config = ALFConfig(
-        input_folder=input_folder,
-        toppar_dir=TOPPAR_DIR,
-        temperature=temperature,
-        pH=pH,
-        hmr=hmr,
-        start=start,
-        end=end,
-        phase=phase,  # type: ignore
-        nreps=nreps,
-        restrains=restrains,  # type: ignore
-        restrain_hydrogens=restrain_hydrogens,
-        no_pka_bias=no_pka_bias,
-        auto_phase_switch=auto_phase,
-        auto_stop=auto_stop,
-        convergence_mode=convergence_mode,  # type: ignore
-        cleanup_old_analysis=cleanup,
-        generate_hh_plots=hh_plots,
-        elec_type=elec_type,  # type: ignore
-        vdw_type=vdw_type,  # type: ignore
-        coupling=coupling,  # type: ignore
-        coupling_profile=coupling_profile,
-        analysis_method=analysis_method,  # type: ignore
-        lmalf_max_iter=lmalf_max_iter,
-        lmalf_tolerance=lmalf_tolerance,
-        lambda_mass=lambda_mass,
-        lambda_fbeta=lambda_fbeta,
-        fnex=fnex,
-        gscale=gscale,
-        extra_files=extra_files or [],
-        g_imp_bins=_parse_g_imp_bins(g_imp_bins),
-        cutlsum=cutlsum,
-    )
+    console.print(f"[cyan]Starting ALF simulation for {alf_config.input_folder}/[/cyan]")
+    console.print(f"[dim]Temp: {alf_config.temperature}K, pH: {alf_config.pH}, Phase: {alf_config.phase}, Runs: {alf_config.start}-{alf_config.end}[/dim]")
+    console.print(f"[dim]HMR: {alf_config.hmr}, Restraints: {alf_config.restrains}[/dim]")
+    console.print(f"[dim]Electrostatics: {alf_config.elec_type}, VDW: {alf_config.vdw_type}[/dim]")
+    if alf_config.no_pka_bias:
+        console.print("[yellow]pKa bias disabled[/yellow]")
+    if alf_config.auto_phase_switch:
+        console.print("[green]Automatic phase switching enabled[/green]")
+    if alf_config.auto_stop:
+        console.print("[green]Automatic stop on convergence enabled[/green]")
+    if alf_config.coupling > 0:
+        mode = "full" if alf_config.coupling == 1 else "c-only"
+        console.print(f"[cyan]Inter-site coupling: {mode}[/cyan]")
+    if alf_config.analysis_method == "lmalf":
+        console.print("[cyan]Using LMALF analysis method[/cyan]")
 
-    run_alf_simulation(config)
-    console.print(f"[green]ALF simulation complete[/green]")
+    from cphmd.core import run_alf_simulation
+
+    run_alf_simulation(alf_config)
+    console.print("[green]ALF simulation complete[/green]")
 
 
 @run_app.command("bias-search")
@@ -477,6 +480,24 @@ def lambda_info(
     else:
         console.print(f"[red]Unknown format: {path.suffix}[/red]")
         raise typer.Exit(1)
+
+
+@run_app.command("workflow")
+def workflow(
+    config: str = typer.Option(..., "-c", "--config", help="YAML config file"),
+    step: str = typer.Option("all", "--step", help="Step to run: build, solvate, patch, alf, or all"),
+):
+    """Run a CpHMD workflow from a YAML config file.
+
+    Executes one or more workflow steps in order: build -> solvate -> patch -> alf.
+    Use --step to run a single step, or "all" to run the full pipeline.
+    Steps without a config section are skipped when running "all".
+    """
+    from cphmd.config import run_workflow as _run_workflow
+
+    console.print(f"[cyan]Running workflow step '{step}' from {config}[/cyan]")
+    _run_workflow(config, step)
+    console.print(f"[green]Workflow '{step}' complete[/green]")
 
 
 if __name__ == "__main__":
