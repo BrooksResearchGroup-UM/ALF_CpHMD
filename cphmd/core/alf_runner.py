@@ -35,6 +35,7 @@ from cphmd.core.alf_utils import (
 )
 from cphmd.core.free_energy import get_free_energy5
 from cphmd.core.phase_switcher import (
+    PhaseTransitionConfig,
     StopCriteriaConfig,
     _per_site_ranges,
     calculate_populations,
@@ -103,6 +104,10 @@ class ALFConfig:
     cleanup_old_analysis: bool = False  # Remove old analysis directories to save disk space
     generate_hh_plots: bool = False  # Generate Henderson-Hasselbalch plots
     cent_ncres: int | bool = False
+
+    # Preset biases (converged single-site biases from cubic box simulations)
+    use_presets: bool = False  # Use preset biases for initial ALF parameters
+    preset_config: str | None = None  # Preset config name (e.g., "pme_ex_vswitch"); None=auto
 
     # Inter-site coupling
     coupling: Literal[0, 1, 2] = 0  # 0=none, 1=full c/x/s, 2=c-only
@@ -549,7 +554,83 @@ class ALFSimulation:
 
         # Initialize ALF variables (creates analysis0/, variables1.inp)
         if self.state.rank == 0:
-            init_vars(self.config.input_folder, alf_info)
+            if self.config.use_presets:
+                site_res_types = self._get_site_residue_types()
+                preset_cfg = self._resolve_preset_config()
+                init_vars(
+                    self.config.input_folder, alf_info,
+                    use_presets=True, preset_config=preset_cfg,
+                    site_residue_types=site_res_types,
+                )
+            else:
+                init_vars(self.config.input_folder, alf_info)
+
+
+    # Patch name prefix → canonical residue type for presets
+    _PATCH_TO_RESTYPE = {
+        "ASP": "ASP", "ASH": "ASP", "ASPO": "ASP",
+        "GLU": "GLU", "GLH": "GLU", "GLUO": "GLU",
+        "HSP": "HSP", "HSD": "HSP", "HSE": "HSP",
+        "HSPO": "HSP", "HSPD": "HSP", "HSPE": "HSP",
+        "LYS": "LYS", "LYSO": "LYS", "LYSU": "LYS",
+        "TYR": "TYR", "TYRO": "TYR", "TYRU": "TYR",
+        "ARG": "ARG", "ARGO": "ARG", "ARU1": "ARG", "ARU2": "ARG",
+        "SER": "SER", "SERO": "SER", "SERD": "SER",
+        "CYS": "CYS", "CYSO": "CYS", "CYSD": "CYS",
+        "THR": "THR", "THRO": "THR", "THRD": "THR",
+    }
+
+    def _get_site_residue_types(self) -> list[str]:
+        """Extract canonical residue type for each titratable site from patches.dat.
+
+        Reads the PATCH column for the first subsite (s1) of each site and maps
+        the patch name to a canonical residue type (ASP, GLU, HSP, LYS, TYR, etc.).
+
+        Returns:
+            List of residue type names, one per site (in site order).
+        """
+        df = self.state.patch_info
+        res_types = []
+        for site in sorted(df["site"].unique(), key=int):
+            site_rows = df[df["site"] == site]
+            # Use first row's PATCH name to identify residue type
+            patch_name = site_rows.iloc[0]["PATCH"]
+            # Try exact match first, then prefix matching
+            restype = self._PATCH_TO_RESTYPE.get(patch_name)
+            if restype is None:
+                # Try progressively shorter prefixes (e.g., "ASH1" → "ASH" → "AS")
+                for length in range(len(patch_name), 1, -1):
+                    restype = self._PATCH_TO_RESTYPE.get(patch_name[:length])
+                    if restype:
+                        break
+            if restype is None:
+                restype = "UNKNOWN"
+            res_types.append(restype)
+        return res_types
+
+    def _resolve_preset_config(self) -> str | None:
+        """Resolve preset configuration name from ALFConfig settings.
+
+        Auto-detects from elec_type + vdw_type if not explicitly set.
+        Mapping: pmeex→pme_ex, pmeon→pme_on, pmenn→pme_nn,
+                 fshift→fshift, fswitch→fswitch; vswitch/vfswitch.
+
+        Returns:
+            Preset config name (e.g., "pme_ex_vswitch") or None for default.
+        """
+        if self.config.preset_config:
+            return self.config.preset_config
+
+        # Auto-detect from electrostatics + VdW settings
+        elec_map = {
+            "pmeex": "pme_ex", "pmeon": "pme_on", "pmenn": "pme_nn",
+            "fshift": "fshift", "fswitch": "fswitch",
+        }
+        elec = elec_map.get(self.config.elec_type)
+        vdw = self.config.vdw_type  # already "vswitch" or "vfswitch"
+        if elec and vdw:
+            return f"{elec}_{vdw}"
+        return None
 
     def _init_alf_legacy(self):
         """Initialize ALF from a legacy prep/alf_info.py file."""
@@ -602,38 +683,89 @@ class ALFSimulation:
     def _ensure_g_imp(self):
         """Ensure G_imp entropy data is available for WHAM.
 
-        Copies bundled G_imp data from cphmd/data/G_imp/ if not already
-        present in the input folder. No Monte Carlo computation.
-
         Priority:
-        1. Use existing G_imp/ in input folder as-is
-        2. Copy from bundled cphmd/data/G_imp/
+        1. Use existing G_imp/ in input folder (validate bins if configured)
+        2. Copy from bundled cphmd/data/G_imp/ (validate bins if configured)
+        3. Compute via Monte Carlo using cphmd.core.entropy
         """
         dst = self.config.input_folder / "G_imp"
+        expected_bins = ALFConfig.resolve_g_imp_bins(
+            self.config.g_imp_bins, self.state.phase
+        )
+        nsubs = (
+            self.state.alf_info.get("nsubs", [])
+            if self.state.alf_info
+            else []
+        )
 
-        # Use existing G_imp/ directory if present
+        # --- Tier 1: use existing G_imp/ ---
         if dst.exists():
             actual_bins = self._detect_g_imp_bins(dst)
-            print(
-                f"G_imp: using existing ({dst}, bins={actual_bins})"
-            )
-            return
+            if expected_bins is not None and actual_bins != expected_bins:
+                print(
+                    f"G_imp: existing has bins={actual_bins}, "
+                    f"need {expected_bins}. Regenerating..."
+                )
+                if dst.is_symlink():
+                    dst.unlink()
+                else:
+                    shutil.rmtree(dst)
+            else:
+                if len(nsubs) > 0:
+                    self._supplement_g_imp(dst, nsubs, actual_bins)
+                print(
+                    f"G_imp: using existing ({dst}, bins={actual_bins})"
+                )
+                return
 
-        # Copy from bundled module data
+        # --- Tier 2: copy from bundled data ---
         from cphmd import PACKAGE_DIR
+
         bundled = PACKAGE_DIR / "data" / "G_imp"
         if bundled.exists() and any(bundled.glob("G1_*.dat")):
-            shutil.copytree(bundled, dst)
-            bundled_bins = self._detect_g_imp_bins(dst)
-            print(
-                f"G_imp: copied bundled data ({dst}, bins={bundled_bins})"
-            )
-            return
+            bundled_bins = self._detect_g_imp_bins(bundled)
+            if expected_bins is not None and bundled_bins != expected_bins:
+                print(
+                    f"G_imp: bundled has bins={bundled_bins}, "
+                    f"need {expected_bins}. Computing fresh..."
+                )
+            else:
+                shutil.copytree(bundled, dst)
+                if len(nsubs) > 0:
+                    self._supplement_g_imp(dst, nsubs, bundled_bins)
+                print(
+                    f"G_imp: copied bundled data ({dst}, "
+                    f"bins={bundled_bins})"
+                )
+                return
 
-        raise FileNotFoundError(
-            f"No G_imp data found. Expected bundled data at {bundled} "
-            f"or existing data at {dst}."
+        # --- Tier 3: compute via Monte Carlo ---
+        from cphmd.core.entropy import ensure_g_imp_available
+
+        bins = expected_bins if expected_bins is not None else 32
+        if len(nsubs) == 0:
+            raise ValueError(
+                "Cannot compute G_imp: nsubs not yet initialized. "
+                "Run init_vars() first."
+            )
+        print(
+            f"G_imp: computing via Monte Carlo "
+            f"(bins={bins}, fnex={self.config.fnex}, "
+            f"nsubs={list(nsubs)})..."
         )
+        g_imp_dir = ensure_g_imp_available(
+            constraint_type="fnex",
+            nsubs=nsubs,
+            bins=bins,
+            fnex=self.config.fnex,
+            cutlsum=self.config.cutlsum,
+        )
+        try:
+            dst.symlink_to(g_imp_dir)
+            print(f"G_imp: cached at {g_imp_dir}, linked to {dst}")
+        except OSError:
+            shutil.copytree(g_imp_dir, dst, dirs_exist_ok=True)
+            print(f"G_imp: cached at {g_imp_dir}, copied to {dst}")
 
     def _regenerate_g_imp_if_needed(self, old_phase: int, new_phase: int):
         """Regenerate G_imp if the new phase requires different bins."""
@@ -2516,7 +2648,7 @@ class ALFSimulation:
                 generate_population_plots(
                     input_folder=Path(".."),
                     max_run=run_idx,
-                    output_dir=Path(home_path) / "plots",
+                    output_dir=Path(self.config.input_folder) / "plots",
                     nsubs=self.state.alf_info.get("nsubs"),
                 )
 
@@ -2529,7 +2661,7 @@ class ALFSimulation:
                         generate_rmsd_convergence_plots(
                             input_folder=Path(".."),
                             max_run=run_idx,
-                            output_dir=Path(home_path) / "plots",
+                            output_dir=Path(self.config.input_folder) / "plots",
                             nsubs=list(nsubs),
                             rmsd_state=getattr(self.state, "rmsd_state", None),
                         )
@@ -2554,7 +2686,7 @@ class ALFSimulation:
                             runs=b_runs,
                             b_values=b_values,
                             nsubs=list(nsubs),
-                            output_path=Path(home_path) / "plots" / "b_bias_convergence.png",
+                            output_path=Path(self.config.input_folder) / "plots" / "b_bias_convergence.png",
                             phases=b_phases,
                         )
                 except Exception as e:
@@ -2569,6 +2701,17 @@ class ALFSimulation:
                     )
                 except Exception as e:
                     print(f"Warning: 1D energy profile plots failed: {e}")
+
+                # Generate WHAM free energy profile plots from G{n}.dat
+                try:
+                    from cphmd.analysis.wham_profiles import plot_wham_profiles
+                    plot_wham_profiles(
+                        analysis_dir=Path.cwd(),
+                        nsubs=list(nsubs),
+                        msprof=msprof,
+                    )
+                except Exception as e:
+                    print(f"Warning: WHAM profile plots failed: {e}")
 
             # --- RMSD-based convergence check ---
             if (self.config.convergence_mode == "rmsd"
@@ -2700,8 +2843,8 @@ class ALFSimulation:
                         # show genuine multi-state behavior (2+ states visited).
                         # This prevents random init from creating fake balanced
                         # populations when runs are concatenated.
-                        lam_thresh = 0.8   # PhaseTransitionConfig.lambda_threshold
-                        min_ms = 3         # PhaseTransitionConfig.min_multistate_runs_1to2
+                        lam_thresh = self.config.phase_transition.lambda_threshold
+                        min_ms = self.config.phase_transition.min_multistate_runs_1to2
                         multistate_count = 0
                         for run_data in accumulated:
                             run_mask = run_data > lam_thresh
@@ -2727,6 +2870,7 @@ class ALFSimulation:
                 new_phase, reason = check_phase_transition(
                     self.state.phase,
                     lambda_data_for_check,
+                    config=self.config.phase_transition,
                     **cphmd_kwargs,
                     nsubs=nsubs,
                     connectivity=cut_params.get("connectivity"),
@@ -2874,7 +3018,7 @@ class ALFSimulation:
                     pH=cphmd_params.effective_pH,
                     delta_pKa=delta_pKa,
                     nreps=self.config.nreps,
-                    output_dir=Path(home_path) / "plots",
+                    output_dir=Path(self.config.input_folder) / "plots",
                     ncentral=self.state.alf_info.get("ncentral", self.config.nreps // 2),
                 )
 
@@ -2888,7 +3032,7 @@ class ALFSimulation:
             # Keep enough history for the analysis window (15 for Phase 1, 5 for Phase 2/3)
             keep_window = 15 if self.state.phase == 1 else 5
             if self.config.cleanup_old_analysis and run_idx > keep_window:
-                old_analysis = Path(home_path) / f"analysis{run_idx - keep_window}"
+                old_analysis = Path(self.config.input_folder) / f"analysis{run_idx - keep_window}"
                 if old_analysis.exists():
                     shutil.rmtree(old_analysis)
                     print(f"Cleaned up {old_analysis}")

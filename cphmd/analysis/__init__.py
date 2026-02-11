@@ -5,6 +5,12 @@ This module provides tools for analyzing ALF/CpHMD simulation results:
 - Volume analysis for hydration studies
 """
 
+from .dca import (
+    DCAResult,
+    bootstrap_moments_dca,
+    get_model_dca,
+    get_variance_dca,
+)
 from .energy_profiles import (
     EnergyProfileConfig,
     EnergyProfileResult,
@@ -12,45 +18,40 @@ from .energy_profiles import (
     generate_simplex_grid,
     total_energy,
 )
-
+from .henderson_hasselbalch import (
+    HHFitResult,
+    SiteHHResult,
+    SubstatePopulation,
+    compute_block_weights,
+    compute_theoretical_populations,
+    fit_hh_curve,
+    generate_hh_analysis,
+    logistic,
+    plot_hh_curves,
+    plot_site_substates,
+    three_state_hh,
+    two_state_acidic_hh,
+    two_state_basic_hh,
+    write_hh_csv,
+)
+from .population_convergence import (
+    generate_population_plots,
+    plot_population_convergence,
+    read_populations_from_runs,
+)
+from .rmsd_convergence_plot import (
+    generate_rmsd_convergence_plots,
+    plot_b_bias_convergence,
+    plot_pairwise_rmsd_convergence,
+    plot_rmsd_convergence,
+)
 from .volume import (
     VolumeConfig,
     VolumeResult,
     calculate_volume,
 )
-
-from .dca import (
-    DCAResult,
-    get_model_dca,
-    get_variance_dca,
-    bootstrap_moments_dca,
-)
-from .population_convergence import (
-    read_populations_from_runs,
-    plot_population_convergence,
-    generate_population_plots,
-)
-from .rmsd_convergence_plot import (
-    plot_rmsd_convergence,
-    plot_pairwise_rmsd_convergence,
-    plot_b_bias_convergence,
-    generate_rmsd_convergence_plots,
-)
-from .henderson_hasselbalch import (
-    HHFitResult,
-    SubstatePopulation,
-    SiteHHResult,
-    logistic,
-    three_state_hh,
-    two_state_basic_hh,
-    two_state_acidic_hh,
-    compute_block_weights,
-    compute_theoretical_populations,
-    fit_hh_curve,
-    plot_hh_curves,
-    plot_site_substates,
-    write_hh_csv,
-    generate_hh_analysis,
+from .wham_profiles import (
+    plot_wham_profiles,
 )
 
 __all__ = [
@@ -93,4 +94,6 @@ __all__ = [
     "plot_site_substates",
     "write_hh_csv",
     "generate_hh_analysis",
+    # WHAM free energy profiles
+    "plot_wham_profiles",
 ]

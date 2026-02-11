@@ -50,6 +50,9 @@ docs/_build/
 .AppleDouble
 .LSOverride
 
+# Archived examples
+examples/_archive/
+
 # Simulation outputs (CpHMD specific)
 *.dcd
 *.rst
@@ -72,3 +75,5 @@ plots/
 .env
 *.local
 CLAUDE.md
+.claude/
+communications/

@@ -166,32 +166,32 @@ def _load_preset_biases(
     alf_info: ALFInfo,
     preset_residue: str | None = None,
     preset_config: str | None = None,
+    site_residue_types: list[str] | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Load preset bias parameters and convert to arrays.
 
+    Supports both single-site (one residue type) and multi-site (protein)
+    systems. For multi-site, provide site_residue_types mapping each site
+    to its residue type.
+
     Args:
         alf_info: ALF simulation information.
-        preset_residue: Residue name for presets. If None, uses alf_info.name.
-        preset_config: Preset configuration name ("scat_noh", "noe_h").
-            If None, uses default ("scat_noh").
+        preset_residue: Residue name for single-site presets. Ignored when
+            site_residue_types is provided.
+        preset_config: Preset configuration name (e.g., "pme_ex_vswitch").
+            If None, uses default.
+        site_residue_types: List of residue type names, one per site.
+            E.g., ["ASP", "ASP", "GLU", "HSP", "LYS", "TYR"].
+            Sites with unknown types (no preset available) get zero biases.
 
     Returns:
         Tuple of (b, c, x, s) arrays for bias parameters.
-
-    Raises:
-        KeyError: If preset not found for the residue/config.
     """
-    from cphmd.presets import get_preset_biases
+    from cphmd.presets import get_preset_biases, list_presets
 
-    # Determine residue name
-    resname = preset_residue or alf_info.name
-    if resname is None:
-        raise ValueError("preset_residue must be specified or alf_info.name must be set")
-
-    # Load preset biases
-    preset = get_preset_biases(resname.upper(), config=preset_config)
     nblocks = alf_info.nblocks
     nsubs = alf_info.nsubs
+    nsites = len(nsubs)
 
     # Initialize arrays
     b = np.zeros([1, nblocks])
@@ -199,47 +199,67 @@ def _load_preset_biases(
     x = np.zeros([nblocks, nblocks])
     s = np.zeros([nblocks, nblocks])
 
-    # Compute subsite offsets (for multi-site support)
+    # Compute subsite offsets: sub0[i] = starting block index for site i
     sub0 = np.cumsum(nsubs) - nsubs
 
-    # Fill linear biases (b/lams)
-    for si in range(len(nsubs)):
-        for i in range(nsubs[si]):
-            key = f"lams{si+1}s{i+1}"
-            if key in preset:
-                b[0, sub0[si] + i] = preset[key]
+    # Build list of residue types for each site
+    if site_residue_types is not None:
+        res_types = site_residue_types
+    elif preset_residue:
+        # Single residue type applied to all sites
+        res_types = [preset_residue.upper()] * nsites
+    elif alf_info.name:
+        res_types = [alf_info.name.upper()] * nsites
+    else:
+        raise ValueError("preset_residue or site_residue_types must be specified")
 
-    # Fill psi coupling (c/cs) - stored as negative in preset
-    for si in range(len(nsubs)):
-        for sj in range(si, len(nsubs)):
-            for i in range(nsubs[si]):
-                j0 = (i + 1 if si == sj else 0)
-                for j in range(j0, nsubs[sj]):
-                    key = f"cs{si+1}s{i+1}s{sj+1}s{j+1}"
-                    if key in preset:
-                        # Preset stores as negative, arrays store positive
-                        c[sub0[si] + i, sub0[sj] + j] = -preset[key]
-                        c[sub0[sj] + j, sub0[si] + i] = -preset[key]  # Symmetric
+    # Get available presets for this config
+    available = set(list_presets(preset_config))
 
-    # Fill omega coupling (x/xs)
-    for si in range(len(nsubs)):
-        for sj in range(len(nsubs)):
-            for i in range(nsubs[si]):
-                for j in range(nsubs[sj]):
-                    if sub0[si] + i != sub0[sj] + j:
-                        key = f"xs{si+1}s{i+1}s{sj+1}s{j+1}"
-                        if key in preset:
-                            x[sub0[si] + i, sub0[sj] + j] = -preset[key]
+    # Fill intra-site biases from presets
+    for si in range(nsites):
+        restype = res_types[si].upper()
+        if restype not in available:
+            continue  # No preset for this residue type — stays at zero
 
-    # Fill chi coupling (s/ss)
-    for si in range(len(nsubs)):
-        for sj in range(len(nsubs)):
-            for i in range(nsubs[si]):
-                for j in range(nsubs[sj]):
-                    if sub0[si] + i != sub0[sj] + j:
-                        key = f"ss{si+1}s{i+1}s{sj+1}s{j+1}"
-                        if key in preset:
-                            s[sub0[si] + i, sub0[sj] + j] = -preset[key]
+        preset = get_preset_biases(restype, config=preset_config)
+        ns = nsubs[si]
+        off = sub0[si]
+
+        # Linear biases (b/lam)
+        lam = preset["lam"]
+        for i in range(min(ns, len(lam))):
+            b[0, off + i] = lam[i]
+
+        # Intra-site coupling (c) — upper triangle, stored as list
+        c_vals = preset["c"]
+        idx = 0
+        for i in range(ns):
+            for j in range(i + 1, ns):
+                if idx < len(c_vals):
+                    c[off + i, off + j] = -c_vals[idx]
+                    c[off + j, off + i] = -c_vals[idx]  # Symmetric
+                    idx += 1
+
+        # Intra-site omega (x) — off-diagonal elements row by row
+        x_vals = preset["x"]
+        idx = 0
+        for i in range(ns):
+            for j in range(ns):
+                if i != j:
+                    if idx < len(x_vals):
+                        x[off + i, off + j] = -x_vals[idx]
+                        idx += 1
+
+        # Intra-site chi (s) — same layout as x
+        s_vals = preset["s"]
+        idx = 0
+        for i in range(ns):
+            for j in range(ns):
+                if i != j:
+                    if idx < len(s_vals):
+                        s[off + i, off + j] = -s_vals[idx]
+                        idx += 1
 
     return b, c, x, s
 
@@ -251,6 +271,7 @@ def init_vars(
     use_presets: bool = False,
     preset_residue: str | None = None,
     preset_config: str | None = None,
+    site_residue_types: list[str] | None = None,
 ) -> Path:
     """Initialize ALF analysis directory with biases.
 
@@ -264,8 +285,10 @@ def init_vars(
         use_presets: If True, use preset biases instead of zeros.
         preset_residue: Residue name for presets (ASP, GLU, etc.).
             If None and use_presets=True, uses alf_info.name.
-        preset_config: Preset configuration ("scat_noh", "noe_h").
-            If None, uses default ("scat_noh").
+        preset_config: Preset configuration name (e.g., "pme_ex_vswitch").
+            If None, uses default.
+        site_residue_types: For multi-site systems, list of residue type
+            names (one per site). Overrides preset_residue.
 
     Returns:
         Path to analysis0/ directory.
@@ -279,7 +302,9 @@ def init_vars(
 
     # Create initial bias arrays
     if use_presets:
-        b, c, x, s = _load_preset_biases(alf_info, preset_residue, preset_config)
+        b, c, x, s = _load_preset_biases(
+            alf_info, preset_residue, preset_config, site_residue_types
+        )
     else:
         # All zeros (legacy behavior)
         b = np.zeros([1, nblocks])
