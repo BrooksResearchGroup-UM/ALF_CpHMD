@@ -37,6 +37,8 @@ from typing import TYPE_CHECKING, Generator
 
 import numpy as np
 
+from cphmd.core.bias_constants import derive_bias_constants
+
 if TYPE_CHECKING:
     from cphmd.core.alf_utils import ALFInfo
 
@@ -316,7 +318,6 @@ def run_wham(
     g_imp_path_bytes = _to_bytes(g_imp_path)
     log_path = Path(log_file).resolve() if log_file is not None else None
 
-    from cphmd.core.bias_constants import derive_bias_constants
     constants = derive_bias_constants(fnex)
 
     logger.info(f"Running WHAM with nf={nf}, temp={temp}, use_gshift={use_gshift}, fnex={fnex}")
@@ -601,7 +602,6 @@ def run_lmalf(
     g_imp_path_bytes = _to_bytes(g_imp_path)
     log_path = Path(log_file).resolve() if log_file is not None else None
 
-    from cphmd.core.bias_constants import derive_bias_constants
     constants = derive_bias_constants(fnex)
 
     logger.info(f"Running LMALF with nf={nf}, temp={temp}, ms={ms}, msprof={msprof}, fnex={fnex}")
@@ -777,7 +777,6 @@ def run_wham_from_memory(
     g_imp_path_bytes = _to_bytes(g_imp_path)
     log_path = Path(log_file).resolve() if log_file is not None else None
 
-    from cphmd.core.bias_constants import derive_bias_constants
     constants = derive_bias_constants(fnex)
 
     # Prepare output directory
@@ -895,7 +894,6 @@ def run_lmalf_from_memory(
     g_imp_path_bytes = _to_bytes(g_imp_path)
     log_path = Path(log_file).resolve() if log_file is not None else None
 
-    from cphmd.core.bias_constants import derive_bias_constants
     constants = derive_bias_constants(fnex)
 
     # Prepare output directory
