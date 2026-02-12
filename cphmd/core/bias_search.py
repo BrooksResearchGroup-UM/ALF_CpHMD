@@ -18,13 +18,14 @@ Usage:
     python -m cphmd.core.bias_search -i my_system -c 0.985 -v
 """
 
+from __future__ import annotations
+
 import os
 import re
 import shutil
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional, Tuple
 
 import numpy as np
 
@@ -77,14 +78,14 @@ class BiasSearchResult:
 
     best_iteration: int
     best_score: float
-    top5_iterations: List[int]
-    top5_scores: List[float]
-    variables_file: Optional[Path]
-    plot_file: Optional[Path]
+    top5_iterations: list[int]
+    top5_scores: list[float]
+    variables_file: Path | None
+    plot_file: Path | None
     all_populations: np.ndarray
 
 
-def _find_analysis_folders(input_folder: Path) -> List[str]:
+def _find_analysis_folders(input_folder: Path) -> list[str]:
     """Find valid analysis folders with data."""
     folders = []
     for f in os.listdir(input_folder):
@@ -100,7 +101,7 @@ def _find_analysis_folders(input_folder: Path) -> List[str]:
 
 def _process_folder(
     input_folder: Path, folder: str, cutoff: float
-) -> Tuple[int, np.ndarray, str]:
+) -> tuple[int, np.ndarray, str]:
     """Process a single analysis folder.
 
     Returns:
@@ -142,8 +143,8 @@ def _process_folder(
 
 
 def _compute_scores(
-    populations: List[np.ndarray], alpha: float
-) -> Tuple[np.ndarray, np.ndarray]:
+    populations: list[np.ndarray], alpha: float
+) -> tuple[np.ndarray, np.ndarray]:
     """Compute scores for each run.
 
     Score = average_population - alpha * (max - min)
@@ -225,8 +226,8 @@ def _update_variables_file(
 
 
 def _create_plot(
-    iterations: List[int],
-    populations: List[np.ndarray],
+    iterations: list[int],
+    populations: list[np.ndarray],
     top5_indices: np.ndarray,
     cutoff: float,
     output_path: Path,

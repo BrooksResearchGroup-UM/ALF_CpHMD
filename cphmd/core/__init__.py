@@ -3,6 +3,16 @@
 # Modules with pyCHARMM top-level imports are lazy-loaded via __getattr__
 # so that mpi4py can initialize MPI before pyCHARMM does.
 
+from typing import Literal
+
+# Shared type aliases — defined here before sub-module imports so that
+# alf_runner, charmm_utils, rmsd_convergence, etc. can import them without
+# circular-import issues (the module object already has these attributes by
+# the time the sub-modules execute their top-level imports).
+PhaseType = Literal[1, 2, 3]
+ElecType = Literal["pmeex", "pmeon", "pmenn", "fshift", "fswitch"]
+VdwType = Literal["vswitch", "vfswitch"]
+
 from .alf_runner import ALFConfig, ALFSimulation, run_alf_simulation
 from .alf_utils import (
     ALFInfo,
@@ -139,6 +149,10 @@ def __getattr__(name):
 
 
 __all__ = [
+    # Shared type aliases
+    "PhaseType",
+    "ElecType",
+    "VdwType",
     # Patching (lazy)
     "LigandPatchDef",
     "PatchConfig",

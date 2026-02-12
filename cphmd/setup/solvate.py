@@ -7,7 +7,6 @@ crystal box types with optional ion placement.
 
 from __future__ import annotations
 
-import os
 import random
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -294,7 +293,7 @@ def solvate_system(config: SolvationConfig) -> Path:
 
     # Read input structure
     read.psf_card(f"{input_file}.psf")
-    if os.path.exists(f"{input_file}.crd"):
+    if Path(f"{input_file}.crd").exists():
         read.coor_card(f"{input_file}.crd")
     else:
         read.pdb(f"{input_file}.pdb", resid=True)

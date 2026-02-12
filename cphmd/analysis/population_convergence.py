@@ -8,9 +8,12 @@ its own plot with per-site normalization.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 # Phase → alpha mapping for visual emphasis:
 # Phase 1 (exploration) is faint, Phase 3 (production) is fully opaque
@@ -33,7 +36,7 @@ def _read_phases_from_runs(
         if phase_file.exists():
             try:
                 phases[i] = int(np.loadtxt(phase_file))
-            except Exception:
+            except (OSError, ValueError):
                 pass
     return phases
 

@@ -12,9 +12,10 @@ that are used throughout the CpHMD workflow:
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
 
 import pandas as pd
+
+from cphmd.core import ElecType, VdwType
 
 # pyCHARMM imports are deferred to function bodies so that mpi4py can
 # initialize MPI first (pyCHARMM also calls MPI_Init on import).
@@ -75,10 +76,6 @@ class FFTParameters:
             fftz=int(values[2]),
         )
 
-
-# Type aliases for electrostatics and VDW methods
-ElecType = Literal["pmeex", "pmeon", "pmenn", "fshift", "fswitch"]
-VdwType = Literal["vswitch", "vfswitch"]
 
 
 @dataclass
@@ -182,8 +179,8 @@ def read_topology_files(
         topology_files: List of file names relative to toppar_dir
         verbose: Whether to print verbose output
     """
-    import pycharmm.read as read
     import pycharmm.lingo as lingo
+    import pycharmm.read as read
     import pycharmm.settings as settings
 
     toppar_dir = Path(toppar_dir)
@@ -252,8 +249,8 @@ def setup_crystal(
         nb_config: Non-bonded configuration
         use_image_centering: Apply image centering for solvent/ions
     """
-    import pycharmm.lingo as lingo
     import pycharmm.crystal as crystal
+    import pycharmm.lingo as lingo
 
     # Define crystal
     dim_str = " ".join(map(str, box_params.dimensions))
