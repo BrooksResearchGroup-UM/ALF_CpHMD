@@ -20,19 +20,18 @@ class TestComputeBFromEndpoints:
         np.testing.assert_allclose(b, 0.0, atol=1e-10)
 
     def test_two_state_asymmetric(self):
-        """Two states: E=[0, 10] → b should favor higher-energy state."""
+        """Two states: E=[0, 10] → b[0]=0 (ref), b[1]=-(10-0)=-10."""
         from cphmd.core.bias_guesser import compute_b_from_endpoints
 
         endpoint_energies = {0: np.array([0.0, 10.0])}
         nsubs = [2]
         b = compute_b_from_endpoints(endpoint_energies, nsubs)
         assert b.shape == (1, 2)
-        # b[i] = -(E[i] - E_mean); E_mean=5
-        # b[0] = -(0 - 5) = 5; b[1] = -(10 - 5) = -5
-        np.testing.assert_allclose(b[0], [5.0, -5.0])
+        # b[i] = -(E[i] - E[0]); b[0]=0, b[1]=-(10-0)=-10
+        np.testing.assert_allclose(b[0], [0.0, -10.0])
 
     def test_three_state_glu(self):
-        """Three-state GLU: different energies for each state."""
+        """Three-state GLU: b[0]=0, others relative to reference."""
         from cphmd.core.bias_guesser import compute_b_from_endpoints
 
         # Simulating GLU: deprotonated (state 0), protonated1, protonated2
@@ -40,12 +39,11 @@ class TestComputeBFromEndpoints:
         nsubs = [3]
         b = compute_b_from_endpoints(endpoint_energies, nsubs)
         assert b.shape == (1, 3)
-        # E_mean = (-100 + -90 + -85) / 3 = -91.667
-        e_mean = np.mean([-100.0, -90.0, -85.0])
-        expected = -(np.array([-100.0, -90.0, -85.0]) - e_mean)
-        np.testing.assert_allclose(b[0], expected)
-        # Sum should be zero (centered)
-        np.testing.assert_allclose(b.sum(), 0.0, atol=1e-10)
+        # b[i] = -(E[i] - E[0]); E[0]=-100
+        # b[0]=0, b[1]=-(-90-(-100))=-10, b[2]=-(-85-(-100))=-15
+        np.testing.assert_allclose(b[0], [0.0, -10.0, -15.0])
+        # First substate is always zero
+        assert b[0, 0] == 0.0
 
     def test_multisite_independent(self):
         """Two sites: biases computed independently."""
@@ -59,10 +57,10 @@ class TestComputeBFromEndpoints:
         b = compute_b_from_endpoints(endpoint_energies, nsubs)
         assert b.shape == (1, 5)  # 2 + 3 = 5 blocks
 
-        # Site 0: E_mean=5, b = [5, -5]
-        np.testing.assert_allclose(b[0, 0:2], [5.0, -5.0])
-        # Site 1: E_mean=15, b = [10, 0, -10]
-        np.testing.assert_allclose(b[0, 2:5], [10.0, 0.0, -10.0])
+        # Site 0: b[0]=0 (ref), b[1]=-(10-0)=-10
+        np.testing.assert_allclose(b[0, 0:2], [0.0, -10.0])
+        # Site 1: b[0]=0 (ref), b[1]=-(15-5)=-10, b[2]=-(25-5)=-20
+        np.testing.assert_allclose(b[0, 2:5], [0.0, -10.0, -20.0])
 
 
 class TestComputeCFromMidpoints:
@@ -205,3 +203,72 @@ class TestGenerateLambdaConfigs:
         assert len(configs[1]["endpoints"]) == 3
         assert len(configs[0]["midpoints"]) == 1
         assert len(configs[1]["midpoints"]) == 3
+
+
+class TestInitVarsIntegration:
+    """Test init_vars accepts b_init and c_init."""
+
+    def test_init_vars_with_guessed_biases(self, tmp_path):
+        """init_vars writes guessed b to b_prev.dat when b_init is provided."""
+        from cphmd.core.alf_utils import init_vars
+
+        alf_info = {
+            "name": "test",
+            "nsubs": np.array([3]),
+            "nblocks": 3,
+            "nreps": 1,
+            "ncentral": 0,
+            "nnodes": 1,
+            "temp": 298.15,
+            "engine": "charmm",
+            "ntersite": [0, 0],
+            "fnex": 5.5,
+            "g_imp_bins": 20,
+            "cutlsum": 0.5,
+        }
+
+        b_init = np.array([[0.0, -5.0, -10.0]])
+        c_init = np.array(
+            [
+                [0.0, -3.0, -2.0],
+                [-3.0, 0.0, -1.0],
+                [-2.0, -1.0, 0.0],
+            ]
+        )
+
+        analysis0 = init_vars(tmp_path, alf_info, b_init=b_init, c_init=c_init)
+
+        b_prev = np.loadtxt(analysis0 / "b_prev.dat")
+        c_prev = np.loadtxt(analysis0 / "c_prev.dat")
+        np.testing.assert_allclose(b_prev, b_init.flatten(), atol=1e-5)
+        np.testing.assert_allclose(c_prev, c_init, atol=1e-5)
+
+        # Current cycle b.dat should be zero (delta for this cycle)
+        b_curr = np.loadtxt(analysis0 / "b.dat")
+        np.testing.assert_allclose(b_curr, 0.0, atol=1e-10)
+
+    def test_init_vars_without_guesses_gives_zeros(self, tmp_path):
+        """init_vars with no b_init/c_init produces zero biases (legacy behavior)."""
+        from cphmd.core.alf_utils import init_vars
+
+        alf_info = {
+            "name": "test",
+            "nsubs": np.array([2]),
+            "nblocks": 2,
+            "nreps": 1,
+            "ncentral": 0,
+            "nnodes": 1,
+            "temp": 298.15,
+            "engine": "charmm",
+            "ntersite": [0, 0],
+            "fnex": 5.5,
+            "g_imp_bins": 20,
+            "cutlsum": 0.5,
+        }
+
+        analysis0 = init_vars(tmp_path, alf_info)
+
+        b_prev = np.loadtxt(analysis0 / "b_prev.dat")
+        c_prev = np.loadtxt(analysis0 / "c_prev.dat")
+        np.testing.assert_allclose(b_prev, 0.0, atol=1e-10)
+        np.testing.assert_allclose(c_prev, 0.0, atol=1e-10)
