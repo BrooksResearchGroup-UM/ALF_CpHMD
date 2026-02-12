@@ -63,3 +63,86 @@ class TestComputeBFromEndpoints:
         np.testing.assert_allclose(b[0, 0:2], [5.0, -5.0])
         # Site 1: E_mean=15, b = [10, 0, -10]
         np.testing.assert_allclose(b[0, 2:5], [10.0, 0.0, -10.0])
+
+
+class TestComputeCFromMidpoints:
+    """Test quadratic barrier (c) computation from midpoint energies."""
+
+    def test_two_state_no_barrier(self):
+        """Linear interpolation → zero barrier."""
+        from cphmd.core.bias_guesser import compute_c_from_midpoints
+
+        endpoint_energies = {0: np.array([0.0, 10.0])}
+        # Midpoint energy = exact linear interpolation = 5.0
+        midpoint_energies = {0: {(0, 1): 5.0}}
+        nsubs = [2]
+        c = compute_c_from_midpoints(midpoint_energies, endpoint_energies, nsubs)
+        assert c.shape == (2, 2)
+        np.testing.assert_allclose(c, 0.0, atol=1e-10)
+
+    def test_two_state_positive_barrier(self):
+        """Midpoint energy higher than interpolation → negative c (barrier)."""
+        from cphmd.core.bias_guesser import compute_c_from_midpoints
+
+        endpoint_energies = {0: np.array([0.0, 10.0])}
+        # Midpoint at 8.0 instead of 5.0 → excess of 3.0
+        midpoint_energies = {0: {(0, 1): 8.0}}
+        nsubs = [2]
+        c = compute_c_from_midpoints(midpoint_energies, endpoint_energies, nsubs)
+        # c[i][j] = -(E_mid - 0.5*(E_i + E_j)) = -(8 - 5) = -3
+        np.testing.assert_allclose(c[0, 1], -3.0)
+        np.testing.assert_allclose(c[1, 0], -3.0)  # Symmetric
+
+    def test_three_state_all_pairs(self):
+        """Three substates: all 3 pairs computed."""
+        from cphmd.core.bias_guesser import compute_c_from_midpoints
+
+        endpoint_energies = {0: np.array([0.0, 10.0, 20.0])}
+        midpoint_energies = {
+            0: {
+                (0, 1): 7.0,  # excess = 7 - 5 = 2
+                (0, 2): 15.0,  # excess = 15 - 10 = 5
+                (1, 2): 18.0,  # excess = 18 - 15 = 3
+            }
+        }
+        nsubs = [3]
+        c = compute_c_from_midpoints(midpoint_energies, endpoint_energies, nsubs)
+        assert c.shape == (3, 3)
+        np.testing.assert_allclose(c[0, 1], -2.0)
+        np.testing.assert_allclose(c[0, 2], -5.0)
+        np.testing.assert_allclose(c[1, 2], -3.0)
+        # Symmetric
+        np.testing.assert_allclose(c[1, 0], -2.0)
+        np.testing.assert_allclose(c[2, 0], -5.0)
+        np.testing.assert_allclose(c[2, 1], -3.0)
+        # Diagonal is zero
+        np.testing.assert_allclose(np.diag(c), 0.0)
+
+    def test_multisite_independent(self):
+        """Two sites: c is block-diagonal (no cross-site coupling)."""
+        from cphmd.core.bias_guesser import compute_c_from_midpoints
+
+        endpoint_energies = {
+            0: np.array([0.0, 10.0]),
+            1: np.array([5.0, 15.0, 25.0]),
+        }
+        midpoint_energies = {
+            0: {(0, 1): 8.0},  # excess 3
+            1: {
+                (0, 1): 14.0,  # excess 4
+                (0, 2): 22.0,  # excess 7
+                (1, 2): 25.0,  # excess 5
+            },
+        }
+        nsubs = [2, 3]
+        c = compute_c_from_midpoints(midpoint_energies, endpoint_energies, nsubs)
+        assert c.shape == (5, 5)
+        # Site 0 block
+        np.testing.assert_allclose(c[0, 1], -3.0)
+        # Site 1 block
+        np.testing.assert_allclose(c[2, 3], -4.0)
+        np.testing.assert_allclose(c[2, 4], -7.0)
+        np.testing.assert_allclose(c[3, 4], -5.0)
+        # Cross-site should be zero
+        np.testing.assert_allclose(c[0, 2], 0.0)
+        np.testing.assert_allclose(c[1, 3], 0.0)
