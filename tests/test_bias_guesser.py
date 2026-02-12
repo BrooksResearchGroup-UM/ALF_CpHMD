@@ -146,3 +146,62 @@ class TestComputeCFromMidpoints:
         # Cross-site should be zero
         np.testing.assert_allclose(c[0, 2], 0.0)
         np.testing.assert_allclose(c[1, 3], 0.0)
+
+
+class TestGenerateLambdaConfigs:
+    """Test lambda configuration generation for energy evaluations."""
+
+    def test_two_state_endpoints(self):
+        """2-state site: 2 endpoint configs."""
+        from cphmd.core.bias_guesser import generate_lambda_configs
+
+        configs = generate_lambda_configs(nsubs=[2])
+        endpoints = configs[0]["endpoints"]
+        assert len(endpoints) == 2
+        np.testing.assert_allclose(endpoints[0], [1.0, 0.0])
+        np.testing.assert_allclose(endpoints[1], [0.0, 1.0])
+
+    def test_two_state_midpoints(self):
+        """2-state site: 1 midpoint config."""
+        from cphmd.core.bias_guesser import generate_lambda_configs
+
+        configs = generate_lambda_configs(nsubs=[2])
+        midpoints = configs[0]["midpoints"]
+        assert len(midpoints) == 1
+        pair, lam = midpoints[0]
+        assert pair == (0, 1)
+        np.testing.assert_allclose(lam, [0.5, 0.5])
+
+    def test_three_state_endpoints(self):
+        """3-state site: 3 endpoint configs."""
+        from cphmd.core.bias_guesser import generate_lambda_configs
+
+        configs = generate_lambda_configs(nsubs=[3])
+        endpoints = configs[0]["endpoints"]
+        assert len(endpoints) == 3
+        np.testing.assert_allclose(endpoints[0], [1.0, 0.0, 0.0])
+        np.testing.assert_allclose(endpoints[1], [0.0, 1.0, 0.0])
+        np.testing.assert_allclose(endpoints[2], [0.0, 0.0, 1.0])
+
+    def test_three_state_midpoints(self):
+        """3-state site: 3 midpoint configs (all pairs)."""
+        from cphmd.core.bias_guesser import generate_lambda_configs
+
+        configs = generate_lambda_configs(nsubs=[3])
+        midpoints = configs[0]["midpoints"]
+        assert len(midpoints) == 3
+        pairs = [m[0] for m in midpoints]
+        assert (0, 1) in pairs
+        assert (0, 2) in pairs
+        assert (1, 2) in pairs
+
+    def test_multisite_count(self):
+        """Two sites: each gets independent configs."""
+        from cphmd.core.bias_guesser import generate_lambda_configs
+
+        configs = generate_lambda_configs(nsubs=[2, 3])
+        assert len(configs) == 2
+        assert len(configs[0]["endpoints"]) == 2
+        assert len(configs[1]["endpoints"]) == 3
+        assert len(configs[0]["midpoints"]) == 1
+        assert len(configs[1]["midpoints"]) == 3

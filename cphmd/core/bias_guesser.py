@@ -80,3 +80,41 @@ def compute_c_from_midpoints(
         offset += n
 
     return c
+
+
+def generate_lambda_configs(
+    nsubs: list[int],
+) -> list[dict]:
+    """Generate lambda configurations for endpoint and midpoint evaluations.
+
+    For each site, generates:
+    - N endpoint configs: lambda_i = 1, others = 0
+    - N*(N-1)/2 midpoint configs: lambda_i = lambda_j = 0.5, others = 0
+
+    Args:
+        nsubs: Number of substates per site.
+
+    Returns:
+        List of dicts (one per site), each with:
+        - "endpoints": list of lambda arrays (length N)
+        - "midpoints": list of ((i, j), lambda_array) tuples
+    """
+    from itertools import combinations
+
+    configs = []
+    for n in nsubs:
+        endpoints = []
+        for i in range(n):
+            lam = np.zeros(n)
+            lam[i] = 1.0
+            endpoints.append(lam)
+
+        midpoints = []
+        for i, j in combinations(range(n), 2):
+            lam = np.zeros(n)
+            lam[i] = 0.5
+            lam[j] = 0.5
+            midpoints.append(((i, j), lam))
+
+        configs.append({"endpoints": endpoints, "midpoints": midpoints})
+    return configs
