@@ -736,16 +736,14 @@ def set_vars_from_analysis_dir(
 
 
 def _load_shift_file(
-    analysis_dir: str, filename: str, default_value: float = 0.0,
+    analysis_dir: str | Path, filename: str, default_value: float = 0.0,
 ) -> np.ndarray | float:
     """Load shift file from analysis_dir/nbshift or ../nbshift fallback."""
-    import os
-
-    local_path = os.path.join(analysis_dir, "nbshift", filename)
-    if os.path.exists(local_path):
+    local_path = Path(analysis_dir) / "nbshift" / filename
+    if local_path.exists():
         return np.loadtxt(local_path)
-    fallback_path = os.path.join("../nbshift", filename)
-    if os.path.exists(fallback_path):
+    fallback_path = Path("../nbshift") / filename
+    if fallback_path.exists():
         return np.loadtxt(fallback_path)
     return default_value
 
@@ -770,8 +768,6 @@ def _load_simulation_data(
     Returns:
         Tuple of (Lambda, b_list, c_list, x_list, s_list, jk_map).
     """
-    import os
-
     from cphmd.utils.lambda_io import find_lambda_files, read_lambda_values
 
     ncentral = alf_info.ncentral
@@ -785,10 +781,10 @@ def _load_simulation_data(
     jk_map: list[tuple[int, int, int]] = []
 
     for i in range(NF):
-        analysis_dir = f"../analysis{start_cycle + i}"
-        data_dir = os.path.join(analysis_dir, "data")
+        analysis_dir = Path(f"../analysis{start_cycle + i}")
+        data_dir = analysis_dir / "data"
 
-        if not os.path.isdir(data_dir):
+        if not data_dir.is_dir():
             print(f"Warning: Directory {data_dir} not found")
             continue
 
@@ -801,23 +797,23 @@ def _load_simulation_data(
         x_fix_shift = _load_shift_file(analysis_dir, "x_fix_shift.dat", 0.0)
         s_fix_shift = _load_shift_file(analysis_dir, "s_fix_shift.dat", 0.0)
 
-        lambda_fpaths = find_lambda_files(Path(data_dir))
+        lambda_fpaths = find_lambda_files(data_dir)
 
         for fpath in lambda_fpaths:
             try:
                 Lambda.append(read_lambda_values(fpath)[(skipE - 1)::skipE, :])
                 j, k = map(int, fpath.name.split(".")[1:3])
                 jk_map.append((j, k, i))
-                b_old = np.loadtxt(os.path.join(analysis_dir, "b_prev.dat"))
+                b_old = np.loadtxt(analysis_dir / "b_prev.dat")
                 b_list.append(b_old + b_shift * (k - ncentral) + b_fix_shift)
-                c_old = np.loadtxt(os.path.join(analysis_dir, "c_prev.dat"))
+                c_old = np.loadtxt(analysis_dir / "c_prev.dat")
                 c_list.append(c_old + c_shift * (k - ncentral) + c_fix_shift)
-                x_old = np.loadtxt(os.path.join(analysis_dir, "x_prev.dat"))
+                x_old = np.loadtxt(analysis_dir / "x_prev.dat")
                 x_list.append(x_old + x_shift * (k - ncentral) + x_fix_shift)
-                s_old = np.loadtxt(os.path.join(analysis_dir, "s_prev.dat"))
+                s_old = np.loadtxt(analysis_dir / "s_prev.dat")
                 s_list.append(s_old + s_shift * (k - ncentral) + s_fix_shift)
-            except Exception as e:
-                print(f"Error loading file {fpath}: {e}")
+            except (OSError, ValueError) as e:
+                logger.warning("Error loading file %s: %s", fpath, e)
 
     return Lambda, b_list, c_list, x_list, s_list, jk_map
 

@@ -13,12 +13,12 @@ Usage:
     python -m cphmd.core.generate_block -i my_system --restrain-type SCAT
 """
 
+from __future__ import annotations
+
 import itertools
-import os
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Dict, List
 
 import pandas as pd
 
@@ -85,7 +85,7 @@ def _load_patches(input_folder: Path) -> pd.DataFrame:
     return patch_info
 
 
-def _load_variables(resname: str, variables_dir: Path) -> Dict[str, float]:
+def _load_variables(resname: str, variables_dir: Path) -> dict[str, float]:
     """Load variables from var-{resname}.inp or .txt file."""
     resname_lower = resname.lower()
 
@@ -480,7 +480,7 @@ def generate_block_files(config: BlockGeneratorConfig) -> BlockGeneratorResult:
     n_blocks = len(patch_info) + 1  # +1 for environment
 
     print(f"\nGenerating block files for {config.input_folder}")
-    print(f"=" * 60)
+    print("=" * 60)
     print(f"Sites: {n_sites}, Blocks: {n_blocks}")
     print(f"Restraint type: {config.restrain_type}")
     print(f"Include hydrogens: {config.include_hydrogens}")

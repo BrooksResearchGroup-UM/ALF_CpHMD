@@ -11,10 +11,13 @@ Implements:
 """
 from __future__ import annotations
 
+import csv
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal, TYPE_CHECKING
-import csv
+from typing import TYPE_CHECKING, Literal
+
+logger = logging.getLogger(__name__)
 
 import numpy as np
 from scipy.optimize import curve_fit
@@ -306,8 +309,8 @@ def fit_hh_curve(
                 r_squared=r_squared,
             )
 
-    except Exception as e:
-        print(f"HH fitting failed: {e}")
+    except (RuntimeError, ValueError) as e:
+        logger.warning("HH fitting failed: %s", e)
         return HHFitResult(pKa_eff=initial_pKa, fit_type="fit_failed")
 
 
@@ -632,7 +635,6 @@ def generate_hh_analysis(
     Returns:
         Dict mapping site IDs to SiteHHResult with full analysis
     """
-    import pandas as pd
     from cphmd.core.phase_switcher import load_lambda_data_per_replica
 
     if ncentral is None:
@@ -656,7 +658,7 @@ def generate_hh_analysis(
     if len(replica_data) < 3:
         print(f"Insufficient replicas for HH analysis ({len(replica_data)} < 3)")
         # Fall back to combined analysis
-        from cphmd.core.phase_switcher import load_lambda_data, calculate_populations
+        from cphmd.core.phase_switcher import calculate_populations, load_lambda_data
         lambda_data, _ = load_lambda_data(data_dir)
         if lambda_data is None:
             return {}

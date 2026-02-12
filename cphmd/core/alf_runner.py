@@ -28,6 +28,7 @@ from typing import Any, Literal
 import numpy as np
 import pandas as pd
 
+from cphmd.core import ElecType, PhaseType, VdwType
 from cphmd.core.alf_utils import (
     convert_lambda_binary_to_parquet,
     init_vars,
@@ -46,10 +47,7 @@ from cphmd.core.phase_switcher import (
 )
 
 # Type aliases
-PhaseType = Literal[1, 2, 3]
 RestrainType = Literal["SCAT", "NOE"]
-ElecType = Literal["pmeex", "pmeon", "pmenn", "fshift", "fswitch"]
-VdwType = Literal["vswitch", "vfswitch"]
 AnalysisMethod = Literal["wham", "lmalf", "hybrid"]
 ConvergenceMode = Literal["population", "rmsd"]
 PrepFormat = Literal["default", "legacy", "auto"]
@@ -450,7 +448,7 @@ class ALFSimulation:
 
         # Verify CHARMM environment
         charmm_lib = os.environ.get("CHARMM_LIB_DIR")
-        if not charmm_lib or not os.path.isdir(charmm_lib):
+        if not charmm_lib or not Path(charmm_lib).is_dir():
             raise RuntimeError("CHARMM_LIB_DIR not set or invalid")
 
         # Load topology files using utility function

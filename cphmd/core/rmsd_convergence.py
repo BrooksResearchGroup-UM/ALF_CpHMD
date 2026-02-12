@@ -5,14 +5,13 @@ when the bias landscape stabilizes. Alternative to population-based
 criteria for large multi-site systems (5+ substates per site).
 """
 
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
 
-import json
 import numpy as np
 
-PhaseType = Literal[1, 2, 3]
+from cphmd.core import PhaseType
 
 
 @dataclass
