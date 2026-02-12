@@ -234,6 +234,60 @@ def _per_site_ranges(nsubs: list[int]) -> list[tuple[int, int]]:
     return ranges
 
 
+def _organize_by_replica(data_dir: Path) -> dict[int, list[Path]] | None:
+    """Discover and organize lambda files by replica index.
+
+    Args:
+        data_dir: Path to data/ directory containing Lambda.*.*.{parquet,dat} files
+
+    Returns:
+        Dictionary mapping replica index to sorted file paths, or None if no files.
+    """
+    from cphmd.utils.lambda_io import find_lambda_files
+
+    if not data_dir.exists():
+        return None
+
+    lambda_fpaths = find_lambda_files(data_dir)
+    if not lambda_fpaths:
+        return None
+
+    replica_files: dict[int, list[Path]] = {}
+    for fpath in lambda_fpaths:
+        try:
+            parts = fpath.name.split('.')
+            if len(parts) >= 4:
+                replica_idx = int(parts[2])
+                if replica_idx not in replica_files:
+                    replica_files[replica_idx] = []
+                replica_files[replica_idx].append(fpath)
+        except (ValueError, IndexError):
+            continue
+
+    return replica_files if replica_files else None
+
+
+def _normalize_per_site(
+    raw_fracs: np.ndarray,
+    nsubs: list[int],
+) -> np.ndarray:
+    """Normalize raw fractions per site so each site's substates sum to 1.
+
+    Args:
+        raw_fracs: Raw per-state fractions (e.g. hit counts / total).
+        nsubs: Number of substates per site.
+
+    Returns:
+        Normalized fractions array (same shape as raw_fracs).
+    """
+    norm = np.zeros_like(raw_fracs)
+    for start, end in _per_site_ranges(nsubs):
+        site_total = raw_fracs[start:end].sum()
+        if site_total > 0:
+            norm[start:end] = raw_fracs[start:end] / site_total
+    return norm
+
+
 def good_overlap(
     fracs: np.ndarray,
     spread_tol: float,
@@ -306,29 +360,10 @@ def load_lambda_data(data_dir: Path) -> tuple[np.ndarray | None, list[str]]:
     Returns:
         Tuple of (combined lambda data array, list of representative files)
     """
-    from cphmd.utils.lambda_io import find_lambda_files, read_lambda_values
+    from cphmd.utils.lambda_io import read_lambda_values
 
-    if not data_dir.exists():
-        return None, []
-
-    lambda_fpaths = find_lambda_files(data_dir)
-    if not lambda_fpaths:
-        return None, []
-
-    # Organize by replica
-    replica_files: dict[int, list[Path]] = {}
-    for fpath in lambda_fpaths:
-        try:
-            parts = fpath.name.split('.')
-            if len(parts) >= 4:
-                replica_idx = int(parts[2])
-                if replica_idx not in replica_files:
-                    replica_files[replica_idx] = []
-                replica_files[replica_idx].append(fpath)
-        except (ValueError, IndexError):
-            continue
-
-    if not replica_files:
+    replica_files = _organize_by_replica(data_dir)
+    if replica_files is None:
         return None, []
 
     # Combine data from all replicas
@@ -378,33 +413,14 @@ def load_lambda_data_per_replica(
     Returns:
         List of ReplicaLambdaData objects, one per replica with valid data
     """
-    from cphmd.utils.lambda_io import find_lambda_files, read_lambda_values
+    from cphmd.utils.lambda_io import read_lambda_values
 
-    if not data_dir.exists():
+    replica_files = _organize_by_replica(data_dir)
+    if replica_files is None:
         return []
 
     if ncentral is None:
         ncentral = nreps // 2
-
-    lambda_fpaths = find_lambda_files(data_dir)
-    if not lambda_fpaths:
-        return []
-
-    # Organize files by replica
-    replica_files: dict[int, list[Path]] = {}
-    for fpath in lambda_fpaths:
-        try:
-            parts = fpath.name.split('.')
-            if len(parts) >= 4:
-                replica_idx = int(parts[2])
-                if replica_idx not in replica_files:
-                    replica_files[replica_idx] = []
-                replica_files[replica_idx].append(fpath)
-        except (ValueError, IndexError):
-            continue
-
-    if not replica_files:
-        return []
 
     # Build per-replica data structures
     result: list[ReplicaLambdaData] = []
@@ -526,15 +542,8 @@ def calculate_populations(
 
     if nsubs is not None:
         # Per-site normalization: each site's substates sum to 1.0
-        pop_relaxed_norm = np.zeros(n_states)
-        pop_strict_norm = np.zeros(n_states)
-        for start, end in _per_site_ranges(nsubs):
-            site_total_r = hits_relaxed[start:end].sum()
-            site_total_s = hits_strict[start:end].sum()
-            if site_total_r > 0:
-                pop_relaxed_norm[start:end] = hits_relaxed[start:end] / site_total_r
-            if site_total_s > 0:
-                pop_strict_norm[start:end] = hits_strict[start:end] / site_total_s
+        pop_relaxed_norm = _normalize_per_site(pop_relaxed_raw, nsubs)
+        pop_strict_norm = _normalize_per_site(pop_strict_raw, nsubs)
     else:
         # Global normalization (legacy)
         if total_hits_relaxed > 0:
@@ -794,12 +803,7 @@ def compute_block_variance(
         fracs = mask.mean(axis=0)
 
         if nsubs is not None:
-            norm_fracs = np.zeros_like(fracs)
-            for start, end in _per_site_ranges(nsubs):
-                site_total = fracs[start:end].sum()
-                if site_total > 0:
-                    norm_fracs[start:end] = fracs[start:end] / site_total
-            fracs = norm_fracs
+            fracs = _normalize_per_site(fracs, nsubs)
         else:
             total = fracs.sum()
             if total > 0:
@@ -881,16 +885,11 @@ def check_stop_criteria(
 
     if nsubs is not None:
         # Per-site normalization and frac_diff
-        fractions = np.zeros(n_states)
-        site_diffs = []
-        for start, end in _per_site_ranges(nsubs):
-            site_raw = raw_fractions[start:end]
-            site_total = site_raw.sum()
-            if site_total > 0:
-                fractions[start:end] = site_raw / site_total
-            else:
-                fractions[start:end] = 0.0
-            site_diffs.append(float(np.max(site_raw) - np.min(site_raw)))
+        fractions = _normalize_per_site(raw_fractions, nsubs)
+        site_diffs = [
+            float(np.max(raw_fractions[s:e]) - np.min(raw_fractions[s:e]))
+            for s, e in _per_site_ranges(nsubs)
+        ]
         frac_diff = max(site_diffs)
     else:
         fractions = raw_fractions

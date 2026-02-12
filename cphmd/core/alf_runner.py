@@ -163,7 +163,7 @@ class ALFConfig:
 
     def __post_init__(self):
         """Validate configuration after initialization."""
-        self.input_folder = Path(self.input_folder)
+        self.input_folder = Path(self.input_folder).resolve()
         self.toppar_dir = Path(self.toppar_dir)
 
         prep_dir = self.input_folder / "prep"
@@ -578,6 +578,7 @@ class ALFSimulation:
         "SER": "SER", "SERO": "SER", "SERD": "SER",
         "CYS": "CYS", "CYSO": "CYS", "CYSD": "CYS",
         "THR": "THR", "THRO": "THR", "THRD": "THR",
+        "NRED": "NRED", "NREDO": "NRED", "NRD2": "NRED", "NRDU": "NRED",
     }
 
     def _get_site_residue_types(self) -> list[str]:
@@ -1864,6 +1865,62 @@ class ALFSimulation:
 
         return cut_params
 
+    def _phase2_cutoffs(self, run_idx: int, coupling_scale: float) -> dict:
+        """Compute Phase 2 warmup cutoffs (log-space decay over 20 runs)."""
+        warmup_runs = 20
+        p2_start = self.state.phase2_start_run or run_idx
+        runs_in_p2 = max(run_idx - p2_start, 0)
+        decay = min(runs_in_p2 / warmup_runs, 1.0)
+
+        # Start values (moderate) → Target values (tight)
+        cutb_start, cutb_target = 1.0, 0.05
+        cutc_start = 4.0 * coupling_scale
+        cutc_target = 0.5 * coupling_scale
+
+        # Log-space interpolation: start * (target/start)^decay
+        cutb = cutb_start * (cutb_target / cutb_start) ** decay
+        cutc = cutc_start * (cutc_target / cutc_start) ** decay
+
+        cut_params = {
+            "cutb": cutb, "cutc": cutc,
+            "cutx": cutc, "cuts": cutc,
+        }
+        if runs_in_p2 < warmup_runs:
+            print(f"  Phase 2 warmup ({runs_in_p2}/{warmup_runs}): "
+                  f"cutb={cutb:.3f} cutc={cutc:.3f}")
+        return cut_params
+
+    def _phase3_cutoffs(self, run_idx: int, coupling_scale: float) -> dict:
+        """Compute Phase 3 cutoffs (tight, with recovery for skewed populations)."""
+        prev_pop_file = (
+            self.config.input_folder / f"analysis{run_idx - 1}" / "pop_strict.dat"
+        )
+        if prev_pop_file.exists():
+            try:
+                prev_pops = np.loadtxt(prev_pop_file)
+                nsubs = self.state.alf_info.get("nsubs", [len(prev_pops)])
+                col = 0
+                for n in nsubs:
+                    site_pops = prev_pops[col:col + n]
+                    if len(site_pops) > 0 and site_pops.max() - site_pops.min() > 0.7:
+                        print("  Phase 3 recovery: pop diff > 70% → using Phase 2 cutoffs")
+                        return {
+                            "cutb": 0.05,
+                            "cutc": 0.5 * coupling_scale,
+                            "cutx": 0.5 * coupling_scale,
+                            "cuts": 0.5 * coupling_scale,
+                        }
+                    col += n
+            except Exception:
+                pass
+
+        return {
+            "cutb": 0.02,
+            "cutc": 0.2 * coupling_scale,
+            "cutx": 0.1 * coupling_scale,
+            "cuts": 0.1 * coupling_scale,
+        }
+
     def _run_wham_with_retry(
         self,
         run_idx: int,
@@ -1993,13 +2050,73 @@ class ALFSimulation:
             self.state.alf_info, ms=ms, msprof=msprof, **cut_params
         )
 
+    def _invoke_lmalf(
+        self,
+        nf: int,
+        ms: int,
+        msprof: int,
+        *,
+        max_iter: int | None = None,
+        tolerance: float | None = None,
+    ) -> bool:
+        """Run LMALF optimization, loading lambda from memory or files.
+
+        Returns True if lambda data was found and LMALF ran, False otherwise.
+        """
+        from cphmd.wham import run_lmalf_from_memory
+
+        nsubs = self.state.alf_info["nsubs"]
+
+        # Load lambda data: prefer in-memory, fall back to parquet files
+        if hasattr(self, '_wham_lambda') and self._wham_lambda:
+            lambda_combined = np.vstack(self._wham_lambda)
+            print(f"[LMALF] {lambda_combined.shape[0]} frames, "
+                  f"{lambda_combined.shape[1]} blocks (in-memory)")
+        else:
+            from cphmd.utils.lambda_io import find_lambda_files, read_lambda_values
+            lambda_files = find_lambda_files(Path("data"))
+            if not lambda_files:
+                return False
+            print(f"[LMALF] Found {len(lambda_files)} lambda files (file-based)")
+            lambda_combined = np.vstack(
+                [read_lambda_values(f) for f in lambda_files]
+            )
+
+        # Load previous bias parameters
+        x_file, s_file = Path("x_prev.dat"), Path("s_prev.dat")
+        x_prev = np.loadtxt(x_file) if x_file.exists() else None
+        s_prev = np.loadtxt(s_file) if s_file.exists() else None
+
+        # Use config defaults unless overridden
+        if max_iter is None:
+            max_iter = self.config.lmalf_max_iter
+        if tolerance is None:
+            tolerance = self.config.lmalf_tolerance
+
+        print(f"[LMALF] Running optimization ({lambda_combined.shape[0]} frames)...")
+        run_lmalf_from_memory(
+            lambda_combined=lambda_combined,
+            ensweight=None,
+            nf=nf,
+            temp=self.config.temperature,
+            ms=ms,
+            msprof=msprof,
+            max_iter=max_iter,
+            tolerance=tolerance,
+            nsubs=nsubs,
+            g_imp_path="../G_imp",
+            x_prev=x_prev,
+            s_prev=s_prev,
+            output_dir=Path.cwd(),
+            log_file="analysis.log",
+            fnex=self.config.fnex,
+        )
+        return True
+
     def _run_lmalf_analysis(
         self, nf: int, ms: int, msprof: int, cut_params: dict
     ) -> None:
         """Run LMALF analysis using bundled GPU library.
-
-        Uses in-memory data passing when available (self._wham_lambda set by
-        _alf_analysis), falls back to file-based path otherwise.
 
         Args:
             nf: Number of simulation files
@@ -2007,82 +2124,12 @@ class ALFSimulation:
             msprof: Multisite profile parameter
             cut_params: Cutoff parameters for GetFreeEnergyLM
         """
-        import sys
-
         from cphmd.core.alf_utils import get_free_energy_lm
 
         print("[LMALF] Starting analysis...", flush=True)
-        sys.stdout.flush()
-
-        nsubs = self.state.alf_info["nsubs"]
-
-        if hasattr(self, '_wham_lambda') and self._wham_lambda:
-            from cphmd.wham import run_lmalf_from_memory
-
-            # Concatenate lambda arrays for LMALF
-            lambda_combined = np.vstack(self._wham_lambda)
-            print(f"[LMALF] {lambda_combined.shape[0]} frames, {lambda_combined.shape[1]} blocks (in-memory)")
-
-            # Load x_prev/s_prev if they exist (small files, keep as disk reads)
-            x_prev_file = Path("x_prev.dat")
-            s_prev_file = Path("s_prev.dat")
-            x_prev = np.loadtxt(x_prev_file) if x_prev_file.exists() else None
-            s_prev = np.loadtxt(s_prev_file) if s_prev_file.exists() else None
-
-            print("[LMALF] Running LMALF optimization (in-memory)...")
-            run_lmalf_from_memory(
-                lambda_combined=lambda_combined,
-                ensweight=None,
-                nf=nf,
-                temp=self.config.temperature,
-                ms=ms,
-                msprof=msprof,
-                max_iter=self.config.lmalf_max_iter,
-                tolerance=self.config.lmalf_tolerance,
-                nsubs=nsubs,
-                g_imp_path="../G_imp",
-                x_prev=x_prev,
-                s_prev=s_prev,
-                output_dir=Path.cwd(),
-                log_file="analysis.log",
-                fnex=self.config.fnex,
-            )
-        else:
-            from cphmd.utils.lambda_io import find_lambda_files, read_lambda_values
-            from cphmd.wham import run_lmalf_from_memory
-
-            data_dir = Path("data")
-            lambda_files = find_lambda_files(data_dir)
-
-            if not lambda_files:
-                raise FileNotFoundError("No Lambda.*.*.parquet (or .dat) files found in data/")
-
-            print(f"[LMALF] Found {len(lambda_files)} lambda files (parquet fallback)")
-            lambda_arrays = [read_lambda_values(f) for f in lambda_files]
-            lambda_combined = np.vstack(lambda_arrays)
-
-            x_prev_file = Path("x_prev.dat")
-            s_prev_file = Path("s_prev.dat")
-            x_prev = np.loadtxt(x_prev_file) if x_prev_file.exists() else None
-            s_prev = np.loadtxt(s_prev_file) if s_prev_file.exists() else None
-
-            print(f"[LMALF] Running LMALF optimization ({lambda_combined.shape[0]} frames)...")
-            run_lmalf_from_memory(
-                lambda_combined=lambda_combined,
-                ensweight=None,
-                nf=nf,
-                temp=self.config.temperature,
-                ms=ms,
-                msprof=msprof,
-                max_iter=self.config.lmalf_max_iter,
-                tolerance=self.config.lmalf_tolerance,
-                nsubs=nsubs,
-                g_imp_path="../G_imp",
-                x_prev=x_prev,
-                s_prev=s_prev,
-                output_dir=Path.cwd(),
-                log_file="analysis.log",
-                fnex=self.config.fnex,
+        if not self._invoke_lmalf(nf, ms, msprof):
+            raise FileNotFoundError(
+                "No Lambda.*.*.parquet (or .dat) files found in data/"
             )
         print("[LMALF] LMALF optimization finished")
 
@@ -2092,20 +2139,15 @@ class ALFSimulation:
             out_data = np.loadtxt(out_file)
             if np.all(out_data == 0):
                 print("[LMALF] Warning: LMALF produced all zeros - falling back to WHAM")
-                # Fall back to WHAM
                 self._run_wham_analysis(nf, ms, msprof, cut_params)
                 return
 
         # Convert OUT.dat to b/c/x/s.dat
         print("[LMALF] Converting OUT.dat to b/c/x/s.dat...")
-        # Filter cut_params to only keys accepted by get_free_energy_lm
         lm_keys = {"cutb", "cutc", "cutx", "cuts", "cutc2", "cutx2", "cuts2"}
         lm_params = {k: v for k, v in cut_params.items() if k in lm_keys}
         get_free_energy_lm(
-            self.state.alf_info,
-            ms=ms,
-            msprof=msprof,
-            **lm_params,
+            self.state.alf_info, ms=ms, msprof=msprof, **lm_params,
         )
         print("[LMALF] Analysis complete")
 
@@ -2121,86 +2163,174 @@ class ALFSimulation:
         self._run_wham_analysis(nf, ms, msprof, cut_params)
 
         # Step 2: If Phase 1, refine with short LMALF
-        if self.state.phase == 1:
-            from cphmd.core.alf_utils import get_free_energy_lm
+        if self.state.phase != 1:
+            return
 
-            nsubs = self.state.alf_info["nsubs"]
-            print("[Hybrid] LMALF refinement (5 iterations)...")
+        from cphmd.core.alf_utils import get_free_energy_lm
 
-            if hasattr(self, '_wham_lambda') and self._wham_lambda:
-                from cphmd.wham import run_lmalf_from_memory
+        print("[Hybrid] LMALF refinement (5 iterations)...")
+        if not self._invoke_lmalf(nf, ms, msprof, max_iter=5):
+            print("[Hybrid] No lambda files found, skipping LMALF refinement")
+            return
 
-                lambda_combined = np.vstack(self._wham_lambda)
-                x_prev_file = Path("x_prev.dat")
-                s_prev_file = Path("s_prev.dat")
-                x_prev = np.loadtxt(x_prev_file) if x_prev_file.exists() else None
-                s_prev = np.loadtxt(s_prev_file) if s_prev_file.exists() else None
+        # Check if LMALF produced valid output before overwriting WHAM result
+        out_file = Path("OUT.dat")
+        if out_file.exists():
+            out_data = np.loadtxt(out_file)
+            if np.all(out_data == 0):
+                print("[Hybrid] LMALF produced all zeros - keeping WHAM output")
+                return
 
-                run_lmalf_from_memory(
-                    lambda_combined=lambda_combined,
-                    ensweight=None,
-                    nf=nf,
-                    temp=self.config.temperature,
-                    ms=ms,
-                    msprof=msprof,
-                    max_iter=5,
-                    nsubs=nsubs,
-                    g_imp_path="../G_imp",
-                    x_prev=x_prev,
-                    s_prev=s_prev,
-                    output_dir=Path.cwd(),
-                    log_file="analysis.log",
-                    fnex=self.config.fnex,
+        # Re-run GetFreeEnergy on LMALF's output
+        lm_keys = {"cutb", "cutc", "cutx", "cuts", "cutc2", "cutx2", "cuts2"}
+        lm_params = {k: v for k, v in cut_params.items() if k in lm_keys}
+        get_free_energy_lm(
+            self.state.alf_info, ms=ms, msprof=msprof, **lm_params,
+        )
+        print("[Hybrid] LMALF refinement complete")
+
+    def _generate_analysis_plots(
+        self, run_idx: int, nsubs, msprof: int
+    ) -> None:
+        """Generate convergence and diagnostic plots after analysis."""
+        plots_dir = Path(self.config.input_folder) / "plots"
+
+        # Population convergence plots
+        from cphmd.analysis.population_convergence import generate_population_plots
+        generate_population_plots(
+            input_folder=Path(".."),
+            max_run=run_idx,
+            output_dir=plots_dir,
+            nsubs=self.state.alf_info.get("nsubs"),
+        )
+
+        # RMSD convergence plots (need multisite/ G-files)
+        try:
+            if (Path("..") / f"analysis{run_idx}" / "multisite").is_dir():
+                from cphmd.analysis.rmsd_convergence_plot import (
+                    generate_rmsd_convergence_plots,
                 )
-            else:
-                from cphmd.utils.lambda_io import find_lambda_files as _find_lf
-                from cphmd.utils.lambda_io import read_lambda_values
-                from cphmd.wham import run_lmalf_from_memory
-
-                lambda_files = _find_lf(Path("data"))
-                if not lambda_files:
-                    print("[Hybrid] No lambda files found, skipping LMALF refinement")
-                    return
-                lambda_arrays = [read_lambda_values(f) for f in lambda_files]
-                lambda_combined = np.vstack(lambda_arrays)
-
-                x_prev_file = Path("x_prev.dat")
-                s_prev_file = Path("s_prev.dat")
-                x_prev = np.loadtxt(x_prev_file) if x_prev_file.exists() else None
-                s_prev = np.loadtxt(s_prev_file) if s_prev_file.exists() else None
-
-                run_lmalf_from_memory(
-                    lambda_combined=lambda_combined,
-                    ensweight=None,
-                    nf=nf,
-                    temp=self.config.temperature,
-                    ms=ms,
-                    msprof=msprof,
-                    max_iter=5,
-                    nsubs=nsubs,
-                    g_imp_path="../G_imp",
-                    x_prev=x_prev,
-                    s_prev=s_prev,
-                    output_dir=Path.cwd(),
-                    log_file="analysis.log",
-                    fnex=self.config.fnex,
+                generate_rmsd_convergence_plots(
+                    input_folder=Path(".."),
+                    max_run=run_idx,
+                    output_dir=plots_dir,
+                    nsubs=list(nsubs),
+                    rmsd_state=getattr(self.state, "rmsd_state", None),
                 )
+        except Exception as e:
+            print(f"Warning: RMSD convergence plots failed: {e}")
 
-            # Check if LMALF produced valid output before overwriting WHAM result
-            out_file = Path("OUT.dat")
-            if out_file.exists():
-                out_data = np.loadtxt(out_file)
-                if np.all(out_data == 0):
-                    print("[Hybrid] LMALF produced all zeros - keeping WHAM output")
-                    return
-
-            # Re-run GetFreeEnergy on LMALF's output
-            lm_keys = {"cutb", "cutc", "cutx", "cuts", "cutc2", "cutx2", "cuts2"}
-            lm_params = {k: v for k, v in cut_params.items() if k in lm_keys}
-            get_free_energy_lm(
-                self.state.alf_info, ms=ms, msprof=msprof, **lm_params
+        # b-bias convergence plot
+        try:
+            from cphmd.analysis.population_convergence import (
+                _read_phases_from_runs,
             )
-            print("[Hybrid] LMALF refinement complete")
+            from cphmd.analysis.rmsd_convergence_plot import (
+                _collect_b_biases_from_dirs,
+                plot_b_bias_convergence,
+            )
+            b_runs, b_values = _collect_b_biases_from_dirs(
+                Path(".."), run_idx, list(nsubs),
+            )
+            if len(b_runs) >= 1:
+                b_phases = _read_phases_from_runs(Path(".."), b_runs)
+                plot_b_bias_convergence(
+                    runs=b_runs,
+                    b_values=b_values,
+                    nsubs=list(nsubs),
+                    output_path=plots_dir / "b_bias_convergence.png",
+                    phases=b_phases,
+                )
+        except Exception as e:
+            print(f"Warning: b-bias convergence plot failed: {e}")
+
+        # 1D energy profile plots
+        try:
+            from cphmd.analysis.energy_profiles import plot_1d_profiles
+            plot_1d_profiles(analysis_dir=Path.cwd(), nsubs=list(nsubs))
+        except Exception as e:
+            print(f"Warning: 1D energy profile plots failed: {e}")
+
+        # WHAM free energy profile plots
+        try:
+            from cphmd.analysis.wham_profiles import plot_wham_profiles
+            plot_wham_profiles(
+                analysis_dir=Path.cwd(), nsubs=list(nsubs), msprof=msprof,
+            )
+        except Exception as e:
+            print(f"Warning: WHAM profile plots failed: {e}")
+
+    def _detect_forced_initial_lambdas(
+        self,
+        run_idx: int,
+        pop_strict: list,
+        nsubs,
+        trans_matrices,
+    ) -> None:
+        """Detect unsampled states and set biased Dirichlet initial lambdas.
+
+        Uses a sliding window of population history (last 5 runs) to identify
+        persistently unsampled states and biases initial lambda toward them.
+        Falls back to transition-based detection if no population-based biases
+        are needed.
+        """
+        nsubs_eff = nsubs if nsubs is not None else [len(pop_strict)]
+        if self.state.patch_info is not None:
+            sites = list(self.state.patch_info["site"].unique())
+        else:
+            sites = list(range(1, len(nsubs_eff) + 1))
+
+        # Collect population history from last 5 analysis dirs
+        pop_history = []
+        for prev_r in range(max(run_idx - 4, 1), run_idx + 1):
+            prev_pop_file = (
+                self.config.input_folder / f"analysis{prev_r}" / "pop_strict.dat"
+            )
+            if prev_pop_file.exists():
+                try:
+                    prev_pops = np.loadtxt(prev_pop_file)
+                    if len(prev_pops) == len(pop_strict):
+                        pop_history.append(prev_pops)
+                except Exception:
+                    pass
+        # Always include current run
+        pop_history.append(np.array(pop_strict))
+
+        # Average over history window
+        avg_pops = np.mean(pop_history, axis=0)
+
+        biased_alphas = {}
+        for site_idx, (start, end) in enumerate(_per_site_ranges(nsubs_eff)):
+            site_pops = avg_pops[start:end]
+            # States with < 5% average population over window
+            low_mask = site_pops < 0.05
+            if low_mask.any() and not low_mask.all():
+                low_indices = np.where(low_mask)[0]
+                worst = low_indices[np.argmin(site_pops[low_indices])]
+                alpha = np.ones(len(site_pops))
+                alpha_val = 10.0 if self.state.phase >= 2 else 3.0
+                alpha[worst] = alpha_val
+                biased_alphas[sites[site_idx]] = alpha.tolist()
+                print(f"  Biased Dirichlet site {sites[site_idx]}: "
+                      f"alpha[{worst}]={alpha_val:.0f} (avg pop "
+                      f"{site_pops[worst]:.1%} over {len(pop_history)} runs)")
+
+        # If no population-based Dirichlet, check transitions
+        if not biased_alphas and trans_matrices is not None:
+            from cphmd.core.transitions import find_weakest_transitions
+            weak_transitions = find_weakest_transitions(
+                trans_matrices, nsubs_eff, threshold_count=5
+            )
+            for site_idx, (si, sj) in weak_transitions.items():
+                alpha = np.ones(nsubs_eff[site_idx])
+                alpha[si] = 2.0
+                alpha[sj] = 2.0
+                biased_alphas[sites[site_idx]] = alpha.tolist()
+                print(f"  Transition Dirichlet site {sites[site_idx]}: "
+                      f"alpha[{si}]=alpha[{sj}]=2 "
+                      f"(weak {si}<->{sj} transition)")
+
+        self.state.forced_initial_lambdas = biased_alphas or None
 
     def _detect_phase_from_logs(self, run_idx: int) -> int | None:
         """Detect simulation phase from NSTEP in log files.
@@ -2376,73 +2506,11 @@ class ALFSimulation:
             coupling_scale = (2.0 / max(max_nsubs, 2)) ** 0.5
 
             if self.state.phase == 1:
-                # Adaptive cutoffs: reads previous scaling.dat, auto-tunes
                 cut_params = self._adapt_cutoffs(run_idx)
             elif self.state.phase == 2:
-                # Phase 2 warmup: exponential decay from start to target
-                # over ~20 runs to avoid the Phase 1→2 cutoff cliff.
-                warmup_runs = 20
-                p2_start = self.state.phase2_start_run or run_idx
-                runs_in_p2 = max(run_idx - p2_start, 0)
-                decay = min(runs_in_p2 / warmup_runs, 1.0)
-
-                # Start values (moderate) → Target values (tight)
-                cutb_start, cutb_target = 1.0, 0.05
-                cutc_start = 4.0 * coupling_scale
-                cutc_target = 0.5 * coupling_scale
-
-                # Log-space interpolation: start * (target/start)^decay
-                cutb = cutb_start * (cutb_target / cutb_start) ** decay
-                cutc = cutc_start * (cutc_target / cutc_start) ** decay
-                cutx = cutc  # same as cutc
-                cuts = cutc
-
-                cut_params = {
-                    "cutb": cutb,
-                    "cutc": cutc,
-                    "cutx": cutx,
-                    "cuts": cuts,
-                }
-                if runs_in_p2 < warmup_runs:
-                    print(f"  Phase 2 warmup ({runs_in_p2}/{warmup_runs}): "
-                          f"cutb={cutb:.3f} cutc={cutc:.3f}")
+                cut_params = self._phase2_cutoffs(run_idx, coupling_scale)
             else:  # phase 3
-                # Check if system needs recovery (very skewed populations)
-                phase3_recovery = False
-                prev_pop_file = (Path("..")
-                                 / f"analysis{run_idx - 1}" / "pop_strict.dat")
-                if prev_pop_file.exists():
-                    try:
-                        prev_pops = np.loadtxt(prev_pop_file)
-                        nsubs_check = self.state.alf_info.get("nsubs", [len(prev_pops)])
-                        col = 0
-                        for n in nsubs_check:
-                            site_pops = prev_pops[col:col + n]
-                            if len(site_pops) > 0:
-                                diff = site_pops.max() - site_pops.min()
-                                if diff > 0.7:
-                                    phase3_recovery = True
-                                    break
-                            col += n
-                    except Exception:
-                        pass
-
-                if phase3_recovery:
-                    # Use Phase 2 cutoffs to recover
-                    cut_params = {
-                        "cutb": 0.05,
-                        "cutc": 0.5 * coupling_scale,
-                        "cutx": 0.5 * coupling_scale,
-                        "cuts": 0.5 * coupling_scale,
-                    }
-                    print("  Phase 3 recovery: pop diff > 70% → using Phase 2 cutoffs")
-                else:
-                    cut_params = {
-                        "cutb": 0.02,
-                        "cutc": 0.2 * coupling_scale,
-                        "cutx": 0.1 * coupling_scale,
-                        "cuts": 0.1 * coupling_scale,
-                    }
+                cut_params = self._phase3_cutoffs(run_idx, coupling_scale)
 
             # Apply exclusion flags for phases 2/3
             if self.state.phase != 1:
@@ -2575,143 +2643,17 @@ class ALFSimulation:
                             frac_diff = (max(pop_strict) - min(pop_strict)) * 100
                             print(f"Populations (λ>0.985): [{pop_str}] diff={frac_diff:.1f}%")
 
-                        # Detect unsampled states using last 5 runs of population history
-                        # A state must be consistently unsampled to trigger biased Dirichlet
-                        nsubs_eff = nsubs if nsubs is not None else [len(pop_strict)]
-                        if self.state.patch_info is not None:
-                            sites = list(self.state.patch_info["site"].unique())
-                        else:
-                            sites = list(range(1, len(nsubs_eff) + 1))
-
-                        # Collect population history from last 5 analysis dirs
-                        pop_history = []  # list of pop_strict_norm arrays
-                        for prev_r in range(max(run_idx - 4, 1), run_idx + 1):
-                            prev_pop_file = (Path("..")
-                                             / f"analysis{prev_r}" / "pop_strict.dat")
-                            if prev_pop_file.exists():
-                                try:
-                                    prev_pops = np.loadtxt(prev_pop_file)
-                                    if len(prev_pops) == len(pop_strict):
-                                        pop_history.append(prev_pops)
-                                except Exception:
-                                    pass
-                        # Always include current run
-                        pop_history.append(np.array(pop_strict))
-
-                        # Average over history window
-                        avg_pops = np.mean(pop_history, axis=0)
-
-                        biased_alphas = {}
-                        for site_idx, (start, end) in enumerate(_per_site_ranges(nsubs_eff)):
-                            site_pops = avg_pops[start:end]
-                            # States with < 5% average population over window
-                            low_mask = site_pops < 0.05
-                            if low_mask.any() and not low_mask.all():
-                                low_indices = np.where(low_mask)[0]
-                                # Bias toward the least sampled state
-                                worst = low_indices[np.argmin(site_pops[low_indices])]
-                                alpha = np.ones(len(site_pops))
-                                # Stronger bias in Phase 2/3 (longer sims need harder push)
-                                alpha_val = 10.0 if self.state.phase >= 2 else 3.0
-                                alpha[worst] = alpha_val
-                                biased_alphas[sites[site_idx]] = alpha.tolist()
-                                print(f"  Biased Dirichlet site {sites[site_idx]}: "
-                                      f"alpha[{worst}]={alpha_val:.0f} (avg pop "
-                                      f"{site_pops[worst]:.1%} over {len(pop_history)} runs)")
-                        # If no population-based Dirichlet, check transitions
-                        if not biased_alphas and trans_matrices is not None:
-                            from cphmd.core.transitions import find_weakest_transitions
-                            weak_transitions = find_weakest_transitions(
-                                trans_matrices, nsubs_eff, threshold_count=5
-                            )
-                            for site_idx, (si, sj) in weak_transitions.items():
-                                # Start near the transition boundary
-                                alpha = np.ones(nsubs_eff[site_idx])
-                                alpha[si] = 2.0
-                                alpha[sj] = 2.0
-                                biased_alphas[sites[site_idx]] = alpha.tolist()
-                                print(f"  Transition Dirichlet site {sites[site_idx]}: "
-                                      f"alpha[{si}]=alpha[{sj}]=2 "
-                                      f"(weak {si}<->{sj} transition)")
-
-                        if biased_alphas:
-                            self.state.forced_initial_lambdas = biased_alphas
-                        else:
-                            self.state.forced_initial_lambdas = None
+                        # Detect unsampled states and set biased initial lambdas
+                        self._detect_forced_initial_lambdas(
+                            run_idx, pop_strict, nsubs, trans_matrices,
+                        )
 
                         # Save pop_strict for future history lookups
                         np.savetxt("pop_strict.dat", np.array(pop_strict),
                                    fmt=" %.6f")
 
-                # Generate population convergence plots
-                from cphmd.analysis.population_convergence import generate_population_plots
-                generate_population_plots(
-                    input_folder=Path(".."),
-                    max_run=run_idx,
-                    output_dir=Path(self.config.input_folder) / "plots",
-                    nsubs=self.state.alf_info.get("nsubs"),
-                )
-
-                # Generate RMSD convergence plots (need multisite/ G-files)
-                try:
-                    if (Path("..") / f"analysis{run_idx}" / "multisite").is_dir():
-                        from cphmd.analysis.rmsd_convergence_plot import (
-                            generate_rmsd_convergence_plots,
-                        )
-                        generate_rmsd_convergence_plots(
-                            input_folder=Path(".."),
-                            max_run=run_idx,
-                            output_dir=Path(self.config.input_folder) / "plots",
-                            nsubs=list(nsubs),
-                            rmsd_state=getattr(self.state, "rmsd_state", None),
-                        )
-                except Exception as e:
-                    print(f"Warning: RMSD convergence plots failed: {e}")
-
-                # Generate b-bias convergence plot (only needs b_sum.dat)
-                try:
-                    from cphmd.analysis.population_convergence import (
-                        _read_phases_from_runs,
-                    )
-                    from cphmd.analysis.rmsd_convergence_plot import (
-                        _collect_b_biases_from_dirs,
-                        plot_b_bias_convergence,
-                    )
-                    b_runs, b_values = _collect_b_biases_from_dirs(
-                        Path(".."), run_idx, list(nsubs),
-                    )
-                    if len(b_runs) >= 1:
-                        b_phases = _read_phases_from_runs(Path(".."), b_runs)
-                        plot_b_bias_convergence(
-                            runs=b_runs,
-                            b_values=b_values,
-                            nsubs=list(nsubs),
-                            output_path=Path(self.config.input_folder) / "plots" / "b_bias_convergence.png",
-                            phases=b_phases,
-                        )
-                except Exception as e:
-                    print(f"Warning: b-bias convergence plot failed: {e}")
-
-                # Generate 1D energy profile plots in current analysis dir
-                try:
-                    from cphmd.analysis.energy_profiles import plot_1d_profiles
-                    plot_1d_profiles(
-                        analysis_dir=Path.cwd(),
-                        nsubs=list(nsubs),
-                    )
-                except Exception as e:
-                    print(f"Warning: 1D energy profile plots failed: {e}")
-
-                # Generate WHAM free energy profile plots from G{n}.dat
-                try:
-                    from cphmd.analysis.wham_profiles import plot_wham_profiles
-                    plot_wham_profiles(
-                        analysis_dir=Path.cwd(),
-                        nsubs=list(nsubs),
-                        msprof=msprof,
-                    )
-                except Exception as e:
-                    print(f"Warning: WHAM profile plots failed: {e}")
+                # Generate convergence and diagnostic plots
+                self._generate_analysis_plots(run_idx, nsubs, msprof)
 
             # --- RMSD-based convergence check ---
             if (self.config.convergence_mode == "rmsd"

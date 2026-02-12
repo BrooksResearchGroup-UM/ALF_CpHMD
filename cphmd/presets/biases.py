@@ -66,6 +66,14 @@ PRESET_CONFIGS: dict[str, ConfigParams] = {
             "x": [-10.544, -11.433],
             "s": [2.092, 1.918],
         },
+        # Neutral Red N3-protonated (NREDO/NRD2, pKa=6.8)
+        # Converged from 03_nr_n3 cubic box simulation (192 runs)
+        "NRED": {
+            "lam": [0.000, 67.588],
+            "c": [-30.536],
+            "x": [-13.579, -11.579],
+            "s": [2.580, 2.228],
+        },
     },
     "pme_ex_vfswitch": {
         "ASP": {

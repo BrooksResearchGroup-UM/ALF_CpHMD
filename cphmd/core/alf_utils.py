@@ -735,6 +735,162 @@ def set_vars_from_analysis_dir(
     return output_file
 
 
+def _load_shift_file(
+    analysis_dir: str, filename: str, default_value: float = 0.0,
+) -> np.ndarray | float:
+    """Load shift file from analysis_dir/nbshift or ../nbshift fallback."""
+    import os
+
+    local_path = os.path.join(analysis_dir, "nbshift", filename)
+    if os.path.exists(local_path):
+        return np.loadtxt(local_path)
+    fallback_path = os.path.join("../nbshift", filename)
+    if os.path.exists(fallback_path):
+        return np.loadtxt(fallback_path)
+    return default_value
+
+
+def _load_simulation_data(
+    alf_info: ALFInfo,
+    start_cycle: int,
+    end_cycle: int,
+    skipE: int = 1,
+) -> tuple[
+    list[np.ndarray],
+    list[np.ndarray],
+    list[np.ndarray],
+    list[np.ndarray],
+    list[np.ndarray],
+    list[tuple[int, int, int]],
+]:
+    """Load lambda trajectories and bias parameters from analysis directories.
+
+    Must be called from inside an analysis directory (e.g., analysis5/).
+
+    Returns:
+        Tuple of (Lambda, b_list, c_list, x_list, s_list, jk_map).
+    """
+    import os
+
+    from cphmd.utils.lambda_io import find_lambda_files, read_lambda_values
+
+    ncentral = alf_info.ncentral
+    NF = end_cycle - start_cycle + 1
+
+    Lambda: list[np.ndarray] = []
+    b_list: list[np.ndarray] = []
+    c_list: list[np.ndarray] = []
+    x_list: list[np.ndarray] = []
+    s_list: list[np.ndarray] = []
+    jk_map: list[tuple[int, int, int]] = []
+
+    for i in range(NF):
+        analysis_dir = f"../analysis{start_cycle + i}"
+        data_dir = os.path.join(analysis_dir, "data")
+
+        if not os.path.isdir(data_dir):
+            print(f"Warning: Directory {data_dir} not found")
+            continue
+
+        b_shift = _load_shift_file(analysis_dir, "b_shift.dat")
+        c_shift = _load_shift_file(analysis_dir, "c_shift.dat")
+        x_shift = _load_shift_file(analysis_dir, "x_shift.dat")
+        s_shift = _load_shift_file(analysis_dir, "s_shift.dat")
+        b_fix_shift = _load_shift_file(analysis_dir, "b_fix_shift.dat", 0.0)
+        c_fix_shift = _load_shift_file(analysis_dir, "c_fix_shift.dat", 0.0)
+        x_fix_shift = _load_shift_file(analysis_dir, "x_fix_shift.dat", 0.0)
+        s_fix_shift = _load_shift_file(analysis_dir, "s_fix_shift.dat", 0.0)
+
+        lambda_fpaths = find_lambda_files(Path(data_dir))
+
+        for fpath in lambda_fpaths:
+            try:
+                Lambda.append(read_lambda_values(fpath)[(skipE - 1)::skipE, :])
+                j, k = map(int, fpath.name.split(".")[1:3])
+                jk_map.append((j, k, i))
+                b_old = np.loadtxt(os.path.join(analysis_dir, "b_prev.dat"))
+                b_list.append(b_old + b_shift * (k - ncentral) + b_fix_shift)
+                c_old = np.loadtxt(os.path.join(analysis_dir, "c_prev.dat"))
+                c_list.append(c_old + c_shift * (k - ncentral) + c_fix_shift)
+                x_old = np.loadtxt(os.path.join(analysis_dir, "x_prev.dat"))
+                x_list.append(x_old + x_shift * (k - ncentral) + x_fix_shift)
+                s_old = np.loadtxt(os.path.join(analysis_dir, "s_prev.dat"))
+                s_list.append(s_old + s_shift * (k - ncentral) + s_fix_shift)
+            except Exception as e:
+                print(f"Error loading file {fpath}: {e}")
+
+    return Lambda, b_list, c_list, x_list, s_list, jk_map
+
+
+def _compute_cross_energy_matrix(
+    Lambda: list[np.ndarray],
+    b_list: list[np.ndarray],
+    c_list: list[np.ndarray],
+    x_list: list[np.ndarray],
+    s_list: list[np.ndarray],
+) -> list[list[np.ndarray]]:
+    """Compute cross-simulation bias energies.
+
+    E[i][j] = bias energy of simulation j's lambda under simulation i's
+    parameters. Each entry has shape (n_frames_j, 1).
+    """
+    nf = len(Lambda)
+    energy_matrix: list[list[np.ndarray]] = [[] for _ in range(nf)]
+    for i in range(nf):
+        bi, ci, xi, si = b_list[i], c_list[i], x_list[i], s_list[i]
+        for j in range(nf):
+            Lj = Lambda[j]
+            Eij = np.reshape(np.dot(Lj, -bi), (-1, 1))
+            Eij += np.sum(np.dot(Lj, -ci) * Lj, axis=1, keepdims=True)
+            Eij += np.sum(
+                np.dot(1 - np.exp(-OMEGA_DECAY * Lj), -xi) * Lj,
+                axis=1, keepdims=True,
+            )
+            Eij += np.sum(
+                np.dot(Lj / (Lj + CHI_OFFSET), -si) * Lj,
+                axis=1, keepdims=True,
+            )
+            energy_matrix[i].append(Eij)
+    return energy_matrix
+
+
+def _compute_gshift_data(
+    jk_map: list[tuple[int, int, int]],
+    start_cycle: int,
+    nblocks: int,
+    ncentral: int,
+) -> np.ndarray:
+    """Compute G_imp shift data for all simulations.
+
+    Returns:
+        Array of shape (n_simulations, nblocks).
+    """
+    nf = len(jk_map)
+    gshift_data = np.zeros((nf, nblocks), dtype=np.float64)
+    for sim_idx, (j, k, analysis_idx) in enumerate(jk_map):
+        analysis_dir = f"../analysis{start_cycle + analysis_idx}"
+        try:
+            b_shift_arr = np.atleast_1d(
+                _load_shift_file(analysis_dir, "b_shift.dat", 0.0)
+            )
+            b_fix_shift_arr = np.atleast_1d(
+                _load_shift_file(analysis_dir, "b_fix_shift.dat", 0.0)
+            )
+            if b_shift_arr.size == 1:
+                b_shift_arr = np.full(nblocks, float(b_shift_arr.flat[0]))
+                b_fix_shift_arr = np.full(nblocks, float(b_fix_shift_arr.flat[0]))
+            for block_idx in range(nblocks):
+                gshift_data[sim_idx, block_idx] = (
+                    float(b_fix_shift_arr[block_idx])
+                    + float(b_shift_arr[block_idx]) * (k - ncentral)
+                )
+        except Exception as e:
+            print(
+                f"Warning: Could not compute G_imp shifts for sim {sim_idx + 1}: {e}"
+            )
+    return gshift_data
+
+
 def get_energy_from_analysis_dir(
     alf_info: ALFInfo | dict,
     start_cycle: int,
@@ -764,145 +920,45 @@ def get_energy_from_analysis_dir(
     import os
 
     alf_info = ensure_alf_info(alf_info)
-    nblocks = alf_info.nblocks
-    nsubs = alf_info.nsubs
-    nreps = alf_info.nreps
-    ncentral = alf_info.ncentral
 
-    NF = end_cycle - start_cycle + 1
+    Lambda, b_list, c_list, x_list, s_list, jk_map = _load_simulation_data(
+        alf_info, start_cycle, end_cycle, skipE,
+    )
 
-    def load_shift_file(analysis_dir: str, filename: str, default_value=0.0):
-        """Load shift file from analysis_dir/nbshift or ../nbshift."""
-        local_path = os.path.join(analysis_dir, "nbshift", filename)
-        if os.path.exists(local_path):
-            return np.loadtxt(local_path)
-        fallback_path = os.path.join("../nbshift", filename)
-        if os.path.exists(fallback_path):
-            return np.loadtxt(fallback_path)
-        return default_value
+    nf = len(Lambda)
+    if nf == 0:
+        print("Error: No Lambda files found.")
+        return 0
 
-    Lambda = []
-    b = []
-    c = []
-    x = []
-    s = []
-
-    for i in range(NF):
-        analysis_dir = f"../analysis{start_cycle + i}"
-        data_dir = os.path.join(analysis_dir, "data")
-
-        if not os.path.isdir(data_dir):
-            print(f"Warning: Directory {data_dir} not found")
-            continue
-
-        # Load shift files
-        b_shift = load_shift_file(analysis_dir, "b_shift.dat")
-        c_shift = load_shift_file(analysis_dir, "c_shift.dat")
-        x_shift = load_shift_file(analysis_dir, "x_shift.dat")
-        s_shift = load_shift_file(analysis_dir, "s_shift.dat")
-
-        b_fix_shift = load_shift_file(analysis_dir, "b_fix_shift.dat", 0.0)
-        c_fix_shift = load_shift_file(analysis_dir, "c_fix_shift.dat", 0.0)
-        x_fix_shift = load_shift_file(analysis_dir, "x_fix_shift.dat", 0.0)
-        s_fix_shift = load_shift_file(analysis_dir, "s_fix_shift.dat", 0.0)
-
-        from cphmd.utils.lambda_io import find_lambda_files, read_lambda_values
-        lambda_fpaths = find_lambda_files(Path(data_dir))
-
-        for fpath in lambda_fpaths:
-            lambda_file = fpath.name
-            try:
-                # read_lambda_values returns lambda-only (no time column)
-                Lambda.append(read_lambda_values(fpath)[(skipE - 1)::skipE, :])
-
-                # Extract j and k from filename (Lambda.j.k.{parquet,dat})
-                j, k = map(int, lambda_file.split(".")[1:3])
-                b_old = np.loadtxt(os.path.join(analysis_dir, "b_prev.dat"))
-                b.append(b_old + b_shift * (k - ncentral) + b_fix_shift)
-                c_old = np.loadtxt(os.path.join(analysis_dir, "c_prev.dat"))
-                c.append(c_old + c_shift * (k - ncentral) + c_fix_shift)
-                x_old = np.loadtxt(os.path.join(analysis_dir, "x_prev.dat"))
-                x.append(x_old + x_shift * (k - ncentral) + x_fix_shift)
-                s_old = np.loadtxt(os.path.join(analysis_dir, "s_prev.dat"))
-                s.append(s_old + s_shift * (k - ncentral) + s_fix_shift)
-            except Exception as e:
-                print(f"Error loading file {fpath}: {e}")
+    energy_matrix = _compute_cross_energy_matrix(
+        Lambda, b_list, c_list, x_list, s_list,
+    )
 
     os.makedirs("Lambda", exist_ok=True)
     os.makedirs("Energy", exist_ok=True)
 
-    total_simulations = len(Lambda)
-    if total_simulations == 0:
-        print("Error: No Lambda files found.")
-        return 0
-
-    # Compute cross-simulation bias energies
-    E = [[] for _ in range(total_simulations)]
-    for i in range(total_simulations):
-        for j_idx in range(total_simulations):
-            bi, ci, xi, si = b[i], c[i], x[i], s[i]
-            Lj = Lambda[j_idx]
-            Eij = np.reshape(np.dot(Lj, -bi), (-1, 1))
-            Eij += np.sum(np.dot(Lj, -ci) * Lj, axis=1, keepdims=True)
-            Eij += np.sum(np.dot(1 - np.exp(-OMEGA_DECAY * Lj), -xi) * Lj, axis=1, keepdims=True)
-            Eij += np.sum(np.dot(Lj / (Lj + CHI_OFFSET), -si) * Lj, axis=1, keepdims=True)
-            E[i].append(Eij)
-
-    for i in range(total_simulations):
-        Ei = E[total_simulations - 1][i]
-        for j_idx in range(total_simulations):
-            Ei = np.concatenate((Ei, E[j_idx][i]), axis=1)
+    for i in range(nf):
+        Ei = energy_matrix[nf - 1][i]
+        for j in range(nf):
+            Ei = np.concatenate((Ei, energy_matrix[j][i]), axis=1)
         np.savetxt(f"Energy/ESim{i + 1}.dat", Ei, fmt="%12.5f")
 
-    for i in range(total_simulations):
+    for i in range(nf):
         np.savetxt(f"Lambda/Lambda{i + 1}.dat", Lambda[i], fmt="%10.6f")
 
-    # Create G_imp shift information
+    # Write G_imp shift files
     os.makedirs("G_imp_shifts", exist_ok=True)
+    gshift_data = _compute_gshift_data(
+        jk_map, start_cycle, alf_info.nblocks, alf_info.ncentral,
+    )
+    for sim_idx, (j, k, _) in enumerate(jk_map):
+        with open(f"G_imp_shifts/shifts_sim{sim_idx + 1}.dat", "w") as f:
+            f.write(f"# G_imp shift information for simulation {sim_idx + 1}\n")
+            f.write(f"# j: {j}, k: {k}, ncentral: {alf_info.ncentral}\n")
+            for block_idx in range(alf_info.nblocks):
+                f.write(f"{gshift_data[sim_idx, block_idx]:.6f}\n")
 
-    simulation_jk_map = {}
-    sim_idx = 0
-    for i in range(NF):
-        analysis_dir = f"../analysis{start_cycle + i}"
-        data_dir = os.path.join(analysis_dir, "data")
-        if not os.path.isdir(data_dir):
-            continue
-        lambda_fpaths2 = find_lambda_files(Path(data_dir))
-        for fpath2 in lambda_fpaths2:
-            try:
-                j, k = map(int, fpath2.name.split(".")[1:3])
-                simulation_jk_map[sim_idx] = (j, k, i)
-                sim_idx += 1
-            except (ValueError, IndexError):
-                simulation_jk_map[sim_idx] = (1, sim_idx, i)
-                sim_idx += 1
-
-    for sim_idx in range(total_simulations):
-        if sim_idx not in simulation_jk_map:
-            continue
-        j, k, analysis_idx = simulation_jk_map[sim_idx]
-        analysis_dir = f"../analysis{start_cycle + analysis_idx}"
-        try:
-            b_shift_arr = np.atleast_1d(load_shift_file(analysis_dir, "b_shift.dat", 0.0))
-            b_fix_shift_arr = np.atleast_1d(load_shift_file(analysis_dir, "b_fix_shift.dat", 0.0))
-
-            if b_shift_arr.size > 1:
-                num_blocks = len(b_shift_arr)
-            else:
-                b_shift_arr = np.full(nblocks, float(b_shift_arr.flat[0]))
-                b_fix_shift_arr = np.full(nblocks, float(b_fix_shift_arr.flat[0]))
-                num_blocks = nblocks
-
-            with open(f"G_imp_shifts/shifts_sim{sim_idx + 1}.dat", "w") as f:
-                f.write(f"# G_imp shift information for simulation {sim_idx + 1}\n")
-                f.write(f"# j: {j}, k: {k}, ncentral: {ncentral}\n")
-                for block_idx in range(num_blocks):
-                    total_shift = float(b_fix_shift_arr[block_idx]) + float(b_shift_arr[block_idx]) * (k - ncentral)
-                    f.write(f"{total_shift:.6f}\n")
-        except Exception as e:
-            print(f"Warning: Could not create G_imp shifts for simulation {sim_idx + 1}: {e}")
-
-    return total_simulations
+    return nf
 
 
 def compute_wham_inputs(
@@ -932,117 +988,25 @@ def compute_wham_inputs(
         - gshift_data: [nf, nblocks] array of G_imp shifts, or None if no shifts
         - nf: number of simulations (total lambda files found)
     """
-    import os
-
     alf_info = ensure_alf_info(alf_info)
-    nblocks = alf_info.nblocks
-    ncentral = alf_info.ncentral
 
-    NF = end_cycle - start_cycle + 1
+    Lambda, b_list, c_list, x_list, s_list, jk_map = _load_simulation_data(
+        alf_info, start_cycle, end_cycle, skipE,
+    )
 
-    def load_shift_file(analysis_dir: str, filename: str, default_value=0.0):
-        local_path = os.path.join(analysis_dir, "nbshift", filename)
-        if os.path.exists(local_path):
-            return np.loadtxt(local_path)
-        fallback_path = os.path.join("../nbshift", filename)
-        if os.path.exists(fallback_path):
-            return np.loadtxt(fallback_path)
-        return default_value
-
-    Lambda: list[np.ndarray] = []
-    b_list: list[np.ndarray] = []
-    c_list: list[np.ndarray] = []
-    x_list: list[np.ndarray] = []
-    s_list: list[np.ndarray] = []
-    jk_map: list[tuple[int, int, int]] = []  # (j, k, analysis_idx) per sim
-
-    from cphmd.utils.lambda_io import find_lambda_files, read_lambda_values
-
-    for i in range(NF):
-        analysis_dir = f"../analysis{start_cycle + i}"
-        data_dir = os.path.join(analysis_dir, "data")
-
-        if not os.path.isdir(data_dir):
-            print(f"Warning: Directory {data_dir} not found")
-            continue
-
-        b_shift = load_shift_file(analysis_dir, "b_shift.dat")
-        c_shift = load_shift_file(analysis_dir, "c_shift.dat")
-        x_shift = load_shift_file(analysis_dir, "x_shift.dat")
-        s_shift = load_shift_file(analysis_dir, "s_shift.dat")
-        b_fix_shift = load_shift_file(analysis_dir, "b_fix_shift.dat", 0.0)
-        c_fix_shift = load_shift_file(analysis_dir, "c_fix_shift.dat", 0.0)
-        x_fix_shift = load_shift_file(analysis_dir, "x_fix_shift.dat", 0.0)
-        s_fix_shift = load_shift_file(analysis_dir, "s_fix_shift.dat", 0.0)
-
-        lambda_fpaths = find_lambda_files(Path(data_dir))
-
-        for fpath in lambda_fpaths:
-            try:
-                Lambda.append(read_lambda_values(fpath)[(skipE - 1)::skipE, :])
-
-                j, k = map(int, fpath.name.split(".")[1:3])
-                jk_map.append((j, k, i))
-                b_old = np.loadtxt(os.path.join(analysis_dir, "b_prev.dat"))
-                b_list.append(b_old + b_shift * (k - ncentral) + b_fix_shift)
-                c_old = np.loadtxt(os.path.join(analysis_dir, "c_prev.dat"))
-                c_list.append(c_old + c_shift * (k - ncentral) + c_fix_shift)
-                x_old = np.loadtxt(os.path.join(analysis_dir, "x_prev.dat"))
-                x_list.append(x_old + x_shift * (k - ncentral) + x_fix_shift)
-                s_old = np.loadtxt(os.path.join(analysis_dir, "s_prev.dat"))
-                s_list.append(s_old + s_shift * (k - ncentral) + s_fix_shift)
-            except Exception as e:
-                print(f"Error loading file {fpath}: {e}")
-
-    total_simulations = len(Lambda)
-    if total_simulations == 0:
+    nf = len(Lambda)
+    if nf == 0:
         print("Error: No Lambda files found.")
         return [], [], None, 0
 
-    # Compute cross-simulation bias energies: E[i][j] = energy of sim j's
-    # lambda under sim i's parameters
-    energy_matrix: list[list[np.ndarray]] = [[] for _ in range(total_simulations)]
-    for i in range(total_simulations):
-        for j_idx in range(total_simulations):
-            bi, ci, xi, si = b_list[i], c_list[i], x_list[i], s_list[i]
-            Lj = Lambda[j_idx]
-            Eij = np.reshape(np.dot(Lj, -bi), (-1, 1))
-            Eij += np.sum(np.dot(Lj, -ci) * Lj, axis=1, keepdims=True)
-            Eij += np.sum(
-                np.dot(1 - np.exp(-OMEGA_DECAY * Lj), -xi) * Lj,
-                axis=1, keepdims=True,
-            )
-            Eij += np.sum(
-                np.dot(Lj / (Lj + CHI_OFFSET), -si) * Lj,
-                axis=1, keepdims=True,
-            )
-            energy_matrix[i].append(Eij)
+    energy_matrix = _compute_cross_energy_matrix(
+        Lambda, b_list, c_list, x_list, s_list,
+    )
+    gshift_data = _compute_gshift_data(
+        jk_map, start_cycle, alf_info.nblocks, alf_info.ncentral,
+    )
 
-    # Compute G_imp shift data as array [total_simulations, nblocks]
-    gshift_data = np.zeros((total_simulations, nblocks), dtype=np.float64)
-    for sim_idx, (j, k, analysis_idx) in enumerate(jk_map):
-        analysis_dir = f"../analysis{start_cycle + analysis_idx}"
-        try:
-            b_shift_arr = np.atleast_1d(
-                load_shift_file(analysis_dir, "b_shift.dat", 0.0)
-            )
-            b_fix_shift_arr = np.atleast_1d(
-                load_shift_file(analysis_dir, "b_fix_shift.dat", 0.0)
-            )
-            if b_shift_arr.size == 1:
-                b_shift_arr = np.full(nblocks, float(b_shift_arr.flat[0]))
-                b_fix_shift_arr = np.full(nblocks, float(b_fix_shift_arr.flat[0]))
-            for block_idx in range(nblocks):
-                gshift_data[sim_idx, block_idx] = (
-                    float(b_fix_shift_arr[block_idx])
-                    + float(b_shift_arr[block_idx]) * (k - ncentral)
-                )
-        except Exception as e:
-            print(
-                f"Warning: Could not compute G_imp shifts for sim {sim_idx + 1}: {e}"
-            )
-
-    return Lambda, energy_matrix, gshift_data, total_simulations
+    return Lambda, energy_matrix, gshift_data, nf
 
 
 def compute_bias_energy(
