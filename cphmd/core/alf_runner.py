@@ -45,7 +45,7 @@ from cphmd.core.phase_switcher import (
 
 # Type aliases
 RestrainType = Literal["SCAT", "NOE"]
-AnalysisMethod = Literal["wham", "lmalf", "hybrid"]
+AnalysisMethod = Literal["wham", "lmalf", "hybrid", "nonlinear"]
 ConvergenceMode = Literal["population", "rmsd"]
 PrepFormat = Literal["default", "legacy", "auto"]
 
@@ -91,6 +91,8 @@ class ALFConfig:
     no_c_bias: bool = False  # Disable coupling (psi) bias updates
     no_x_bias: bool = False
     no_s_bias: bool = False
+    no_t_bias: bool = True   # Disable t-term bias updates (bcxstu)
+    no_u_bias: bool = True   # Disable u-term bias updates (bcxstu)
     no_pka_bias: bool = False  # Disable pKa-based bias shifts
     auto_phase_switch: bool = False  # Enable automatic phase switching
     auto_stop: bool = False  # Enable automatic stop when converged in Phase 3
@@ -102,7 +104,6 @@ class ALFConfig:
 
     # Preset biases (converged single-site biases from cubic box simulations)
     use_presets: bool = False  # Use preset biases for initial ALF parameters
-    preset_config: str | None = None  # Preset config name (e.g., "pme_ex_vswitch"); None=auto
 
     # Inter-site coupling
     coupling: Literal[0, 1, 2] = 0  # 0=none, 1=full c/x/s, 2=c-only
@@ -113,6 +114,8 @@ class ALFConfig:
     # Optional overrides for bias potential shape constants (None = derive from fnex)
     chi_offset: float | None = None  # s-term sigmoid offset (default: 4*exp(-fnex))
     omega_decay: float | None = None  # x-term exponential decay (default: fnex)
+    chi_offset_t: float = 0.012  # t-term sigmoid offset (independent of FNEX)
+    chi_offset_u: float = 0.012  # u-term offset (independent of FNEX)
 
     # Lambda dynamics mass and friction (per-block via LDIN)
     # None = auto: HMR(4fs) → mass=12.0/fbeta=5.0; non-HMR(2fs) → mass=5.0/fbeta=7.0
@@ -129,7 +132,7 @@ class ALFConfig:
     use_gshift: bool = True  # Apply G_imp entropy shifts (recommended; see docs/WHAM/gshift_theory.md)
 
     # Analysis method configuration
-    analysis_method: AnalysisMethod = "wham"  # "wham" or "lmalf"
+    analysis_method: AnalysisMethod = "wham"  # "wham", "lmalf", "hybrid", or "nonlinear"
     lmalf_max_iter: int = 0  # Maximum L-BFGS iterations (0 = use default)
     lmalf_tolerance: float = 0.0  # Convergence tolerance (0 = use default)
 
@@ -214,6 +217,11 @@ class ALFConfig:
             self.lambda_mass = 10.0 if self.hmr else 5.0
         if self.lambda_fbeta is None:
             self.lambda_fbeta = 5.0 if self.hmr else 7.0
+
+        # t/u require x and s to be active (they share the same reaction coordinates)
+        if self.no_x_bias or self.no_s_bias:
+            self.no_t_bias = True
+            self.no_u_bias = True
 
     @staticmethod
     def resolve_g_imp_bins(
@@ -600,19 +608,14 @@ class ALFSimulation:
         return res_types
 
     def _resolve_preset_config(self) -> str | None:
-        """Resolve preset configuration name from ALFConfig settings.
+        """Resolve preset configuration name from elec_type + vdw_type.
 
-        Auto-detects from elec_type + vdw_type if not explicitly set.
         Mapping: pmeex→pme_ex, pmeon→pme_on, pmenn→pme_nn,
                  fshift→fshift, fswitch→fswitch; vswitch/vfswitch.
 
         Returns:
-            Preset config name (e.g., "pme_ex_vswitch") or None for default.
+            Preset config name (e.g., "pme_ex_vswitch") or None if types unknown.
         """
-        if self.config.preset_config:
-            return self.config.preset_config
-
-        # Auto-detect from electrostatics + VdW settings
         elec_map = {
             "pmeex": "pme_ex", "pmeon": "pme_on", "pmenn": "pme_nn",
             "fshift": "fshift", "fswitch": "fswitch",
@@ -844,9 +847,17 @@ class ALFSimulation:
         # Phase 0: Initial bias guessing (before main loop)
         self._run_bias_guessing_phase()
 
-        # Find last completed run and resume
-        start_run = self._find_last_run()
+        # Find last completed run and resume (rank 0 only — cleanup is not MPI-safe)
+        if self.state.rank == 0:
+            start_run = self._find_last_run()
+        else:
+            start_run = None
         start_run = self._comm.bcast(start_run, root=0)
+        # Sync phase/phase2_start_run detected by rank 0
+        self.state.phase = self._comm.bcast(self.state.phase, root=0)
+        self.state.phase2_start_run = self._comm.bcast(
+            self.state.phase2_start_run, root=0
+        )
 
         # Load RMSD convergence state if resuming with rmsd mode
         if self.config.convergence_mode == "rmsd":
@@ -1332,7 +1343,8 @@ class ALFSimulation:
             # Copy previous analysis results
             prev_analysis = Path(f"analysis{run_idx - 1}")
             if prev_analysis.exists():
-                for fname in ["b_sum.dat", "c_sum.dat", "x_sum.dat", "s_sum.dat"]:
+                for fname in ["b_sum.dat", "c_sum.dat", "x_sum.dat", "s_sum.dat",
+                              "t_sum.dat", "u_sum.dat"]:
                     src = prev_analysis / fname
                     dst = analysis_dir / fname.replace("_sum", "_prev")
                     if src.exists():

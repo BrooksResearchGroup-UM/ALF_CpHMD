@@ -175,7 +175,7 @@ def alf(
     vdw_type: str = typer.Option(None, "--vdw", help="VDW method: vswitch or vfswitch"),
     coupling: int = typer.Option(None, "--coupling", help="Inter-site coupling: 0=none, 1=full, 2=c-only"),
     coupling_profile: bool = typer.Option(None, "--coupling-profile/--no-coupling-profile", help="Inter-site profile monitoring (default: follows coupling)"),
-    analysis_method: str = typer.Option(None, "--analysis-method", help="Analysis method: wham or lmalf"),
+    analysis_method: str = typer.Option(None, "--analysis-method", help="Analysis method: wham, lmalf, hybrid, or nonlinear"),
     lmalf_max_iter: int = typer.Option(None, "--lmalf-max-iter", help="LMALF max iterations (0=default)"),
     lmalf_tolerance: float = typer.Option(None, "--lmalf-tolerance", help="LMALF tolerance (0=default)"),
     lambda_mass: float = typer.Option(None, "--lambda-mass", help="Lambda mass in amu*A^2"),
@@ -194,6 +194,7 @@ def alf(
     """
     # Initialize MPI via mpi4py BEFORE importing pyCHARMM (triggered by cphmd.core).
     # pyCHARMM detects MPI is already initialized and skips its own MPI_Init.
+    from mpi4py import MPI  # noqa: F401 — side-effect import, must precede pyCHARMM
 
     from cphmd.config import config_to_alf
 
@@ -231,27 +232,33 @@ def alf(
     }
     alf_config = config_to_alf(config, cli)
 
-    console.print(f"[cyan]Starting ALF simulation for {alf_config.input_folder}/[/cyan]")
-    cphmd_str = "CpHMD" if alf_config.pH else "ALF"
-    console.print(f"[dim]Temp: {alf_config.temperature}K, Mode: {cphmd_str}, Phase: {alf_config.phase}, Runs: {alf_config.start}-{alf_config.end}[/dim]")
-    console.print(f"[dim]HMR: {alf_config.hmr}, Restraints: {alf_config.restrains}[/dim]")
-    console.print(f"[dim]Electrostatics: {alf_config.elec_type}, VDW: {alf_config.vdw_type}[/dim]")
-    if alf_config.no_pka_bias:
-        console.print("[yellow]pKa bias disabled[/yellow]")
-    if alf_config.auto_phase_switch:
-        console.print("[green]Automatic phase switching enabled[/green]")
-    if alf_config.auto_stop:
-        console.print("[green]Automatic stop on convergence enabled[/green]")
-    if alf_config.coupling > 0:
-        mode = "full" if alf_config.coupling == 1 else "c-only"
-        console.print(f"[cyan]Inter-site coupling: {mode}[/cyan]")
-    if alf_config.analysis_method == "lmalf":
-        console.print("[cyan]Using LMALF analysis method[/cyan]")
+    # Only rank 0 prints status (avoids 5× duplicated output under MPI)
+    comm = MPI.COMM_WORLD
+    if comm.Get_rank() == 0:
+        console.print(f"[cyan]Starting ALF simulation for {alf_config.input_folder}/[/cyan]")
+        cphmd_str = "CpHMD" if alf_config.pH else "ALF"
+        console.print(f"[dim]Temp: {alf_config.temperature}K, Mode: {cphmd_str}, Phase: {alf_config.phase}, Runs: {alf_config.start}-{alf_config.end}[/dim]")
+        console.print(f"[dim]HMR: {alf_config.hmr}, Restraints: {alf_config.restrains}[/dim]")
+        console.print(f"[dim]Electrostatics: {alf_config.elec_type}, VDW: {alf_config.vdw_type}[/dim]")
+        if alf_config.no_pka_bias:
+            console.print("[yellow]pKa bias disabled[/yellow]")
+        if alf_config.auto_phase_switch:
+            console.print("[green]Automatic phase switching enabled[/green]")
+        if alf_config.auto_stop:
+            console.print("[green]Automatic stop on convergence enabled[/green]")
+        if alf_config.coupling > 0:
+            mode = "full" if alf_config.coupling == 1 else "c-only"
+            console.print(f"[cyan]Inter-site coupling: {mode}[/cyan]")
+        if alf_config.analysis_method == "lmalf":
+            console.print("[cyan]Using LMALF analysis method[/cyan]")
+        elif alf_config.analysis_method == "nonlinear":
+            console.print("[cyan]Using nonlinear L-BFGS analysis method[/cyan]")
 
     from cphmd.core import run_alf_simulation
 
     run_alf_simulation(alf_config)
-    console.print("[green]ALF simulation complete[/green]")
+    if comm.Get_rank() == 0:
+        console.print("[green]ALF simulation complete[/green]")
 
 
 @run_app.command("bias-search")

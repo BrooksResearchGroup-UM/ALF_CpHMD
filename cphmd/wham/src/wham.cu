@@ -300,7 +300,8 @@ void validate_and_setup_gpu()
 }
 
 struct_data *readdata(int arg1, double arg2, int arg3, int arg4, int use_gshift,
-                      int *nsubs_in, int nsites_in, const char *g_imp_path)
+                      int *nsubs_in, int nsites_in, const char *g_imp_path,
+                      int ntriangle_in)
 {
   const char *Edir = "Energy", *Ddir = "Lambda";
   FILE *fp, *fpE, *fpQ;
@@ -312,6 +313,7 @@ struct_data *readdata(int arg1, double arg2, int arg3, int arg4, int use_gshift,
   data->gimp_cache = (struct_gimp_cache *)malloc(sizeof(struct_gimp_cache));
   gimp_cache_init(data->gimp_cache);
 
+  data->ntriangle = ntriangle_in;
   data->Nsim = arg1;
 
   // Store G_imp path (use provided path or default to "G_imp")
@@ -534,11 +536,11 @@ struct_data *readdata(int arg1, double arg2, int arg3, int arg4, int use_gshift,
     {
       if (s1 == s2)
       {
-        jN += data->Nsubs[s1] + 5 * data->Nsubs[s1] * (data->Nsubs[s1] - 1) / 2;
+        jN += data->Nsubs[s1] + data->ntriangle * data->Nsubs[s1] * (data->Nsubs[s1] - 1) / 2;
       }
       else if (data->ms == 1)
       {
-        jN += 5 * data->Nsubs[s1] * data->Nsubs[s2];
+        jN += data->ntriangle * data->Nsubs[s1] * data->Nsubs[s2];
       }
       else if (data->ms == 2)
       {
@@ -749,6 +751,36 @@ void build_param_descs(struct_data *data)
             }
           }
         }
+        // omega2 (t terms, ordered pairs j1 != j2) — only when ntriangle >= 7
+        if (data->ntriangle >= 7)
+        {
+          for (int j1 = data->block0[s1]; j1 < data->block0[s1 + 1]; j1++)
+          {
+            for (int j2 = data->block0[s1]; j2 < data->block0[s1 + 1]; j2++)
+            {
+              if (j1 != j2)
+              {
+                param_desc *d = &data->params[idx++];
+                d->type = 4; d->j1 = j1; d->j2 = j2;
+              }
+            }
+          }
+        }
+        // omega3 (u terms, ordered pairs j1 != j2) — only when ntriangle >= 9
+        if (data->ntriangle >= 9)
+        {
+          for (int j1 = data->block0[s1]; j1 < data->block0[s1 + 1]; j1++)
+          {
+            for (int j2 = data->block0[s1]; j2 < data->block0[s1 + 1]; j2++)
+            {
+              if (j1 != j2)
+              {
+                param_desc *d = &data->params[idx++];
+                d->type = 5; d->j1 = j1; d->j2 = j2;
+              }
+            }
+          }
+        }
       }
       else if (data->ms)
       {
@@ -783,6 +815,34 @@ void build_param_descs(struct_data *data)
               d->type = 3; d->j1 = j1; d->j2 = j2;
               d = &data->params[idx++];
               d->type = 3; d->j1 = j2; d->j2 = j1;
+            }
+          }
+          // Cross-site omega2 (t, both directions) — only when ntriangle >= 7
+          if (data->ntriangle >= 7)
+          {
+            for (int j1 = data->block0[s1]; j1 < data->block0[s1 + 1]; j1++)
+            {
+              for (int j2 = data->block0[s2]; j2 < data->block0[s2 + 1]; j2++)
+              {
+                param_desc *d = &data->params[idx++];
+                d->type = 4; d->j1 = j1; d->j2 = j2;
+                d = &data->params[idx++];
+                d->type = 4; d->j1 = j2; d->j2 = j1;
+              }
+            }
+          }
+          // Cross-site omega3 (u, both directions) — only when ntriangle >= 9
+          if (data->ntriangle >= 9)
+          {
+            for (int j1 = data->block0[s1]; j1 < data->block0[s1 + 1]; j1++)
+            {
+              for (int j2 = data->block0[s2]; j2 < data->block0[s2 + 1]; j2++)
+              {
+                param_desc *d = &data->params[idx++];
+                d->type = 5; d->j1 = j1; d->j2 = j2;
+                d = &data->params[idx++];
+                d->type = 5; d->j1 = j2; d->j2 = j1;
+              }
             }
           }
         }
@@ -1099,6 +1159,32 @@ __global__ void reactioncoord_chi(struct_data data, int i1, int i2)
   }
 }
 
+// omega2 (t-term): opposite-endpoint sigmoid — activates near λ→1 (mirror of s-term)
+// Formula: qb * qa / ((1+alpha) - qa), equivalent to -qb * (1 - 1/(qa/(-1-alpha) + 1))
+__global__ void reactioncoord_omega2(struct_data data, int i1, int i2)
+{
+  int t = blockIdx.x * blockDim.x + threadIdx.x;
+  if (t < data.ND)
+  {
+    double q1 = data.D_d[t * data.Ndim + 1 + i1];
+    double q2 = data.D_d[t * data.Ndim + 1 + i2];
+    data.D_d[t * data.Ndim + 1 + data.NL + data.Nsim + 1] = -q2 * (1.0 - 1.0 / (q1 / (-(1.0 + data.chi_offset_t)) + 1.0));
+  }
+}
+
+// omega3 (u-term): s-term sigmoid with qb² (quadratic coupling in second lambda)
+// Formula: qb² * (1 - 1/(qa/alpha + 1)) = qb² * qa / (qa + alpha)
+__global__ void reactioncoord_omega3(struct_data data, int i1, int i2)
+{
+  int t = blockIdx.x * blockDim.x + threadIdx.x;
+  if (t < data.ND)
+  {
+    double q1 = data.D_d[t * data.Ndim + 1 + i1];
+    double q2 = data.D_d[t * data.Ndim + 1 + i2];
+    data.D_d[t * data.Ndim + 1 + data.NL + data.Nsim + 1] = q2 * q2 * (1.0 - 1.0 / (q1 / data.chi_offset_u + 1.0));
+  }
+}
+
 void reactioncoord_all(struct_data *data, int i)
 {
   param_desc *d = &data->params[i];
@@ -1117,6 +1203,12 @@ void reactioncoord_all(struct_data *data, int i)
     break;
   case 3: // omega
     reactioncoord_omega<<<grid, BLOCK>>>(data[0], d->j1, d->j2);
+    break;
+  case 4: // omega2 (t-term)
+    reactioncoord_omega2<<<grid, BLOCK>>>(data[0], d->j1, d->j2);
+    break;
+  case 5: // omega3 (u-term)
+    reactioncoord_omega3<<<grid, BLOCK>>>(data[0], d->j1, d->j2);
     break;
   }
 }
@@ -1826,6 +1918,7 @@ void getfofq(struct_data *data, double beta)
 static struct_data *readdata_from_memory(
     int nf, double temp, int ms, int msprof, int use_gshift,
     int *nsubs_in, int nsites_in, const char *g_imp_path,
+    int ntriangle_in,
     double *D_flat, int *sim_indices, int *frame_counts,
     int total_frames, double *gshift_flat)
 {
@@ -1835,6 +1928,7 @@ static struct_data *readdata_from_memory(
   data->gimp_cache = (struct_gimp_cache *)malloc(sizeof(struct_gimp_cache));
   gimp_cache_init(data->gimp_cache);
 
+  data->ntriangle = ntriangle_in;
   data->Nsim = nf;
 
   // G_imp path
@@ -1990,9 +2084,9 @@ static struct_data *readdata_from_memory(
     for (s2 = s1; s2 < data->Nsites; s2++)
     {
       if (s1 == s2)
-        jN += data->Nsubs[s1] + 5 * data->Nsubs[s1] * (data->Nsubs[s1] - 1) / 2;
+        jN += data->Nsubs[s1] + data->ntriangle * data->Nsubs[s1] * (data->Nsubs[s1] - 1) / 2;
       else if (data->ms == 1)
-        jN += 5 * data->Nsubs[s1] * data->Nsubs[s2];
+        jN += data->ntriangle * data->Nsubs[s1] * data->Nsubs[s2];
       else if (data->ms == 2)
         jN += data->Nsubs[s1] * data->Nsubs[s2];
     }
@@ -2045,6 +2139,7 @@ extern "C" int wham_from_memory(
     int nf, double temp, int nts0, int nts1, int use_gshift,
     int *nsubs, int nsites, const char *g_imp_path,
     double chi_offset, double omega_scale, double cutlsum,
+    double chi_offset_t, double chi_offset_u, int ntriangle,
     double *D_flat, int *sim_indices, int *frame_counts,
     int total_frames, double *gshift_flat)
 {
@@ -2052,13 +2147,15 @@ extern "C" int wham_from_memory(
 
   struct_data *data = readdata_from_memory(
       nf, temp, nts0, nts1, use_gshift,
-      nsubs, nsites, g_imp_path,
+      nsubs, nsites, g_imp_path, ntriangle,
       D_flat, sim_indices, frame_counts, total_frames, gshift_flat);
   if (data)
   {
     data->chi_offset = chi_offset;
     data->omega_scale = omega_scale;
     data->cutlsum = cutlsum;
+    data->chi_offset_t = chi_offset_t;
+    data->chi_offset_u = chi_offset_u;
   }
   if (!data)
   {
@@ -2089,16 +2186,19 @@ extern "C" int wham_from_memory(
 
 extern "C" int wham(int arg1, double arg2, int arg3, int arg4, int use_gshift,
                    int *nsubs, int nsites, const char *g_imp_path,
-                   double chi_offset, double omega_scale, double cutlsum)
+                   double chi_offset, double omega_scale, double cutlsum,
+                   double chi_offset_t, double chi_offset_u, int ntriangle)
 {
   // Initialize and validate GPU
   validate_and_setup_gpu();
 
-  struct_data *data = readdata(arg1, arg2, arg3, arg4, use_gshift, nsubs, nsites, g_imp_path);
+  struct_data *data = readdata(arg1, arg2, arg3, arg4, use_gshift, nsubs, nsites, g_imp_path, ntriangle);
   if (data) {
     data->chi_offset = chi_offset;
     data->omega_scale = omega_scale;
     data->cutlsum = cutlsum;
+    data->chi_offset_t = chi_offset_t;
+    data->chi_offset_u = chi_offset_u;
   }
   if (!data)
   {
@@ -2141,7 +2241,9 @@ extern "C" int wham(int arg1, double arg2, int arg3, int arg4, int use_gshift,
 // ============================================================================
 
 // Forward declarations for LMALF
-struct_lmalf *lmalf_setup(int nf, double temp, int ms, int msprof);
+struct_lmalf *lmalf_setup(int nf, double temp, int ms, int msprof,
+                          int *nsubs_in, int nsites_in, const char *g_imp_path,
+                          int ntriangle_in);
 void lmalf_run(struct_lmalf *lm);
 void lmalf_finish(struct_lmalf *lm);
 
@@ -2180,6 +2282,18 @@ __device__ inline double rc_sig(double qa, double qb, double chi_offset)
   return qb * (1.0 - 1.0 / (qa / chi_offset + 1.0));
 }
 
+// rc_omega2: t-term opposite-endpoint sigmoid — activates near λ→1 (mirror of rc_sig)
+__device__ inline double rc_omega2(double qa, double qb, double chi_offset_t)
+{
+  return -qb * (1.0 - 1.0 / (qa / (-(1.0 + chi_offset_t)) + 1.0));
+}
+
+// rc_omega3: u-term — s-term sigmoid with qb² (quadratic coupling in second lambda)
+__device__ inline double rc_omega3(double qa, double qb, double chi_offset_u)
+{
+  return qb * qb * (1.0 - 1.0 / (qa / chi_offset_u + 1.0));
+}
+
 // LMALF energy kernel: compute bias energy from parameters and lambda
 __global__ void lmalf_energykernel(struct_lmalf lm, double *x, double *lambda, double *energy)
 {
@@ -2213,6 +2327,16 @@ __global__ void lmalf_energykernel(struct_lmalf lm, double *x, double *lambda, d
             E += x[k++] * rc_exp(q2, q1, lm.omega_scale);
             E += x[k++] * rc_sig(q1, q2, lm.chi_offset);
             E += x[k++] * rc_sig(q2, q1, lm.chi_offset);
+            if (lm.ntriangle >= 7)
+            {
+              E += x[k++] * rc_omega2(q1, q2, lm.chi_offset_t);
+              E += x[k++] * rc_omega2(q2, q1, lm.chi_offset_t);
+            }
+            if (lm.ntriangle >= 9)
+            {
+              E += x[k++] * rc_omega3(q1, q2, lm.chi_offset_u);
+              E += x[k++] * rc_omega3(q2, q1, lm.chi_offset_u);
+            }
           }
         }
       }
@@ -2232,6 +2356,16 @@ __global__ void lmalf_energykernel(struct_lmalf lm, double *x, double *lambda, d
               E += x[k++] * rc_exp(q2, q1, lm.omega_scale);
               E += x[k++] * rc_sig(q1, q2, lm.chi_offset);
               E += x[k++] * rc_sig(q2, q1, lm.chi_offset);
+              if (lm.ntriangle >= 7)
+              {
+                E += x[k++] * rc_omega2(q1, q2, lm.chi_offset_t);
+                E += x[k++] * rc_omega2(q2, q1, lm.chi_offset_t);
+              }
+              if (lm.ntriangle >= 9)
+              {
+                E += x[k++] * rc_omega3(q1, q2, lm.chi_offset_u);
+                E += x[k++] * rc_omega3(q2, q1, lm.chi_offset_u);
+              }
             }
           }
         }
@@ -2283,6 +2417,16 @@ __global__ void lmalf_weightedenergykernel(struct_lmalf lm, double sign, double 
             E = w * rc_exp(q2, q1, lm.omega_scale);       lmalf_reduce(E, Eloc, &dEdx[k]); k++;
             E = w * rc_sig(q1, q2, lm.chi_offset);        lmalf_reduce(E, Eloc, &dEdx[k]); k++;
             E = w * rc_sig(q2, q1, lm.chi_offset);        lmalf_reduce(E, Eloc, &dEdx[k]); k++;
+            if (lm.ntriangle >= 7)
+            {
+              E = w * rc_omega2(q1, q2, lm.chi_offset_t); lmalf_reduce(E, Eloc, &dEdx[k]); k++;
+              E = w * rc_omega2(q2, q1, lm.chi_offset_t); lmalf_reduce(E, Eloc, &dEdx[k]); k++;
+            }
+            if (lm.ntriangle >= 9)
+            {
+              E = w * rc_omega3(q1, q2, lm.chi_offset_u); lmalf_reduce(E, Eloc, &dEdx[k]); k++;
+              E = w * rc_omega3(q2, q1, lm.chi_offset_u); lmalf_reduce(E, Eloc, &dEdx[k]); k++;
+            }
           }
         }
       }
@@ -2301,6 +2445,16 @@ __global__ void lmalf_weightedenergykernel(struct_lmalf lm, double sign, double 
               E = w * rc_exp(q2, q1, lm.omega_scale);     lmalf_reduce(E, Eloc, &dEdx[k]); k++;
               E = w * rc_sig(q1, q2, lm.chi_offset);      lmalf_reduce(E, Eloc, &dEdx[k]); k++;
               E = w * rc_sig(q2, q1, lm.chi_offset);      lmalf_reduce(E, Eloc, &dEdx[k]); k++;
+              if (lm.ntriangle >= 7)
+              {
+                E = w * rc_omega2(q1, q2, lm.chi_offset_t); lmalf_reduce(E, Eloc, &dEdx[k]); k++;
+                E = w * rc_omega2(q2, q1, lm.chi_offset_t); lmalf_reduce(E, Eloc, &dEdx[k]); k++;
+              }
+              if (lm.ntriangle >= 9)
+              {
+                E = w * rc_omega3(q1, q2, lm.chi_offset_u); lmalf_reduce(E, Eloc, &dEdx[k]); k++;
+                E = w * rc_omega3(q2, q1, lm.chi_offset_u); lmalf_reduce(E, Eloc, &dEdx[k]); k++;
+              }
             }
           }
         }
@@ -2534,13 +2688,16 @@ static void lmalf_monte_carlo_Z(struct_lmalf *lm)
 
 // Setup LMALF data structure
 struct_lmalf *lmalf_setup(int nf, double temp, int ms, int msprof,
-                          int *nsubs_in, int nsites_in, const char *g_imp_path)
+                          int *nsubs_in, int nsites_in, const char *g_imp_path,
+                          int ntriangle_in)
 {
   struct_lmalf *lm = (struct_lmalf *)malloc(sizeof(struct_lmalf));
   FILE *fp;
   char line[MAXLENGTH];
   int i, j, k, si, sj;
   double kp, k0;
+
+  lm->ntriangle = ntriangle_in;
 
   // Store G_imp path (use provided path or default to "G_imp")
   if (g_imp_path && strlen(g_imp_path) > 0)
@@ -2682,11 +2839,11 @@ struct_lmalf *lmalf_setup(int nf, double temp, int ms, int msprof,
     {
       if (i == j)
       {
-        lm->nbias += lm->nsubs[i] + (5 * lm->nsubs[i] * (lm->nsubs[i] - 1)) / 2;
+        lm->nbias += lm->nsubs[i] + (lm->ntriangle * lm->nsubs[i] * (lm->nsubs[i] - 1)) / 2;
       }
       else if (lm->ms == 1)
       {
-        lm->nbias += 5 * lm->nsubs[i] * lm->nsubs[j];
+        lm->nbias += lm->ntriangle * lm->nsubs[i] * lm->nsubs[j];
       }
       else if (lm->ms == 2)
       {
@@ -2777,6 +2934,16 @@ struct_lmalf *lmalf_setup(int nf, double temp, int ms, int msprof,
             lm->kx_h[k++] = k0 / 4;  // x
             lm->kx_h[k++] = k0 / 1;  // s
             lm->kx_h[k++] = k0 / 1;  // s
+            if (lm->ntriangle >= 7)
+            {
+              lm->kx_h[k++] = k0 / 1;  // t
+              lm->kx_h[k++] = k0 / 1;  // t
+            }
+            if (lm->ntriangle >= 9)
+            {
+              lm->kx_h[k++] = k0 / 1;  // u
+              lm->kx_h[k++] = k0 / 1;  // u
+            }
           }
         }
       }
@@ -2801,6 +2968,16 @@ struct_lmalf *lmalf_setup(int nf, double temp, int ms, int msprof,
               if (xr_s)
                 lm->xr_h[k] = xr_s[(lm->block0[sj] + j) * lm->nblocks + lm->block0[si] + i];
               lm->kx_h[k++] = k0 / 0.25; // s
+              if (lm->ntriangle >= 7)
+              {
+                lm->kx_h[k++] = k0 / 0.25; // t
+                lm->kx_h[k++] = k0 / 0.25; // t
+              }
+              if (lm->ntriangle >= 9)
+              {
+                lm->kx_h[k++] = k0 / 0.25; // u
+                lm->kx_h[k++] = k0 / 0.25; // u
+              }
             }
           }
         }
@@ -3353,21 +3530,25 @@ void lmalf_finish(struct_lmalf *lm)
  */
 extern "C" int lmalf(int nf, double temp, int ms, int msprof, int max_iter, double tolerance,
                      int *nsubs, int nsites, const char *g_imp_path,
-                     double fnex, double chi_offset, double omega_scale)
+                     double fnex, double chi_offset, double omega_scale,
+                     double chi_offset_t, double chi_offset_u, int ntriangle)
 {
   fprintf(stdout, "LMALF: Likelihood Maximization ALF\n");
   fprintf(stdout, "  nf=%d, temp=%.2f, ms=%d, msprof=%d\n", nf, temp, ms, msprof);
   fprintf(stdout, "  max_iter=%d, tolerance=%g\n", max_iter, tolerance);
   fprintf(stdout, "  fnex=%.4f, chi_offset=%.6f, omega_scale=%.6f\n", fnex, chi_offset, omega_scale);
+  fprintf(stdout, "  chi_offset_t=%.6f, chi_offset_u=%.6f, ntriangle=%d\n", chi_offset_t, chi_offset_u, ntriangle);
 
   // Initialize and validate GPU
   validate_and_setup_gpu();
 
-  struct_lmalf *lm = lmalf_setup(nf, temp, ms, msprof, nsubs, nsites, g_imp_path);
+  struct_lmalf *lm = lmalf_setup(nf, temp, ms, msprof, nsubs, nsites, g_imp_path, ntriangle);
   if (lm) {
     lm->fnex = fnex;
     lm->chi_offset = chi_offset;
     lm->omega_scale = omega_scale;
+    lm->chi_offset_t = chi_offset_t;
+    lm->chi_offset_u = chi_offset_u;
   }
   if (!lm)
   {
@@ -3423,7 +3604,7 @@ extern "C" int lmalf(int nf, double temp, int ms, int msprof, int max_iter, doub
 static struct_lmalf *lmalf_setup_from_memory(
     int nf, double temp, int ms, int msprof,
     int *nsubs_in, int nsites_in, const char *g_imp_path,
-    double fnex,
+    double fnex, int ntriangle_in,
     double *lambda_flat, double *ensweight_flat, int n_frames,
     double *x_prev_flat, double *s_prev_flat, int nblocks_sq)
 {
@@ -3431,6 +3612,8 @@ static struct_lmalf *lmalf_setup_from_memory(
   if (!lm) return NULL;
   int i, j, k, si, sj;
   double kp, k0;
+
+  lm->ntriangle = ntriangle_in;
 
   // G_imp path
   if (g_imp_path && strlen(g_imp_path) > 0)
@@ -3505,16 +3688,16 @@ static struct_lmalf *lmalf_setup_from_memory(
   CUDA_CHECK(cudaMemcpy(lm->ensweight_d, lm->ensweight_h, lm->B * sizeof(double), cudaMemcpyHostToDevice));
   CUDA_CHECK(cudaMemcpy(lm->mc_ensweight_d, lm->mc_ensweight_h, lm->B * sizeof(double), cudaMemcpyHostToDevice));
 
-  // --- count bias parameters (identical to lmalf_setup lines 2386-2404) ---
+  // --- count bias parameters (uses ntriangle instead of hardcoded 5) ---
   lm->nbias = 0;
   for (i = 0; i < lm->nsites; i++)
   {
     for (j = i; j < lm->nsites; j++)
     {
       if (i == j)
-        lm->nbias += lm->nsubs[i] + (5 * lm->nsubs[i] * (lm->nsubs[i] - 1)) / 2;
+        lm->nbias += lm->nsubs[i] + (lm->ntriangle * lm->nsubs[i] * (lm->nsubs[i] - 1)) / 2;
       else if (lm->ms == 1)
-        lm->nbias += 5 * lm->nsubs[i] * lm->nsubs[j];
+        lm->nbias += lm->ntriangle * lm->nsubs[i] * lm->nsubs[j];
       else if (lm->ms == 2)
         lm->nbias += lm->nsubs[i] * lm->nsubs[j];
     }
@@ -3561,7 +3744,7 @@ static struct_lmalf *lmalf_setup_from_memory(
     memcpy(xr_s, s_prev_flat, copy_size * sizeof(double));
   }
 
-  // Set regularization constants (identical enumeration to lmalf_setup)
+  // Set regularization constants (uses ntriangle for t/u terms)
   k = 0;
   for (si = 0; si < lm->nsites; si++)
   {
@@ -3579,6 +3762,16 @@ static struct_lmalf *lmalf_setup_from_memory(
             lm->kx_h[k++] = k0 / 4;  // x
             lm->kx_h[k++] = k0 / 1;  // s
             lm->kx_h[k++] = k0 / 1;  // s
+            if (lm->ntriangle >= 7)
+            {
+              lm->kx_h[k++] = k0 / 1;  // t
+              lm->kx_h[k++] = k0 / 1;  // t
+            }
+            if (lm->ntriangle >= 9)
+            {
+              lm->kx_h[k++] = k0 / 1;  // u
+              lm->kx_h[k++] = k0 / 1;  // u
+            }
           }
         }
       }
@@ -3603,6 +3796,16 @@ static struct_lmalf *lmalf_setup_from_memory(
               if (xr_s)
                 lm->xr_h[k] = xr_s[(lm->block0[sj] + j) * lm->nblocks + lm->block0[si] + i];
               lm->kx_h[k++] = k0 / 0.25; // s
+              if (lm->ntriangle >= 7)
+              {
+                lm->kx_h[k++] = k0 / 0.25; // t
+                lm->kx_h[k++] = k0 / 0.25; // t
+              }
+              if (lm->ntriangle >= 9)
+              {
+                lm->kx_h[k++] = k0 / 0.25; // u
+                lm->kx_h[k++] = k0 / 0.25; // u
+              }
             }
           }
         }
@@ -3674,6 +3877,7 @@ extern "C" int lmalf_from_memory(
     int nf, double temp, int ms, int msprof, int max_iter, double tolerance,
     int *nsubs, int nsites, const char *g_imp_path,
     double fnex, double chi_offset, double omega_scale,
+    double chi_offset_t, double chi_offset_u, int ntriangle,
     double *lambda_flat, double *ensweight_flat, int n_frames,
     double *x_prev_flat, double *s_prev_flat, int nblocks_sq)
 {
@@ -3681,19 +3885,22 @@ extern "C" int lmalf_from_memory(
   fprintf(stdout, "  nf=%d, temp=%.2f, ms=%d, msprof=%d\n", nf, temp, ms, msprof);
   fprintf(stdout, "  max_iter=%d, tolerance=%g\n", max_iter, tolerance);
   fprintf(stdout, "  fnex=%.4f, chi_offset=%.6f, omega_scale=%.6f\n", fnex, chi_offset, omega_scale);
+  fprintf(stdout, "  chi_offset_t=%.6f, chi_offset_u=%.6f, ntriangle=%d\n", chi_offset_t, chi_offset_u, ntriangle);
   fprintf(stdout, "  n_frames=%d, nblocks_sq=%d\n", n_frames, nblocks_sq);
 
   validate_and_setup_gpu();
 
   struct_lmalf *lm = lmalf_setup_from_memory(
       nf, temp, ms, msprof,
-      nsubs, nsites, g_imp_path, fnex,
+      nsubs, nsites, g_imp_path, fnex, ntriangle,
       lambda_flat, ensweight_flat, n_frames,
       x_prev_flat, s_prev_flat, nblocks_sq);
   if (lm)
   {
     lm->chi_offset = chi_offset;
     lm->omega_scale = omega_scale;
+    lm->chi_offset_t = chi_offset_t;
+    lm->chi_offset_u = chi_offset_u;
     // fnex already set in lmalf_setup_from_memory
   }
   if (!lm)

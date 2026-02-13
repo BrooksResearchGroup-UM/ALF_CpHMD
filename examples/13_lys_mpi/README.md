@@ -24,7 +24,7 @@ This example demonstrates the recommended production setup: `mpirun` with
 sbatch submit.sh
 
 # Or run locally with 2 GPUs
-mpirun -np 2 python run.py alf
+mpirun -np 2 cphmd run alf -c cphmd_config.yaml --pH
 
 # Setup steps (if prep/ is missing)
 python run.py solvate
@@ -57,5 +57,5 @@ For multi-site proteins with different macro-pKas (e.g., ASP + LYS),
 | GPUs | 1 | 5 (configurable) |
 | Replicas | 1 | 5 (auto from MPI size) |
 | pH coupling | off (`no_pka_bias`) | on (`pH: true`, auto pKa=10.5) |
-| Launch | `python run.py alf` | `mpirun -np 5 python run.py alf` |
+| Launch | `python run.py alf` | `mpirun -np 5 cphmd run alf -c cphmd_config.yaml --pH` |
 | SLURM | `--gres=gpu:1` | `--ntasks=5 --gpus-per-task=1` |

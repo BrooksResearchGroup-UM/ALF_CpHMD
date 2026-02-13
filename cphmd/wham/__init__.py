@@ -92,6 +92,9 @@ def _get_wham_lib() -> ctypes.CDLL:
         ctypes.c_double,                # chi_offset
         ctypes.c_double,                # omega_scale
         ctypes.c_double,                # cutlsum
+        ctypes.c_double,                # chi_offset_t
+        ctypes.c_double,                # chi_offset_u
+        ctypes.c_int,                   # ntriangle
     ]
     lib.wham.restype = ctypes.c_int
 
@@ -109,6 +112,9 @@ def _get_wham_lib() -> ctypes.CDLL:
         ctypes.c_double,                # fnex
         ctypes.c_double,                # chi_offset
         ctypes.c_double,                # omega_scale
+        ctypes.c_double,                # chi_offset_t
+        ctypes.c_double,                # chi_offset_u
+        ctypes.c_int,                   # ntriangle
     ]
     lib.lmalf.restype = ctypes.c_int
 
@@ -125,6 +131,9 @@ def _get_wham_lib() -> ctypes.CDLL:
         ctypes.c_double,                      # chi_offset
         ctypes.c_double,                      # omega_scale
         ctypes.c_double,                      # cutlsum
+        ctypes.c_double,                      # chi_offset_t
+        ctypes.c_double,                      # chi_offset_u
+        ctypes.c_int,                         # ntriangle
         ctypes.POINTER(ctypes.c_double),      # D_flat
         ctypes.POINTER(ctypes.c_int),         # sim_indices
         ctypes.POINTER(ctypes.c_int),         # frame_counts
@@ -147,6 +156,9 @@ def _get_wham_lib() -> ctypes.CDLL:
         ctypes.c_double,                      # fnex
         ctypes.c_double,                      # chi_offset
         ctypes.c_double,                      # omega_scale
+        ctypes.c_double,                      # chi_offset_t
+        ctypes.c_double,                      # chi_offset_u
+        ctypes.c_int,                         # ntriangle
         ctypes.POINTER(ctypes.c_double),      # lambda_flat
         ctypes.POINTER(ctypes.c_double),      # ensweight_flat
         ctypes.c_int,                         # n_frames
@@ -254,6 +266,9 @@ def run_wham(
     cutlsum: float = 0.8,
     chi_offset: float | None = None,
     omega_decay: float | None = None,
+    chi_offset_t: float = 0.012,
+    chi_offset_u: float = 0.012,
+    ntriangle: int = 5,
 ) -> None:
     """Run WHAM analysis using bundled GPU-accelerated library.
 
@@ -334,6 +349,7 @@ def run_wham(
                 nf, temp, nts0, nts1, int(use_gshift),
                 nsubs_ptr, nsites, g_imp_path_bytes,
                 constants.chi_offset, constants.omega_scale, cutlsum,
+                chi_offset_t, chi_offset_u, ntriangle,
             )
         if result != 0:
             raise RuntimeError(f"WHAM returned error code: {result}")
@@ -546,6 +562,9 @@ def run_lmalf(
     fnex: float = 5.5,
     chi_offset: float | None = None,
     omega_decay: float | None = None,
+    chi_offset_t: float = 0.012,
+    chi_offset_u: float = 0.012,
+    ntriangle: int = 5,
 ) -> None:
     """Run LMALF (Likelihood Maximization ALF) analysis.
 
@@ -622,6 +641,7 @@ def run_lmalf(
                 nf, temp, ms, msprof, max_iter, tolerance,
                 nsubs_ptr, nsites, g_imp_path_bytes,
                 constants.fnex, constants.chi_offset, constants.omega_scale,
+                chi_offset_t, chi_offset_u, ntriangle,
             )
         if result != 0:
             raise RuntimeError(f"LMALF returned error code: {result}")
@@ -731,6 +751,9 @@ def run_wham_from_memory(
     cutlsum: float = 0.8,
     chi_offset: float | None = None,
     omega_decay: float | None = None,
+    chi_offset_t: float = 0.012,
+    chi_offset_u: float = 0.012,
+    ntriangle: int = 5,
 ) -> None:
     """Run WHAM analysis from in-memory numpy arrays (no file I/O for input).
 
@@ -814,6 +837,7 @@ def run_wham_from_memory(
                 nf, temp, nts0, nts1, int(use_gshift),
                 nsubs_ptr, nsites, g_imp_path_bytes,
                 constants.chi_offset, constants.omega_scale, cutlsum,
+                chi_offset_t, chi_offset_u, ntriangle,
                 D_ptr, si_ptr, fc_ptr,
                 total_frames, gs_ptr,
             )
@@ -841,6 +865,9 @@ def run_lmalf_from_memory(
     fnex: float = 5.5,
     chi_offset: float | None = None,
     omega_decay: float | None = None,
+    chi_offset_t: float = 0.012,
+    chi_offset_u: float = 0.012,
+    ntriangle: int = 5,
 ) -> None:
     """Run LMALF analysis from in-memory numpy arrays (no file I/O for input).
 
@@ -931,6 +958,7 @@ def run_lmalf_from_memory(
                 nf, temp, ms, msprof, max_iter, tolerance,
                 nsubs_ptr, nsites, g_imp_path_bytes,
                 constants.fnex, constants.chi_offset, constants.omega_scale,
+                chi_offset_t, chi_offset_u, ntriangle,
                 lam_ptr, ens_ptr, n_frames,
                 x_ptr, s_ptr, nblocks_sq,
             )
@@ -938,3 +966,171 @@ def run_lmalf_from_memory(
             raise RuntimeError(f"LMALF (in-memory) returned error code: {result}")
 
     logger.info("LMALF (in-memory) analysis completed successfully")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# nonlinear solver (separate shared library)
+# ═══════════════════════════════════════════════════════════════════════════
+
+_NL_LIB_PATH = Path(__file__).parent / "libnonlinear.so"
+_nl_lib_cache: ctypes.CDLL | None = None
+
+
+def _get_nl_lib() -> ctypes.CDLL:
+    """Load and cache the nonlinear shared library."""
+    global _nl_lib_cache
+    if _nl_lib_cache is not None:
+        return _nl_lib_cache
+
+    if not _NL_LIB_PATH.exists():
+        raise FileNotFoundError(
+            f"nonlinear library not found at {_NL_LIB_PATH}. "
+            "Please compile: cd cphmd/wham/src && make"
+        )
+
+    try:
+        lib = ctypes.CDLL(str(_NL_LIB_PATH))
+    except OSError as e:
+        raise RuntimeError(
+            f"Failed to load nonlinear library: {e}. "
+            "Ensure CUDA is available and library is compiled correctly."
+        ) from e
+
+    lib.nonlinear_from_memory.argtypes = [
+        ctypes.c_int,                         # nf
+        ctypes.c_double,                      # temp
+        ctypes.c_int,                         # ms
+        ctypes.c_int,                         # msprof
+        ctypes.c_int,                         # max_iter
+        ctypes.c_double,                      # tolerance
+        ctypes.POINTER(ctypes.c_int),         # nsubs
+        ctypes.c_int,                         # nsites
+        ctypes.c_double,                      # fnex
+        ctypes.c_double,                      # chi_offset
+        ctypes.c_double,                      # omega_scale
+        ctypes.c_double,                      # chi_offset_t
+        ctypes.c_double,                      # chi_offset_u
+        ctypes.c_int,                         # ntriangle
+        ctypes.POINTER(ctypes.c_double),      # lambda_flat
+        ctypes.POINTER(ctypes.c_double),      # ensweight_flat
+        ctypes.c_int,                         # n_frames
+        ctypes.POINTER(ctypes.c_double),      # x_prev_flat
+        ctypes.POINTER(ctypes.c_double),      # s_prev_flat
+        ctypes.c_int,                         # nblocks_sq
+    ]
+    lib.nonlinear_from_memory.restype = ctypes.c_int
+
+    _nl_lib_cache = lib
+    return lib
+
+
+def run_nonlinear_from_memory(
+    lambda_combined: np.ndarray,
+    ensweight: np.ndarray | None,
+    nf: int,
+    temp: float,
+    ms: int = 0,
+    msprof: int = 0,
+    max_iter: int = 0,
+    tolerance: float = 0.0,
+    nsubs: np.ndarray | list[int] | None = None,
+    x_prev: np.ndarray | None = None,
+    s_prev: np.ndarray | None = None,
+    output_dir: str | Path | None = None,
+    log_file: str | Path | None = None,
+    fnex: float = 5.5,
+    chi_offset: float | None = None,
+    omega_decay: float | None = None,
+    chi_offset_t: float = 0.012,
+    chi_offset_u: float = 0.012,
+    ntriangle: int = 5,
+) -> None:
+    """Run nonlinear L-BFGS analysis from in-memory numpy arrays.
+
+    Same interface as run_lmalf_from_memory but uses the nonlinear CUDA solver.
+    Output file (OUT.dat) is written by CUDA to output_dir.
+
+    Args:
+        lambda_combined: Combined lambda trajectory, shape (n_frames, nblocks).
+        ensweight: Ensemble weights, shape (n_frames,), or None for uniform.
+        nf: Number of simulations.
+        temp: Temperature in Kelvin.
+        ms: Multisite coupling flag.
+        msprof: Multisite profiles flag.
+        max_iter: Maximum L-BFGS iterations (0 = default 250).
+        tolerance: Convergence tolerance (0 = default 1.25e-3).
+        nsubs: Array of subsites per site.
+        x_prev: Previous x parameters, shape (nblocks, nblocks), or None.
+        s_prev: Previous s parameters, shape (nblocks, nblocks), or None.
+        output_dir: Directory for OUT.dat output. Defaults to cwd.
+        log_file: Optional log file for CUDA stdout/stderr.
+        fnex: FNEX parameter for bias constants.
+        chi_offset: Override s-term sigmoid offset (None = derive from fnex).
+        omega_decay: Override x-term exponential decay (None = derive from fnex).
+        chi_offset_t: t-term sigmoid offset.
+        chi_offset_u: u-term Hill sigmoid offset.
+        ntriangle: Pair params per unique pair (5, 7, or 9).
+
+    Raises:
+        RuntimeError: If CUDA nonlinear_from_memory returns non-zero.
+    """
+    lambda_flat = np.ascontiguousarray(lambda_combined, dtype=np.float64)
+    n_frames = lambda_flat.shape[0]
+
+    if ensweight is not None:
+        ens_flat = np.ascontiguousarray(ensweight.ravel(), dtype=np.float64)
+        ens_ptr = ens_flat.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+    else:
+        ens_flat = None  # noqa: F841
+        ens_ptr = ctypes.POINTER(ctypes.c_double)()
+
+    if x_prev is not None:
+        x_flat = np.ascontiguousarray(x_prev.ravel(), dtype=np.float64)
+        x_ptr = x_flat.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+        nblocks_sq = x_flat.size
+    else:
+        x_flat = None  # noqa: F841
+        x_ptr = ctypes.POINTER(ctypes.c_double)()
+        nblocks_sq = 0
+
+    if s_prev is not None:
+        s_flat = np.ascontiguousarray(s_prev.ravel(), dtype=np.float64)
+        s_ptr = s_flat.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+    else:
+        s_flat = None  # noqa: F841
+        s_ptr = ctypes.POINTER(ctypes.c_double)()
+
+    lib = _get_nl_lib()
+
+    nsubs_arr, nsubs_ptr, nsites = _prepare_nsubs(nsubs)
+    log_path = Path(log_file).resolve() if log_file is not None else None
+
+    constants = derive_bias_constants(fnex, chi_offset=chi_offset, omega_decay=omega_decay)
+
+    if output_dir is not None:
+        out_path = Path(output_dir)
+    else:
+        out_path = Path.cwd()
+    out_path.mkdir(parents=True, exist_ok=True)
+
+    lam_ptr = lambda_flat.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+
+    logger.info(
+        f"Running nonlinear (in-memory) with nf={nf}, temp={temp}, "
+        f"n_frames={n_frames}, ms={ms}, msprof={msprof}, fnex={fnex}"
+    )
+
+    with _chdir_context(out_path):
+        with _redirect_c_output(log_path):
+            result = lib.nonlinear_from_memory(
+                nf, temp, ms, msprof, max_iter, tolerance,
+                nsubs_ptr, nsites,
+                constants.fnex, constants.chi_offset, constants.omega_scale,
+                chi_offset_t, chi_offset_u, ntriangle,
+                lam_ptr, ens_ptr, n_frames,
+                x_ptr, s_ptr, nblocks_sq,
+            )
+        if result != 0:
+            raise RuntimeError(f"nonlinear returned error code: {result}")
+
+    logger.info("nonlinear analysis completed successfully")

@@ -14,7 +14,7 @@ import numpy as np
 from cphmd.core.free_energy import get_free_energy5
 
 # Type aliases
-AnalysisMethod = Literal["wham", "lmalf", "hybrid"]
+AnalysisMethod = Literal["wham", "lmalf", "hybrid", "nonlinear"]
 PhaseType = Literal[1, 2, 3]
 
 
@@ -115,9 +115,13 @@ class BiasAnalyzer:
         else:
             cutb, cutc = 2.5, 10.0
         cutx, cuts = 0.0, 0.0
+        cutt, cutu = 0.0, 0.0
         print(f"  Phase 1 cutoffs: cutb={cutb:.1f} cutc={cutc:.1f} (fixed, run {run_idx})")
 
-        cut_params = {"cutb": cutb, "cutc": cutc, "cutx": cutx, "cuts": cuts}
+        cut_params = {
+            "cutb": cutb, "cutc": cutc, "cutx": cutx, "cuts": cuts,
+            "cutt": cutt, "cutu": cutu,
+        }
         if self.config.no_b_bias or cutb == 0:
             cut_params["calc_phi"] = False
         if self.config.no_c_bias or cutc == 0:
@@ -126,6 +130,10 @@ class BiasAnalyzer:
             cut_params["calc_chi"] = False
         if self.config.no_s_bias or cuts == 0:
             cut_params["calc_omega"] = False
+        if self.config.no_t_bias or cutt == 0:
+            cut_params["calc_omega2"] = False
+        if self.config.no_u_bias or cutu == 0:
+            cut_params["calc_omega3"] = False
         return cut_params
 
     def _phase2_cutoffs(self, run_idx: int, coupling_scale: float,
@@ -146,7 +154,13 @@ class BiasAnalyzer:
         cut_params = {
             "cutb": cutb, "cutc": cutc,
             "cutx": cutc, "cuts": cutc,
+            "cutt": cutc if not self.config.no_t_bias else 0.0,
+            "cutu": cutc if not self.config.no_u_bias else 0.0,
         }
+        if self.config.no_t_bias:
+            cut_params["calc_omega2"] = False
+        if self.config.no_u_bias:
+            cut_params["calc_omega3"] = False
         if runs_in_p2 < warmup_runs:
             print(f"  Phase 2 warmup ({runs_in_p2}/{warmup_runs}): "
                   f"cutb={cutb:.3f} cutc={cutc:.3f}")
@@ -170,17 +184,26 @@ class BiasAnalyzer:
                             "cutc": 0.5 * coupling_scale,
                             "cutx": 0.5 * coupling_scale,
                             "cuts": 0.5 * coupling_scale,
+                            "cutt": 0.5 * coupling_scale if not self.config.no_t_bias else 0.0,
+                            "cutu": 0.5 * coupling_scale if not self.config.no_u_bias else 0.0,
                         }
                     col += n
             except Exception:
                 pass
 
-        return {
+        cut_params = {
             "cutb": 0.02,
             "cutc": 0.2 * coupling_scale,
             "cutx": 0.1 * coupling_scale,
             "cuts": 0.1 * coupling_scale,
+            "cutt": 0.1 * coupling_scale if not self.config.no_t_bias else 0.0,
+            "cutu": 0.1 * coupling_scale if not self.config.no_u_bias else 0.0,
         }
+        if self.config.no_t_bias:
+            cut_params["calc_omega2"] = False
+        if self.config.no_u_bias:
+            cut_params["calc_omega3"] = False
+        return cut_params
 
     # ------------------------------------------------------------------
     # WHAM/LMALF execution
@@ -217,6 +240,8 @@ class BiasAnalyzer:
                             self._run_hybrid(nf, ms, msprof, cut_params, alf_info, phase)
                         elif method == "lmalf":
                             self._run_lmalf(nf, ms, msprof, cut_params, alf_info)
+                        elif method == "nonlinear":
+                            self._run_nonlinear(nf, ms, msprof, cut_params, alf_info)
                         else:
                             self._run_wham(nf, ms, msprof, cut_params, alf_info)
 
@@ -249,6 +274,7 @@ class BiasAnalyzer:
         """Run WHAM analysis using bundled GPU library."""
         nsubs = alf_info["nsubs"]
         nblocks = alf_info["nblocks"]
+        ntriangle = 5 + (0 if self.config.no_t_bias else 2) + (0 if self.config.no_u_bias else 2)
 
         if self._wham_lambda:
             from cphmd.wham import run_wham_from_memory
@@ -270,6 +296,9 @@ class BiasAnalyzer:
                 cutlsum=self.config.cutlsum,
                 chi_offset=self.config.chi_offset,
                 omega_decay=self.config.omega_decay,
+                chi_offset_t=self.config.chi_offset_t,
+                chi_offset_u=self.config.chi_offset_u,
+                ntriangle=ntriangle,
             )
         else:
             from cphmd.wham import run_wham
@@ -287,6 +316,9 @@ class BiasAnalyzer:
                 cutlsum=self.config.cutlsum,
                 chi_offset=self.config.chi_offset,
                 omega_decay=self.config.omega_decay,
+                chi_offset_t=self.config.chi_offset_t,
+                chi_offset_u=self.config.chi_offset_u,
+                ntriangle=ntriangle,
             )
         get_free_energy5(alf_info, ms=ms, msprof=msprof, **cut_params)
 
@@ -298,6 +330,7 @@ class BiasAnalyzer:
         from cphmd.wham import run_lmalf_from_memory
 
         nsubs = alf_info["nsubs"]
+        ntriangle = 5 + (0 if self.config.no_t_bias else 2) + (0 if self.config.no_u_bias else 2)
 
         if self._wham_lambda:
             lambda_combined = np.vstack(self._wham_lambda)
@@ -341,6 +374,9 @@ class BiasAnalyzer:
             fnex=self.config.fnex,
             chi_offset=self.config.chi_offset,
             omega_decay=self.config.omega_decay,
+            chi_offset_t=self.config.chi_offset_t,
+            chi_offset_u=self.config.chi_offset_u,
+            ntriangle=ntriangle,
         )
         return True
 
@@ -364,11 +400,98 @@ class BiasAnalyzer:
                 self._run_wham(nf, ms, msprof, cut_params, alf_info)
                 return
 
+        ntriangle = 5 + (0 if self.config.no_t_bias else 2) + (0 if self.config.no_u_bias else 2)
         print("[LMALF] Converting OUT.dat to b/c/x/s.dat...")
-        lm_keys = {"cutb", "cutc", "cutx", "cuts", "cutc2", "cutx2", "cuts2"}
+        lm_keys = {"cutb", "cutc", "cutx", "cuts", "cutt", "cutu",
+                   "cutc2", "cutx2", "cuts2"}
         lm_params = {k: v for k, v in cut_params.items() if k in lm_keys}
-        get_free_energy_lm(alf_info, ms=ms, msprof=msprof, **lm_params)
+        get_free_energy_lm(alf_info, ms=ms, msprof=msprof, ntriangle=ntriangle, **lm_params)
         print("[LMALF] Analysis complete")
+
+    def _invoke_nonlinear(self, nf: int, ms: int, msprof: int,
+                          alf_info: dict,
+                          max_iter: int | None = None,
+                          tolerance: float | None = None) -> bool:
+        """Run nonlinear L-BFGS optimization. Returns True if successful."""
+        from cphmd.wham import run_nonlinear_from_memory
+
+        nsubs = alf_info["nsubs"]
+        ntriangle = 5 + (0 if self.config.no_t_bias else 2) + (0 if self.config.no_u_bias else 2)
+
+        if self._wham_lambda:
+            lambda_combined = np.vstack(self._wham_lambda)
+            print(f"[NL] {lambda_combined.shape[0]} frames, "
+                  f"{lambda_combined.shape[1]} blocks (in-memory)")
+        else:
+            from cphmd.utils.lambda_io import find_lambda_files, read_lambda_values
+            lambda_files = find_lambda_files(Path("data"))
+            if not lambda_files:
+                return False
+            print(f"[NL] Found {len(lambda_files)} lambda files (file-based)")
+            lambda_combined = np.vstack(
+                [read_lambda_values(f) for f in lambda_files]
+            )
+
+        x_file, s_file = Path("x_prev.dat"), Path("s_prev.dat")
+        x_prev = np.loadtxt(x_file) if x_file.exists() else None
+        s_prev = np.loadtxt(s_file) if s_file.exists() else None
+
+        if max_iter is None:
+            max_iter = self.config.lmalf_max_iter
+        if tolerance is None:
+            tolerance = self.config.lmalf_tolerance
+
+        print(f"[NL] Running optimization ({lambda_combined.shape[0]} frames)...")
+        run_nonlinear_from_memory(
+            lambda_combined=lambda_combined,
+            ensweight=None,
+            nf=nf,
+            temp=self.config.temperature,
+            ms=ms,
+            msprof=msprof,
+            max_iter=max_iter,
+            tolerance=tolerance,
+            nsubs=nsubs,
+            x_prev=x_prev,
+            s_prev=s_prev,
+            output_dir=Path.cwd(),
+            log_file="analysis.log",
+            fnex=self.config.fnex,
+            chi_offset=self.config.chi_offset,
+            omega_decay=self.config.omega_decay,
+            chi_offset_t=self.config.chi_offset_t,
+            chi_offset_u=self.config.chi_offset_u,
+            ntriangle=ntriangle,
+        )
+        return True
+
+    def _run_nonlinear(self, nf: int, ms: int, msprof: int,
+                       cut_params: dict, alf_info: dict) -> None:
+        """Run nonlinear L-BFGS analysis."""
+        from cphmd.core.alf_utils import get_free_energy_lm
+
+        print("[NL] Starting analysis...", flush=True)
+        if not self._invoke_nonlinear(nf, ms, msprof, alf_info):
+            raise FileNotFoundError(
+                "No Lambda.*.*.parquet (or .dat) files found in data/"
+            )
+        print("[NL] Optimization finished")
+
+        out_file = Path("OUT.dat")
+        if out_file.exists():
+            out_data = np.loadtxt(out_file)
+            if np.all(out_data == 0):
+                print("[NL] Warning: produced all zeros - falling back to WHAM")
+                self._run_wham(nf, ms, msprof, cut_params, alf_info)
+                return
+
+        ntriangle = 5 + (0 if self.config.no_t_bias else 2) + (0 if self.config.no_u_bias else 2)
+        print("[NL] Converting OUT.dat to b/c/x/s.dat...")
+        lm_keys = {"cutb", "cutc", "cutx", "cuts", "cutt", "cutu",
+                   "cutc2", "cutx2", "cuts2"}
+        lm_params = {k: v for k, v in cut_params.items() if k in lm_keys}
+        get_free_energy_lm(alf_info, ms=ms, msprof=msprof, ntriangle=ntriangle, **lm_params)
+        print("[NL] Analysis complete")
 
     def _run_hybrid(self, nf: int, ms: int, msprof: int,
                     cut_params: dict, alf_info: dict, phase: PhaseType) -> None:
@@ -392,9 +515,11 @@ class BiasAnalyzer:
                 print("[Hybrid] LMALF produced all zeros - keeping WHAM output")
                 return
 
-        lm_keys = {"cutb", "cutc", "cutx", "cuts", "cutc2", "cutx2", "cuts2"}
+        ntriangle = 5 + (0 if self.config.no_t_bias else 2) + (0 if self.config.no_u_bias else 2)
+        lm_keys = {"cutb", "cutc", "cutx", "cuts", "cutt", "cutu",
+                   "cutc2", "cutx2", "cuts2"}
         lm_params = {k: v for k, v in cut_params.items() if k in lm_keys}
-        get_free_energy_lm(alf_info, ms=ms, msprof=msprof, **lm_params)
+        get_free_energy_lm(alf_info, ms=ms, msprof=msprof, ntriangle=ntriangle, **lm_params)
         print("[Hybrid] LMALF refinement complete")
 
     # ------------------------------------------------------------------
@@ -410,6 +535,8 @@ class BiasAnalyzer:
         file_cut_map = {
             'b.dat': 'cutb', 'c.dat': 'cutc',
             'b_sum.dat': 'cutb', 'c_sum.dat': 'cutc',
+            't.dat': 'cutt', 'u.dat': 'cutu',
+            't_sum.dat': 'cutt', 'u_sum.dat': 'cutu',
         }
         for fname, cut_key in file_cut_map.items():
             if cut_params and cut_params.get(cut_key, 1.0) == 0:
@@ -440,8 +567,9 @@ class BiasAnalyzer:
     def cleanup_invalid(analysis_dir: Path) -> None:
         """Remove invalid WHAM output files for retry."""
         files_to_remove = [
-            'b.dat', 'c.dat', 'x.dat', 's.dat',
+            'b.dat', 'c.dat', 'x.dat', 's.dat', 't.dat', 'u.dat',
             'b_sum.dat', 'c_sum.dat', 'x_sum.dat', 's_sum.dat',
+            't_sum.dat', 'u_sum.dat',
         ]
         for fname in files_to_remove:
             fpath = analysis_dir / fname

@@ -38,12 +38,16 @@ class BiasConstants(NamedTuple):
         omega_decay: Exponential decay for x-term LDBV class 10 REF.
         chi_offset: Sigmoid offset for s-term LDBV class 8 REF.
         omega_scale: Reciprocal of omega_decay (1/FNEX), used in CUDA.
+        chi_offset_t: Sigmoid offset for t-term LDBV class 8 REF.
+        chi_offset_u: Offset for u-term LDBV class 12 REF.
     """
 
     fnex: float
     omega_decay: float
     chi_offset: float
     omega_scale: float
+    chi_offset_t: float
+    chi_offset_u: float
 
 
 def derive_bias_constants(
@@ -51,6 +55,8 @@ def derive_bias_constants(
     *,
     chi_offset: float | None = None,
     omega_decay: float | None = None,
+    chi_offset_t: float = 0.012,
+    chi_offset_u: float = 0.012,
 ) -> BiasConstants:
     """Derive bias potential constants from a FNEX value.
 
@@ -60,6 +66,8 @@ def derive_bias_constants(
             as 4*exp(-fnex). Set to 0.017 to match legacy ALF behavior.
         omega_decay: Override for x-term exponential decay. If None, derived
             as fnex. Set to 5.56 to match legacy ALF behavior.
+        chi_offset_t: t-term sigmoid offset (independent of FNEX, default 0.012).
+        chi_offset_u: u-term offset (independent of FNEX, default 0.012).
 
     Returns:
         BiasConstants with all derived values.
@@ -71,6 +79,8 @@ def derive_bias_constants(
         omega_decay=actual_omega,
         chi_offset=actual_chi,
         omega_scale=1.0 / actual_omega,
+        chi_offset_t=chi_offset_t,
+        chi_offset_u=chi_offset_u,
     )
 
 
@@ -79,3 +89,5 @@ _DEFAULT = derive_bias_constants()
 OMEGA_DECAY = _DEFAULT.omega_decay
 CHI_OFFSET = _DEFAULT.chi_offset
 OMEGA_SCALE = _DEFAULT.omega_scale
+CHI_OFFSET_T = _DEFAULT.chi_offset_t
+CHI_OFFSET_U = _DEFAULT.chi_offset_u

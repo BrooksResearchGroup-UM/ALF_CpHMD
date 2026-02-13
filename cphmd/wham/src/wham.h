@@ -43,7 +43,7 @@ typedef struct profile_desc
 // Reaction coordinate descriptor for reactioncoord_all(): direct kernel dispatch
 typedef struct param_desc
 {
-  int type;    // 0=phi, 1=psi, 2=chi, 3=omega
+  int type;    // 0=phi, 1=psi, 2=chi, 3=omega, 4=omega2(t), 5=omega3(u)
   int j1, j2;  // block indices
 } param_desc;
 
@@ -102,6 +102,9 @@ typedef struct struct_data
   char g_imp_path[256];  // Path to G_imp directory
   double chi_offset;     // s-term sigmoid offset (derived from FNEX: 4*exp(-FNEX))
   double omega_scale;      // x-term reciprocal decay (derived from FNEX: 1/FNEX)
+  double chi_offset_t;   // t-term sigmoid offset (independent of FNEX)
+  double chi_offset_u;   // u-term Hill sigmoid offset (independent of FNEX)
+  int ntriangle;         // pair params per unique pair: 5(bcxs), 7(+t), 9(+tu)
   double cutlsum;        // G12 conditional threshold (λ_i + λ_j > cutlsum)
   struct_gimp_cache *gimp_cache;  // Cached G_imp file data (host-only)
   profile_desc *profiles;         // Precomputed profile descriptors [iN] (host-only)
@@ -217,6 +220,9 @@ typedef struct struct_lmalf
   double fnex;           // FNEX softmax constraint parameter
   double chi_offset;     // s-term sigmoid offset (4*exp(-FNEX))
   double omega_scale;      // x-term reciprocal decay (1/FNEX)
+  double chi_offset_t;   // t-term sigmoid offset (independent of FNEX)
+  double chi_offset_u;   // u-term Hill sigmoid offset (independent of FNEX)
+  int ntriangle;         // pair params per unique pair: 5(bcxs), 7(+t), 9(+tu)
 } struct_lmalf;
 
 // In-memory entry points: accept pre-packed data from host pointers
@@ -230,6 +236,7 @@ int wham_from_memory(
     int nf, double temp, int nts0, int nts1, int use_gshift,
     int *nsubs, int nsites, const char *g_imp_path,
     double chi_offset, double omega_scale, double cutlsum,
+    double chi_offset_t, double chi_offset_u, int ntriangle,
     double *D_flat, int *sim_indices, int *frame_counts,
     int total_frames, double *gshift_flat);
 
@@ -237,6 +244,7 @@ int lmalf_from_memory(
     int nf, double temp, int ms, int msprof, int max_iter, double tolerance,
     int *nsubs, int nsites, const char *g_imp_path,
     double fnex, double chi_offset, double omega_scale,
+    double chi_offset_t, double chi_offset_u, int ntriangle,
     double *lambda_flat, double *ensweight_flat, int n_frames,
     double *x_prev_flat, double *s_prev_flat, int nblocks_sq);
 

@@ -5,7 +5,7 @@
 #SBATCH --ntasks=5
 #SBATCH --gpus-per-task=1
 #SBATCH --cpus-per-task=1
-#SBATCH --mem-per-cpu=8G
+#SBATCH --mem-per-cpu=16G
 #SBATCH --time=2-00:00:00
 #SBATCH --output=lys_mpi_%j.out
 
@@ -22,7 +22,9 @@ cd "$SLURM_SUBMIT_DIR"
 
 # Step 2: Run ALF with MPI (one replica per GPU)
 # nreps is auto-detected from MPI communicator size (= ntasks)
+# Per-rank output goes to solvated/python_log_rank{0..4}.out
 mpirun -np "$SLURM_NTASKS" \
     --bind-to none --map-by slot \
+    --mca pml ob1 --mca btl tcp,self \
     -x OMP_NUM_THREADS=1 \
-    python run.py alf
+    cphmd run alf -c cphmd_config.yaml --pH

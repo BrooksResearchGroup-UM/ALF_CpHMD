@@ -86,6 +86,10 @@ class ALFInfo:
     def __post_init__(self):
         if self.nsubs is None:
             self.nsubs = np.array([])
+        # Normalize upstream aliases (e.g., "fnpwise" → "fpie")
+        from cphmd.core.entropy import normalize_constraint_type
+
+        self.constraint_type = normalize_constraint_type(self.constraint_type)
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for serialization."""
@@ -337,6 +341,14 @@ def init_vars(
     np.savetxt(analysis0 / "s_prev.dat", s)
     np.savetxt(analysis0 / "s.dat", np.zeros_like(s))
 
+    # t/u terms (bcxstu) — always create zero files for compatibility
+    t = np.zeros([nblocks, nblocks])
+    u = np.zeros([nblocks, nblocks])
+    np.savetxt(analysis0 / "t_prev.dat", t)
+    np.savetxt(analysis0 / "t.dat", np.zeros_like(t))
+    np.savetxt(analysis0 / "u_prev.dat", u)
+    np.savetxt(analysis0 / "u.dat", np.zeros_like(u))
+
     # Create nbshift directory for replica exchange (if not exists)
     nbshift = dirs["nbshift"]
     if not (nbshift / "b_shift.dat").exists():
@@ -470,11 +482,57 @@ def set_vars(
                             key = f"ss{si+1}s{i+1}s{sj+1}s{j+1}"
                             bias[key] = -float(s_sum[sub0[si] + i, sub0[sj] + j])
 
+        # t-term coupling (bcxstu)
+        t_prev_path = analysis_dir / "t_prev.dat"
+        t_path = analysis_dir / "t.dat"
+        if t_prev_path.exists() and t_path.exists():
+            t_prev = np.loadtxt(t_prev_path)
+            t_data = np.loadtxt(t_path)
+            t_sum = t_prev + t_data
+            if not np.all(np.isfinite(t_sum)):
+                logger.warning(f"NaN/Inf in t_sum at step {step}, using previous values")
+                t_sum = t_prev.copy()
+            np.savetxt(analysis_dir / "t_sum.dat", _clean_negzero(t_sum), fmt=" %10.5f")
+
+            for si in range(len(nsubs)):
+                for sj in range(len(nsubs)):
+                    for i in range(nsubs[si]):
+                        for j in range(nsubs[sj]):
+                            if sub0[si] + i != sub0[sj] + j:
+                                key = f"ts{si+1}s{i+1}s{sj+1}s{j+1}"
+                                bias[key] = float(t_sum[sub0[si] + i, sub0[sj] + j])
+        else:
+            t_sum = np.zeros((nblocks, nblocks))
+
+        # u-term coupling (bcxstu)
+        u_prev_path = analysis_dir / "u_prev.dat"
+        u_path = analysis_dir / "u.dat"
+        if u_prev_path.exists() and u_path.exists():
+            u_prev = np.loadtxt(u_prev_path)
+            u_data = np.loadtxt(u_path)
+            u_sum = u_prev + u_data
+            if not np.all(np.isfinite(u_sum)):
+                logger.warning(f"NaN/Inf in u_sum at step {step}, using previous values")
+                u_sum = u_prev.copy()
+            np.savetxt(analysis_dir / "u_sum.dat", _clean_negzero(u_sum), fmt=" %10.5f")
+
+            for si in range(len(nsubs)):
+                for sj in range(len(nsubs)):
+                    for i in range(nsubs[si]):
+                        for j in range(nsubs[sj]):
+                            if sub0[si] + i != sub0[sj] + j:
+                                key = f"us{si+1}s{i+1}s{sj+1}s{j+1}"
+                                bias[key] = -float(u_sum[sub0[si] + i, sub0[sj] + j])
+        else:
+            u_sum = np.zeros((nblocks, nblocks))
+
         # Store full arrays
         bias["b"] = b_sum.tolist()
         bias["c"] = c_sum.tolist()
         bias["x"] = x_sum.tolist()
         bias["s"] = s_sum.tolist()
+        bias["t"] = t_sum.tolist()
+        bias["u"] = u_sum.tolist()
 
         # Write bias dictionary as YAML
         fp.write('bias_string="""\n')
@@ -484,7 +542,9 @@ def set_vars(
         fp.write("bias['b']=np.array(bias['b'])\n")
         fp.write("bias['c']=np.array(bias['c'])\n")
         fp.write("bias['x']=np.array(bias['x'])\n")
-        fp.write("bias['s']=np.array(bias['s'])\n\n")
+        fp.write("bias['s']=np.array(bias['s'])\n")
+        fp.write("bias['t']=np.array(bias['t'])\n")
+        fp.write("bias['u']=np.array(bias['u'])\n\n")
 
         # Write alf_info dictionary
         alf_info_dict = alf_info.to_dict()
@@ -601,6 +661,27 @@ def set_vars_from_analysis_dir(
     s_sum = s_prev + s
     np.savetxt(analysis_dir / "s_sum.dat", _clean_negzero(s_sum), fmt=" %10.5f")
 
+    # t/u terms (bcxstu) — accumulate if files exist
+    t_prev_path = analysis_dir / "t_prev.dat"
+    t_path = analysis_dir / "t.dat"
+    if t_prev_path.exists() and t_path.exists():
+        t_prev = np.loadtxt(t_prev_path)
+        t_data = np.loadtxt(t_path)
+        t_sum = t_prev + t_data
+        np.savetxt(analysis_dir / "t_sum.dat", _clean_negzero(t_sum), fmt=" %10.5f")
+    else:
+        t_sum = np.zeros((nblocks, nblocks))
+
+    u_prev_path = analysis_dir / "u_prev.dat"
+    u_path = analysis_dir / "u.dat"
+    if u_prev_path.exists() and u_path.exists():
+        u_prev = np.loadtxt(u_prev_path)
+        u_data = np.loadtxt(u_path)
+        u_sum = u_prev + u_data
+        np.savetxt(analysis_dir / "u_sum.dat", _clean_negzero(u_sum), fmt=" %10.5f")
+    else:
+        u_sum = np.zeros((nblocks, nblocks))
+
     sub0 = np.cumsum(nsubs) - nsubs
 
     if engine == "pycharmm":
@@ -641,11 +722,31 @@ def set_vars_from_analysis_dir(
                             key = f"ss{si+1}s{i+1}s{sj+1}s{j+1}"
                             bias[key] = -float(s_sum[sub0[si] + i, sub0[sj] + j])
 
+        # t-term coupling (bcxstu)
+        for si in range(len(nsubs)):
+            for sj in range(len(nsubs)):
+                for i in range(nsubs[si]):
+                    for j in range(nsubs[sj]):
+                        if sub0[si] + i != sub0[sj] + j:
+                            key = f"ts{si+1}s{i+1}s{sj+1}s{j+1}"
+                            bias[key] = float(t_sum[sub0[si] + i, sub0[sj] + j])
+
+        # u-term coupling (bcxstu)
+        for si in range(len(nsubs)):
+            for sj in range(len(nsubs)):
+                for i in range(nsubs[si]):
+                    for j in range(nsubs[sj]):
+                        if sub0[si] + i != sub0[sj] + j:
+                            key = f"us{si+1}s{i+1}s{sj+1}s{j+1}"
+                            bias[key] = -float(u_sum[sub0[si] + i, sub0[sj] + j])
+
         # Store full arrays
         bias["b"] = b_sum.tolist()
         bias["c"] = c_sum.tolist()
         bias["x"] = x_sum.tolist()
         bias["s"] = s_sum.tolist()
+        bias["t"] = t_sum.tolist()
+        bias["u"] = u_sum.tolist()
 
         with open(output_file, "w") as fp:
             fp.write("import yaml\n")
@@ -658,7 +759,9 @@ def set_vars_from_analysis_dir(
             fp.write("bias['b']=np.array(bias['b'])\n")
             fp.write("bias['c']=np.array(bias['c'])\n")
             fp.write("bias['x']=np.array(bias['x'])\n")
-            fp.write("bias['s']=np.array(bias['s'])\n\n")
+            fp.write("bias['s']=np.array(bias['s'])\n")
+            fp.write("bias['t']=np.array(bias['t'])\n")
+            fp.write("bias['u']=np.array(bias['u'])\n\n")
 
             # Write alf_info
             alf_info_dict = alf_info.to_dict()
@@ -1099,10 +1202,13 @@ def get_free_energy_lm(
     cutc: float = 8.0,
     cutx: float = 2.0,
     cuts: float = 1.0,
+    cutt: float = 0.0,
+    cutu: float = 0.0,
     cutc2: float = 2.0,
     cutx2: float = 0.5,
     cuts2: float = 0.5,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    ntriangle: int = 5,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Convert LMALF OUT.dat to b/c/x/s bias matrices.
 
     This function post-processes the output of LMALF optimization (OUT.dat)
@@ -1158,6 +1264,8 @@ def get_free_energy_lm(
     c = np.zeros((nblocks, nblocks))
     x = np.zeros((nblocks, nblocks))
     s = np.zeros((nblocks, nblocks))
+    t = np.zeros((nblocks, nblocks))
+    u = np.zeros((nblocks, nblocks))
 
     # Count expected parameters
     nparm = 0
@@ -1167,9 +1275,9 @@ def get_free_energy_lm(
         for jsite in range(isite, len(nsubs)):
             n3 = nsubs[isite] * nsubs[jsite]
             if isite == jsite:
-                nparm += n1 + 5 * n2
+                nparm += n1 + ntriangle * n2
             elif ms == 1:
-                nparm += 5 * n3
+                nparm += ntriangle * n3
             elif ms == 2:
                 nparm += n3
 
@@ -1189,6 +1297,12 @@ def get_free_energy_lm(
                         n0 += 2
                         cutlist[n0:n0 + 2] = cuts
                         n0 += 2
+                        if ntriangle >= 7:
+                            cutlist[n0:n0 + 2] = cutt
+                            n0 += 2
+                        if ntriangle >= 9:
+                            cutlist[n0:n0 + 2] = cutu
+                            n0 += 2
             elif ms > 0:
                 for i in range(nsubs[isite]):
                     for j in range(nsubs[jsite]):
@@ -1199,6 +1313,12 @@ def get_free_energy_lm(
                             n0 += 2
                             cutlist[n0:n0 + 2] = cuts2
                             n0 += 2
+                            if ntriangle >= 7:
+                                cutlist[n0:n0 + 2] = cutt
+                                n0 += 2
+                            if ntriangle >= 9:
+                                cutlist[n0:n0 + 2] = cutu
+                                n0 += 2
 
     # Load LMALF output
     coeff = np.loadtxt("OUT.dat")
@@ -1243,6 +1363,16 @@ def get_free_energy_lm(
                         ind += 1
                         s[jblock + j, iblock + i] = coeff[ind]
                         ind += 1
+                        if ntriangle >= 7:
+                            t[iblock + i, jblock + j] = coeff[ind]
+                            ind += 1
+                            t[jblock + j, iblock + i] = coeff[ind]
+                            ind += 1
+                        if ntriangle >= 9:
+                            u[iblock + i, jblock + j] = coeff[ind]
+                            ind += 1
+                            u[jblock + j, iblock + i] = coeff[ind]
+                            ind += 1
             elif ms > 0:
                 for i in range(nsubs[isite]):
                     for j in range(nsubs[jsite]):
@@ -1257,6 +1387,16 @@ def get_free_energy_lm(
                             ind += 1
                             s[jblock + j, iblock + i] = coeff[ind]
                             ind += 1
+                            if ntriangle >= 7:
+                                t[iblock + i, jblock + j] = coeff[ind]
+                                ind += 1
+                                t[jblock + j, iblock + i] = coeff[ind]
+                                ind += 1
+                            if ntriangle >= 9:
+                                u[iblock + i, jblock + j] = coeff[ind]
+                                ind += 1
+                                u[jblock + j, iblock + i] = coeff[ind]
+                                ind += 1
             jblock += nsubs[jsite]
         iblock += nsubs[isite]
 
@@ -1287,7 +1427,9 @@ def get_free_energy_lm(
     np.savetxt("c.dat", _clean_negzero(c), fmt=" %10.5f")
     np.savetxt("x.dat", _clean_negzero(x), fmt=" %10.5f")
     np.savetxt("s.dat", _clean_negzero(s), fmt=" %10.5f")
+    np.savetxt("t.dat", _clean_negzero(t), fmt=" %10.5f")
+    np.savetxt("u.dat", _clean_negzero(u), fmt=" %10.5f")
 
-    print("LMALF: Wrote b.dat, c.dat, x.dat, s.dat")
+    print("LMALF: Wrote b.dat, c.dat, x.dat, s.dat, t.dat, u.dat")
 
-    return b, c, x, s
+    return b, c, x, s, t, u

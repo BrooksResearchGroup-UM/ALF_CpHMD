@@ -13,6 +13,10 @@ fnex: 5.5
 use_gshift: true          # Apply G_imp entropy shifts in WHAM Stage 2
 # chi_offset: null    # s-term sigmoid offset (null = 4*exp(-fnex))
 # omega_decay: null    # x-term exponential decay (null = fnex)
+no_t_bias: true       # Disable t-term bias updates (bcxstu)
+no_u_bias: true       # Disable u-term bias updates (bcxstu)
+chi_offset_t: 0.012   # t-term sigmoid offset (independent of FNEX)
+chi_offset_u: 0.012   # u-term offset (independent of FNEX)
 hmr: true
 cleanup: false
 coupling: 0
