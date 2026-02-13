@@ -64,9 +64,11 @@ from .convergence_tracker import ConvergenceTracker
 from .cphmd_params import (
     CpHMDParameters,
     SiteParameters,
+    adjust_tags_for_effective_ph,
     compute_all_site_parameters,
-    compute_bias_shifts,
+    compute_per_unit_shift,
     get_delta_pKa_for_phase,
+    replica_pH,
 )
 from .dynamics_runner import DynamicsRunner
 from .entropy import (
@@ -181,9 +183,11 @@ __all__ = [
     # CpHMD Parameters
     "CpHMDParameters",
     "SiteParameters",
+    "adjust_tags_for_effective_ph",
     "compute_all_site_parameters",
-    "compute_bias_shifts",
+    "compute_per_unit_shift",
     "get_delta_pKa_for_phase",
+    "replica_pH",
     # Block Builder
     "BlockConfig",
     "build_block_command",
