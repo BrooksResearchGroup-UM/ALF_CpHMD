@@ -220,9 +220,9 @@ def fit_hh_curve(
     if fit_type == "auto":
         trend = pop_sorted[-1] - pop_sorted[0]
         if trend > 0.2:
-            fit_type = "acidic"  # Rising with pH → deprotonation (UNEG grows)
+            fit_type = "basic"  # Rising with pH → UPOS (deprotonated) grows
         elif trend < -0.2:
-            fit_type = "basic"  # Falling with pH → deprotonation (UPOS shrinks)
+            fit_type = "acidic"  # Falling with pH → UNEG (protonated) shrinks
         else:
             # Check for bell shape
             mid_idx = len(pop_sorted) // 2
@@ -392,33 +392,33 @@ def compute_theoretical_populations(
     pH_grid: np.ndarray,
     microstates: list[tuple[str, MicrostateType, float | None]],
 ) -> dict[str, np.ndarray]:
-    """Compute theoretical HH populations using Boltzmann weights.
+    """Compute theoretical HH populations using Boltzmann partition function.
 
-    Handles 6 cases:
-    - UPOS + UNEG + NONE (3-state, e.g., Histidine)
-    - UPOS + NONE (basic, e.g., Lysine)
-    - UNEG + NONE (acidic, e.g., Asp/Glu)
-    - UPOS only, UNEG only, NONE only
+    In CpHMD, the reference state (NONE) is the original residue topology:
+    - For acids (ASP, GLU): NONE = deprotonated (COO-)
+    - For bases (HIS, LYS): NONE = protonated (HSP, LYS-NH3+)
 
-    The thermodynamic model assigns weights:
-    - NONE: weight = 1.0 (reference state)
-    - UPOS: weight = 10^(pKa - pH) (protonated, favored at low pH)
-    - UNEG: weight = 10^(pH - pKa) (deprotonated, favored at high pH)
+    Patches create alternative protonation states:
+    - UPOS (fewer atoms, H removed): deprotonated form, weight = 10^(pH - pKa)
+      The micro-pKa is for the reaction: original -> UPOS + H+
+    - UNEG (more atoms, H added): protonated form, weight = 10^(pKa - pH)
+      The micro-pKa is for the reaction: original + H+ -> UNEG
+
+    Multiple substates of the same type compete via their micro-pKa values:
+    - HIS: UPOS HSD (pKa=6.6) vs HSE (pKa=7.0) -> HSD:HSE ~ 70:30
+    - ASP: UNEG ASH1 (pKa=3.67) vs ASH2 (pKa=3.67) -> 50:50
 
     Args:
         pH_grid: Array of pH values to compute populations for
-        microstates: List of (name, type, pKa) tuples
+        microstates: List of (name, type, pKa) tuples from TAG field
 
     Returns:
         Dict mapping microstate name to population array (same length as pH_grid)
     """
-    has_none = any(t == "NONE" for _, t, _ in microstates)
-    has_upos = any(t == "UPOS" for _, t, _ in microstates)
-    has_uneg = any(t == "UNEG" for _, t, _ in microstates)
-
-    # Collect pKa values
+    # Collect pKa values per type
     pKa_upos = [pKa for _, t, pKa in microstates if t == "UPOS" and pKa is not None]
     pKa_uneg = [pKa for _, t, pKa in microstates if t == "UNEG" and pKa is not None]
+    n_none = sum(1 for _, t, _ in microstates if t == "NONE")
 
     populations = {}
 
@@ -426,28 +426,27 @@ def compute_theoretical_populations(
         pop_array = np.zeros_like(pH_grid, dtype=float)
 
         for i, pH in enumerate(pH_grid):
-            # Compute partition function (sum of Boltzmann weights)
+            # Partition function: Z = Σ weights
             Z = 0.0
 
-            # NONE contribution
-            if has_none:
-                Z += 1.0
+            # NONE: reference state(s), weight = 1.0 each
+            Z += n_none * 1.0
 
-            # UPOS contributions
+            # UPOS: deprotonated forms (H removed), dominant at HIGH pH
             for pk in pKa_upos:
-                Z += 10**(pk - pH)
+                Z += 10 ** (pH - pk)
 
-            # UNEG contributions
+            # UNEG: protonated forms (H added), dominant at LOW pH
             for pk in pKa_uneg:
-                Z += 10**(pH - pk)
+                Z += 10 ** (pk - pH)
 
-            # Compute this state's weight
+            # This state's Boltzmann weight
             if mtype == "NONE":
                 w = 1.0
             elif mtype == "UPOS" and pKa is not None:
-                w = 10**(pKa - pH)
+                w = 10 ** (pH - pKa)
             elif mtype == "UNEG" and pKa is not None:
-                w = 10**(pH - pKa)
+                w = 10 ** (pKa - pH)
             else:
                 w = 0.0
 
@@ -492,13 +491,35 @@ def plot_site_substates(
     colors = get_state_colors(n_substates)
     markers = ['o', 's', '^', 'v', 'D', 'p', 'h', '*']
 
-    pH_fit = np.linspace(pH_range[0], pH_range[1], 100)
+    pH_fit = np.linspace(pH_range[0], pH_range[1], 200)
+
+    # Build microstates list from substates for theoretical curves on dense grid
+    microstates_for_theo: list[tuple[str, MicrostateType, float | None]] = []
+    for sub in site_result.substates:
+        mtype: MicrostateType = "NONE"
+        if sub.tag_type == "UPOS":
+            mtype = "UPOS"
+        elif sub.tag_type == "UNEG":
+            mtype = "UNEG"
+        microstates_for_theo.append((sub.select_name, mtype, sub.tag_pKa))
+    theo_dense = compute_theoretical_populations(pH_fit, microstates_for_theo)
 
     for idx, substate in enumerate(site_result.substates):
         color = colors[idx % len(colors)]
         marker = markers[idx % len(markers)]
 
-        # Plot simulation data
+        # Plot theoretical curve (smooth, dense grid)
+        if substate.select_name in theo_dense:
+            ax.plot(
+                pH_fit,
+                theo_dense[substate.select_name],
+                color=color,
+                linestyle='--',
+                linewidth=1.5,
+                alpha=0.6,
+            )
+
+        # Plot simulation data (scatter on top)
         if len(substate.populations) > 0:
             ax.scatter(
                 substate.pH_values,
@@ -511,16 +532,32 @@ def plot_site_substates(
                 zorder=3,
             )
 
-        # Plot theoretical curve if available
-        if len(substate.theoretical) > 0 and len(substate.pH_values) == len(pH_fit):
+    # Plot fitted HH curve (total charged-state population)
+    fit = site_result.fit_result
+    if fit.fit_type not in ("insufficient_data", "fit_failed", "single_point"):
+        if fit.fit_type == "three_state":
+            y_fit = three_state_hh(pH_fit, fit.pKa_pos, fit.pKa_neg)
+        elif fit.fit_type == "basic":
+            y_fit = two_state_basic_hh(pH_fit, fit.pKa_eff, fit.hill_coeff)
+        elif fit.fit_type == "acidic":
+            y_fit = two_state_acidic_hh(pH_fit, fit.pKa_eff, fit.hill_coeff)
+        else:
+            y_fit = None
+
+        if y_fit is not None:
             ax.plot(
-                substate.pH_values,
-                substate.theoretical,
-                color=color,
-                linestyle='--',
-                linewidth=1.5,
-                alpha=0.7,
+                pH_fit, y_fit, 'k-', linewidth=2, alpha=0.8,
+                label=f"HH fit (pKa={fit.pKa_eff:.2f})", zorder=2,
             )
+
+    # Plot total charged-state simulation data
+    if len(site_result.total_populations) > 0:
+        ax.scatter(
+            site_result.pH_values,
+            site_result.total_populations,
+            c='black', marker='x', s=80, linewidths=2, alpha=0.7,
+            label="Total charged (sim)", zorder=4,
+        )
 
     site_label = f"{site_result.segid}:{site_result.resname}{site_result.resid}"
     ax.set_xlabel('pH')
@@ -531,7 +568,6 @@ def plot_site_substates(
     ax.legend(loc='best', ncol=2)
     clean_axes(ax)
 
-    fit = site_result.fit_result
     info_text = f"Fit: {fit.fit_type}, pKa = {fit.pKa_eff:.2f}, R\u00b2 = {fit.r_squared:.3f}"
     ax.annotate(
         info_text,
@@ -594,6 +630,54 @@ def write_hh_csv(
     return csv_path
 
 
+def _load_run_populations(
+    data_dir: Path,
+    pH: float,
+    delta_pKa: float,
+    nreps: int,
+    ncentral: int,
+    lambda_threshold: float,
+) -> tuple[np.ndarray, dict[int, np.ndarray], int] | None:
+    """Load one run's lambda data and compute per-state populations.
+
+    Returns:
+        (valid_pH_array, state_populations, n_states) or None if insufficient data.
+        state_populations maps state_idx to array of populations at each valid pH.
+    """
+    from cphmd.core.phase_switcher import load_lambda_data_per_replica
+
+    pH_values = np.array([pH + delta_pKa * (j - ncentral) for j in range(nreps)])
+
+    replica_data = load_lambda_data_per_replica(
+        data_dir, pH, delta_pKa, nreps, ncentral
+    )
+    if len(replica_data) < 3:
+        return None
+
+    replica_pH_map = {rd.replica_idx: rd for rd in replica_data}
+    n_states = replica_data[0].lambda_data.shape[1]
+
+    valid_pH_values: list[float] = []
+    valid_replica_indices: list[int] = []
+    for j in range(nreps):
+        if j in replica_pH_map:
+            valid_replica_indices.append(j)
+            valid_pH_values.append(pH_values[j])
+
+    valid_pH_array = np.array(valid_pH_values)
+
+    state_populations: dict[int, np.ndarray] = {}
+    for state_idx in range(n_states):
+        pops = []
+        for j in valid_replica_indices:
+            rd = replica_pH_map[j]
+            mask = rd.lambda_data[:, state_idx] > lambda_threshold
+            pops.append(mask.mean())
+        state_populations[state_idx] = np.array(pops)
+
+    return valid_pH_array, state_populations, n_states
+
+
 def generate_hh_analysis(
     run_idx: int,
     data_dir: Path,
@@ -604,15 +688,19 @@ def generate_hh_analysis(
     output_dir: Path,
     ncentral: int | None = None,
     lambda_threshold: float = 0.8,
+    prior_data_dirs: list[Path] | None = None,
 ) -> dict[str, SiteHHResult]:
     """Main entry point for HH curve analysis with multi-replica pH.
 
     This function implements the full multi-replica titration curve analysis:
     1. Computes per-replica pH values from the replica exchange scheme
-    2. Loads lambda data per replica
+    2. Loads lambda data per replica (current run + prior runs if provided)
     3. Calculates populations at each replica's pH
     4. Fits multi-point HH curves for each titratable site
     5. Generates substate plots and CSV data export
+
+    Each prior run contributes additional independent data points at the same
+    set of replica pH values, improving the HH fit quality.
 
     Args:
         run_idx: Current run number
@@ -624,12 +712,12 @@ def generate_hh_analysis(
         output_dir: Directory for output plots
         ncentral: Central replica index (defaults to nreps // 2)
         lambda_threshold: Threshold for state occupancy (default 0.8)
+        prior_data_dirs: Optional list of data/ directories from prior runs.
+            Each contributes independent data points at the replica pH values.
 
     Returns:
         Dict mapping site IDs to SiteHHResult with full analysis
     """
-    from cphmd.core.phase_switcher import load_lambda_data_per_replica
-
     if ncentral is None:
         ncentral = nreps // 2
 
@@ -637,19 +725,13 @@ def generate_hh_analysis(
     legacy_results: dict[str, HHFitResult] = {}
     populations_data: dict[str, tuple[np.ndarray, np.ndarray]] = {}
 
-    # Compute per-replica pH array
-    pH_values = np.array([
-        pH + delta_pKa * (j - ncentral)
-        for j in range(nreps)
-    ])
-
-    # Load per-replica lambda data
-    replica_data = load_lambda_data_per_replica(
-        data_dir, pH, delta_pKa, nreps, ncentral
+    # Load current run's data
+    current_data = _load_run_populations(
+        data_dir, pH, delta_pKa, nreps, ncentral, lambda_threshold
     )
 
-    if len(replica_data) < 3:
-        print(f"Insufficient replicas for HH analysis ({len(replica_data)} < 3)")
+    if current_data is None:
+        print("Insufficient replicas for HH analysis in current run")
         # Fall back to combined analysis
         from cphmd.core.phase_switcher import calculate_populations, load_lambda_data
         lambda_data, _ = load_lambda_data(data_dir)
@@ -660,20 +742,16 @@ def generate_hh_analysis(
             return {}
 
         # Create minimal results with single-point estimate
-        pops = pop_data.get("pop_strict_norm", np.array([]))
         if patch_info is not None and "site" in patch_info.columns:
             for site_id in patch_info["site"].unique():
                 site_patches = patch_info[patch_info["site"] == site_id]
                 if len(site_patches) == 0:
                     continue
-
-                # Get site metadata
                 first_row = site_patches.iloc[0]
                 segid = str(first_row.get("SEGID", ""))
                 resid = str(first_row.get("RESID", ""))
                 resname = str(first_row.get("RESNAME", first_row.get("resname", "")))
 
-                # Create minimal result
                 fit_result = HHFitResult(pKa_eff=pH, fit_type="single_point", r_squared=0.0)
                 results[str(site_id)] = SiteHHResult(
                     site_id=str(site_id),
@@ -685,32 +763,26 @@ def generate_hh_analysis(
                 )
         return results
 
-    # Build population arrays per state from per-replica data
-    # We need to align replica indices with pH values
-    replica_pH_map = {rd.replica_idx: rd for rd in replica_data}
-    n_states = replica_data[0].lambda_data.shape[1] if replica_data else 0
+    valid_pH_array, state_populations, n_states = current_data
 
-    # For each state, compute population at each replica's pH
-    state_populations: dict[int, np.ndarray] = {}
-    valid_pH_values: list[float] = []
-    valid_replica_indices: list[int] = []
-
-    for j in range(nreps):
-        if j in replica_pH_map:
-            valid_replica_indices.append(j)
-            valid_pH_values.append(pH_values[j])
-
-    valid_pH_array = np.array(valid_pH_values)
-
-    for state_idx in range(n_states):
-        pops_at_pH = []
-        for j in valid_replica_indices:
-            rd = replica_pH_map[j]
-            # Compute population for this state at this replica
-            mask = rd.lambda_data[:, state_idx] > lambda_threshold
-            pop = mask.mean()
-            pops_at_pH.append(pop)
-        state_populations[state_idx] = np.array(pops_at_pH)
+    # Accumulate data from prior runs (each adds independent points at same pH values)
+    if prior_data_dirs:
+        for prior_dir in prior_data_dirs:
+            prior_data = _load_run_populations(
+                prior_dir, pH, delta_pKa, nreps, ncentral, lambda_threshold
+            )
+            if prior_data is None:
+                continue
+            prior_pH, prior_pops, prior_n_states = prior_data
+            if prior_n_states != n_states:
+                continue  # Skip if state count changed
+            # Concatenate: repeated pH values with different populations
+            valid_pH_array = np.concatenate([valid_pH_array, prior_pH])
+            for state_idx in range(n_states):
+                if state_idx in state_populations and state_idx in prior_pops:
+                    state_populations[state_idx] = np.concatenate([
+                        state_populations[state_idx], prior_pops[state_idx]
+                    ])
 
     # Process each titratable site
     if patch_info is None or "site" not in patch_info.columns:
