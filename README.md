@@ -98,6 +98,14 @@ Configurable coupling between titratable sites:
 - `coupling=2`: Coupling constants only (c terms, no x/s)
 - `coupling_profile`: Independent control over inter-site profile monitoring
 
+### Initial Bias Guessing (Run 0)
+Before the first ALF iteration, the system automatically estimates initial bias
+parameters from the energy landscape:
+- **b-biases** from endpoint energy differences (linear tilt to balance states)
+- **c-biases** from midpoint barrier heights (pairwise coupling to flatten barriers)
+- Eliminates the "cold start" problem where early runs have zero bias information
+- Uses reference convention (b[0]=0) for consistent parameterization
+
 ### Additional Capabilities
 - **Parquet lambda files** -- smaller and faster to read than CHARMM binary
 - **G_imp entropy computation** -- ideal mixing free energies computed locally via
@@ -255,6 +263,11 @@ cphmd utils lambda-info       Show metadata for a lambda file (.lmd or .parquet)
 cphmd/
 ├── core/                         # Core simulation engine
 │   ├── alf_runner.py                  # ALF simulation orchestrator (ALFConfig, ALFSimulation)
+│   ├── bias_analyzer.py              # Bias update logic (cutoffs, scaling, WHAM integration)
+│   ├── bias_guesser.py               # Initial bias estimation from energy landscape (Run 0)
+│   ├── convergence_tracker.py        # EWBS/RMSD/population convergence and phase gates
+│   ├── dynamics_runner.py            # CHARMM dynamics execution (BLaDE GPU)
+│   ├── g_imp_provisioner.py          # 3-tier G_imp entropy provisioning
 │   ├── alf_utils.py                   # ALF variable/energy utilities, in-memory WHAM input
 │   ├── free_energy.py                 # WHAM free energy solver (SVD + adaptive cutoffs)
 │   ├── patching.py                    # Titratable residue patching
@@ -301,16 +314,23 @@ cphmd/
 ## Examples
 
 The `examples/` directory contains working setups. Each example includes a
-`cphmd_config.yaml`, a `run.py` workflow script, and a `submit.sh` SLURM template.
+`cphmd_config.yaml`, a `run.py` workflow script, a `submit.sh` SLURM template,
+and pre-built `solvated/prep/` files ready to run ALF.
 
 | Example | Description |
 |---------|-------------|
 | `00_glu_water` | Single GLU in water -- basic 3-state ALF (no pH coupling) |
-| `01_single_residue` | Single ASP pentapeptide -- full build-to-ALF pipeline |
-| `02_protein_lysozyme` | Hen egg-white lysozyme -- multi-site CpHMD at pH 4.0 with coupling |
-| `03_nr` | Neutral Red -- custom titratable ligand with NRDU patch |
-| `05_glu_lmalf` | GLU in water -- LMALF analysis method instead of WHAM |
-| `06_glu_hybrid` | GLU in water -- hybrid WHAM/LMALF analysis |
+| `01_asp_water` | Single ASP pentapeptide -- full build-to-ALF pipeline |
+| `03_hsp_water` | Histidine (HSP) in water -- 3-state (HSP/HSD/HSE) tautomer system |
+| `04_lys_water` | Lysine (LYS) in water -- 2-state protonation |
+| `05_tyr_water` | Tyrosine (TYR) in water -- 2-state phenol protonation |
+| `06_cys_water` | Cysteine (CYS) in water -- 2-state thiol protonation |
+| `07_arg_water` | Arginine (ARG) in water -- 2-state guanidinium protonation |
+| `08_ser_water` | Serine (SER) in water -- 2-state hydroxyl protonation |
+| `09_nr_water` | Neutral Red -- custom titratable ligand with NRDU patch |
+| `10_protein_lysozyme` | Hen egg-white lysozyme -- multi-site CpHMD at pH 4.0 with coupling |
+| `11_glu_lmalf` | GLU in water -- LMALF analysis method instead of WHAM |
+| `12_glu_hybrid` | GLU in water -- hybrid WHAM/LMALF analysis |
 
 ## How It Works
 
@@ -349,7 +369,7 @@ In Phase 3, convergence requires:
 ## Testing
 
 ```bash
-pytest tests/             # full suite (143 tests)
+pytest tests/             # full suite (~190 tests)
 pytest tests/ -k phase    # filter by keyword
 pytest tests/ -v --tb=short
 ```
