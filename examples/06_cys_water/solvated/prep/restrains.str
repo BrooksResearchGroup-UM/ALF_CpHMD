@@ -1,0 +1,9 @@
+BLOCK
+ scat on
+scat k 300.0
+cats SELE type SG .and. segid PROA .and. resid 3 .and. (resname CYSO .or. resname CYSD) END
+cats SELE type CB .and. segid PROA .and. resid 3 .and. (resname CYSO .or. resname CYSD) END
+cats SELE type HG1 .and. segid PROA .and. resid 3 .and. (resname CYSO .or. resname CYSD) END
+cats SELE type HB2 .and. segid PROA .and. resid 3 .and. (resname CYSO .or. resname CYSD) END
+cats SELE type HB1 .and. segid PROA .and. resid 3 .and. (resname CYSO .or. resname CYSD) END
+END

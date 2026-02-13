@@ -1,0 +1,27 @@
+# Lysozyme (2LZT) CpHMD Example
+# Hen egg-white lysozyme with all titratable residues
+# Workflow: solvate -> patch -> alf (no build step — starts from pre-built protein)
+
+solvation:
+  input_file: pdb/molecule
+  crystal_type: OCTAHEDRAL
+  padding: 10.0
+  salt_concentration: 0.15
+  temperature: 298.15
+
+patch:
+  input_folder: solvated
+  output_folder: solvated/prep
+  selected_residues: []  # Empty = patch all titratable residues found
+
+alf:
+  input_folder: solvated
+  pH: 4.0
+  temperature: 298.15
+  end: 200
+  auto_phase_switch: true
+  auto_stop: true
+  coupling: 1
+  hh_plots: true
+  use_presets: true
+  preset_config: pme_ex_vswitch  # Matches pmeex + vswitch electrostatics

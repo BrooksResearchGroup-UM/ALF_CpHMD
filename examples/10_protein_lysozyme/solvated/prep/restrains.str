@@ -1,0 +1,145 @@
+BLOCK
+ scat on
+scat k 300.0
+cats SELE type OD2 .and. segid PROA .and. resid 18 .and. (resname ASPO .or. resname ASH1 .or. resname ASH2) END
+cats SELE type CG .and. segid PROA .and. resid 18 .and. (resname ASPO .or. resname ASH1 .or. resname ASH2) END
+cats SELE type OD1 .and. segid PROA .and. resid 18 .and. (resname ASPO .or. resname ASH1 .or. resname ASH2) END
+cats SELE type CB .and. segid PROA .and. resid 18 .and. (resname ASPO .or. resname ASH1 .or. resname ASH2) END
+cats SELE type OD2 .and. segid PROA .and. resid 48 .and. (resname ASPO .or. resname ASH1 .or. resname ASH2) END
+cats SELE type CG .and. segid PROA .and. resid 48 .and. (resname ASPO .or. resname ASH1 .or. resname ASH2) END
+cats SELE type OD1 .and. segid PROA .and. resid 48 .and. (resname ASPO .or. resname ASH1 .or. resname ASH2) END
+cats SELE type CB .and. segid PROA .and. resid 48 .and. (resname ASPO .or. resname ASH1 .or. resname ASH2) END
+cats SELE type OD2 .and. segid PROA .and. resid 52 .and. (resname ASPO .or. resname ASH1 .or. resname ASH2) END
+cats SELE type CG .and. segid PROA .and. resid 52 .and. (resname ASPO .or. resname ASH1 .or. resname ASH2) END
+cats SELE type OD1 .and. segid PROA .and. resid 52 .and. (resname ASPO .or. resname ASH1 .or. resname ASH2) END
+cats SELE type CB .and. segid PROA .and. resid 52 .and. (resname ASPO .or. resname ASH1 .or. resname ASH2) END
+cats SELE type OD2 .and. segid PROA .and. resid 66 .and. (resname ASPO .or. resname ASH1 .or. resname ASH2) END
+cats SELE type CG .and. segid PROA .and. resid 66 .and. (resname ASPO .or. resname ASH1 .or. resname ASH2) END
+cats SELE type OD1 .and. segid PROA .and. resid 66 .and. (resname ASPO .or. resname ASH1 .or. resname ASH2) END
+cats SELE type CB .and. segid PROA .and. resid 66 .and. (resname ASPO .or. resname ASH1 .or. resname ASH2) END
+cats SELE type OD2 .and. segid PROA .and. resid 87 .and. (resname ASPO .or. resname ASH1 .or. resname ASH2) END
+cats SELE type CG .and. segid PROA .and. resid 87 .and. (resname ASPO .or. resname ASH1 .or. resname ASH2) END
+cats SELE type OD1 .and. segid PROA .and. resid 87 .and. (resname ASPO .or. resname ASH1 .or. resname ASH2) END
+cats SELE type CB .and. segid PROA .and. resid 87 .and. (resname ASPO .or. resname ASH1 .or. resname ASH2) END
+cats SELE type OD2 .and. segid PROA .and. resid 101 .and. (resname ASPO .or. resname ASH1 .or. resname ASH2) END
+cats SELE type CG .and. segid PROA .and. resid 101 .and. (resname ASPO .or. resname ASH1 .or. resname ASH2) END
+cats SELE type OD1 .and. segid PROA .and. resid 101 .and. (resname ASPO .or. resname ASH1 .or. resname ASH2) END
+cats SELE type CB .and. segid PROA .and. resid 101 .and. (resname ASPO .or. resname ASH1 .or. resname ASH2) END
+cats SELE type OD2 .and. segid PROA .and. resid 119 .and. (resname ASPO .or. resname ASH1 .or. resname ASH2) END
+cats SELE type CG .and. segid PROA .and. resid 119 .and. (resname ASPO .or. resname ASH1 .or. resname ASH2) END
+cats SELE type OD1 .and. segid PROA .and. resid 119 .and. (resname ASPO .or. resname ASH1 .or. resname ASH2) END
+cats SELE type CB .and. segid PROA .and. resid 119 .and. (resname ASPO .or. resname ASH1 .or. resname ASH2) END
+cats SELE type OE1 .and. segid PROA .and. resid 7 .and. (resname GLUO .or. resname GLH1 .or. resname GLH2) END
+cats SELE type OE2 .and. segid PROA .and. resid 7 .and. (resname GLUO .or. resname GLH1 .or. resname GLH2) END
+cats SELE type CD .and. segid PROA .and. resid 7 .and. (resname GLUO .or. resname GLH1 .or. resname GLH2) END
+cats SELE type CG .and. segid PROA .and. resid 7 .and. (resname GLUO .or. resname GLH1 .or. resname GLH2) END
+cats SELE type OE1 .and. segid PROA .and. resid 35 .and. (resname GLUO .or. resname GLH1 .or. resname GLH2) END
+cats SELE type OE2 .and. segid PROA .and. resid 35 .and. (resname GLUO .or. resname GLH1 .or. resname GLH2) END
+cats SELE type CD .and. segid PROA .and. resid 35 .and. (resname GLUO .or. resname GLH1 .or. resname GLH2) END
+cats SELE type CG .and. segid PROA .and. resid 35 .and. (resname GLUO .or. resname GLH1 .or. resname GLH2) END
+cats SELE type NE2 .and. segid PROA .and. resid 15 .and. (resname HSPO .or. resname HSPD .or. resname HSPE) END
+cats SELE type CD2 .and. segid PROA .and. resid 15 .and. (resname HSPO .or. resname HSPD .or. resname HSPE) END
+cats SELE type CE1 .and. segid PROA .and. resid 15 .and. (resname HSPO .or. resname HSPD .or. resname HSPE) END
+cats SELE type ND1 .and. segid PROA .and. resid 15 .and. (resname HSPO .or. resname HSPD .or. resname HSPE) END
+cats SELE type CG .and. segid PROA .and. resid 15 .and. (resname HSPO .or. resname HSPD .or. resname HSPE) END
+cats SELE type CB .and. segid PROA .and. resid 15 .and. (resname HSPO .or. resname HSPD .or. resname HSPE) END
+cats SELE type NZ .and. segid PROA .and. resid 1 .and. (resname LYSO .or. resname LYSU) END
+cats SELE type CE .and. segid PROA .and. resid 1 .and. (resname LYSO .or. resname LYSU) END
+cats SELE type NZ .and. segid PROA .and. resid 13 .and. (resname LYSO .or. resname LYSU) END
+cats SELE type CE .and. segid PROA .and. resid 13 .and. (resname LYSO .or. resname LYSU) END
+cats SELE type NZ .and. segid PROA .and. resid 33 .and. (resname LYSO .or. resname LYSU) END
+cats SELE type CE .and. segid PROA .and. resid 33 .and. (resname LYSO .or. resname LYSU) END
+cats SELE type NZ .and. segid PROA .and. resid 96 .and. (resname LYSO .or. resname LYSU) END
+cats SELE type CE .and. segid PROA .and. resid 96 .and. (resname LYSO .or. resname LYSU) END
+cats SELE type NZ .and. segid PROA .and. resid 97 .and. (resname LYSO .or. resname LYSU) END
+cats SELE type CE .and. segid PROA .and. resid 97 .and. (resname LYSO .or. resname LYSU) END
+cats SELE type NZ .and. segid PROA .and. resid 116 .and. (resname LYSO .or. resname LYSU) END
+cats SELE type CE .and. segid PROA .and. resid 116 .and. (resname LYSO .or. resname LYSU) END
+cats SELE type CE2 .and. segid PROA .and. resid 20 .and. (resname TYRO .or. resname TYRU) END
+cats SELE type CZ .and. segid PROA .and. resid 20 .and. (resname TYRO .or. resname TYRU) END
+cats SELE type CE1 .and. segid PROA .and. resid 20 .and. (resname TYRO .or. resname TYRU) END
+cats SELE type OH .and. segid PROA .and. resid 20 .and. (resname TYRO .or. resname TYRU) END
+cats SELE type CE2 .and. segid PROA .and. resid 23 .and. (resname TYRO .or. resname TYRU) END
+cats SELE type CZ .and. segid PROA .and. resid 23 .and. (resname TYRO .or. resname TYRU) END
+cats SELE type CE1 .and. segid PROA .and. resid 23 .and. (resname TYRO .or. resname TYRU) END
+cats SELE type OH .and. segid PROA .and. resid 23 .and. (resname TYRO .or. resname TYRU) END
+cats SELE type CE2 .and. segid PROA .and. resid 53 .and. (resname TYRO .or. resname TYRU) END
+cats SELE type CZ .and. segid PROA .and. resid 53 .and. (resname TYRO .or. resname TYRU) END
+cats SELE type CE1 .and. segid PROA .and. resid 53 .and. (resname TYRO .or. resname TYRU) END
+cats SELE type OH .and. segid PROA .and. resid 53 .and. (resname TYRO .or. resname TYRU) END
+cats SELE type NH1 .and. segid PROA .and. resid 5 .and. (resname ARGO .or. resname ARU1 .or. resname ARU2) END
+cats SELE type NH2 .and. segid PROA .and. resid 5 .and. (resname ARGO .or. resname ARU1 .or. resname ARU2) END
+cats SELE type CZ .and. segid PROA .and. resid 5 .and. (resname ARGO .or. resname ARU1 .or. resname ARU2) END
+cats SELE type NE .and. segid PROA .and. resid 5 .and. (resname ARGO .or. resname ARU1 .or. resname ARU2) END
+cats SELE type CD .and. segid PROA .and. resid 5 .and. (resname ARGO .or. resname ARU1 .or. resname ARU2) END
+cats SELE type NH1 .and. segid PROA .and. resid 14 .and. (resname ARGO .or. resname ARU1 .or. resname ARU2) END
+cats SELE type NH2 .and. segid PROA .and. resid 14 .and. (resname ARGO .or. resname ARU1 .or. resname ARU2) END
+cats SELE type CZ .and. segid PROA .and. resid 14 .and. (resname ARGO .or. resname ARU1 .or. resname ARU2) END
+cats SELE type NE .and. segid PROA .and. resid 14 .and. (resname ARGO .or. resname ARU1 .or. resname ARU2) END
+cats SELE type CD .and. segid PROA .and. resid 14 .and. (resname ARGO .or. resname ARU1 .or. resname ARU2) END
+cats SELE type NH1 .and. segid PROA .and. resid 21 .and. (resname ARGO .or. resname ARU1 .or. resname ARU2) END
+cats SELE type NH2 .and. segid PROA .and. resid 21 .and. (resname ARGO .or. resname ARU1 .or. resname ARU2) END
+cats SELE type CZ .and. segid PROA .and. resid 21 .and. (resname ARGO .or. resname ARU1 .or. resname ARU2) END
+cats SELE type NE .and. segid PROA .and. resid 21 .and. (resname ARGO .or. resname ARU1 .or. resname ARU2) END
+cats SELE type CD .and. segid PROA .and. resid 21 .and. (resname ARGO .or. resname ARU1 .or. resname ARU2) END
+cats SELE type NH1 .and. segid PROA .and. resid 45 .and. (resname ARGO .or. resname ARU1 .or. resname ARU2) END
+cats SELE type NH2 .and. segid PROA .and. resid 45 .and. (resname ARGO .or. resname ARU1 .or. resname ARU2) END
+cats SELE type CZ .and. segid PROA .and. resid 45 .and. (resname ARGO .or. resname ARU1 .or. resname ARU2) END
+cats SELE type NE .and. segid PROA .and. resid 45 .and. (resname ARGO .or. resname ARU1 .or. resname ARU2) END
+cats SELE type CD .and. segid PROA .and. resid 45 .and. (resname ARGO .or. resname ARU1 .or. resname ARU2) END
+cats SELE type NH1 .and. segid PROA .and. resid 61 .and. (resname ARGO .or. resname ARU1 .or. resname ARU2) END
+cats SELE type NH2 .and. segid PROA .and. resid 61 .and. (resname ARGO .or. resname ARU1 .or. resname ARU2) END
+cats SELE type CZ .and. segid PROA .and. resid 61 .and. (resname ARGO .or. resname ARU1 .or. resname ARU2) END
+cats SELE type NE .and. segid PROA .and. resid 61 .and. (resname ARGO .or. resname ARU1 .or. resname ARU2) END
+cats SELE type CD .and. segid PROA .and. resid 61 .and. (resname ARGO .or. resname ARU1 .or. resname ARU2) END
+cats SELE type NH1 .and. segid PROA .and. resid 68 .and. (resname ARGO .or. resname ARU1 .or. resname ARU2) END
+cats SELE type NH2 .and. segid PROA .and. resid 68 .and. (resname ARGO .or. resname ARU1 .or. resname ARU2) END
+cats SELE type CZ .and. segid PROA .and. resid 68 .and. (resname ARGO .or. resname ARU1 .or. resname ARU2) END
+cats SELE type NE .and. segid PROA .and. resid 68 .and. (resname ARGO .or. resname ARU1 .or. resname ARU2) END
+cats SELE type CD .and. segid PROA .and. resid 68 .and. (resname ARGO .or. resname ARU1 .or. resname ARU2) END
+cats SELE type NH1 .and. segid PROA .and. resid 73 .and. (resname ARGO .or. resname ARU1 .or. resname ARU2) END
+cats SELE type NH2 .and. segid PROA .and. resid 73 .and. (resname ARGO .or. resname ARU1 .or. resname ARU2) END
+cats SELE type CZ .and. segid PROA .and. resid 73 .and. (resname ARGO .or. resname ARU1 .or. resname ARU2) END
+cats SELE type NE .and. segid PROA .and. resid 73 .and. (resname ARGO .or. resname ARU1 .or. resname ARU2) END
+cats SELE type CD .and. segid PROA .and. resid 73 .and. (resname ARGO .or. resname ARU1 .or. resname ARU2) END
+cats SELE type NH1 .and. segid PROA .and. resid 112 .and. (resname ARGO .or. resname ARU1 .or. resname ARU2) END
+cats SELE type NH2 .and. segid PROA .and. resid 112 .and. (resname ARGO .or. resname ARU1 .or. resname ARU2) END
+cats SELE type CZ .and. segid PROA .and. resid 112 .and. (resname ARGO .or. resname ARU1 .or. resname ARU2) END
+cats SELE type NE .and. segid PROA .and. resid 112 .and. (resname ARGO .or. resname ARU1 .or. resname ARU2) END
+cats SELE type CD .and. segid PROA .and. resid 112 .and. (resname ARGO .or. resname ARU1 .or. resname ARU2) END
+cats SELE type NH1 .and. segid PROA .and. resid 114 .and. (resname ARGO .or. resname ARU1 .or. resname ARU2) END
+cats SELE type NH2 .and. segid PROA .and. resid 114 .and. (resname ARGO .or. resname ARU1 .or. resname ARU2) END
+cats SELE type CZ .and. segid PROA .and. resid 114 .and. (resname ARGO .or. resname ARU1 .or. resname ARU2) END
+cats SELE type NE .and. segid PROA .and. resid 114 .and. (resname ARGO .or. resname ARU1 .or. resname ARU2) END
+cats SELE type CD .and. segid PROA .and. resid 114 .and. (resname ARGO .or. resname ARU1 .or. resname ARU2) END
+cats SELE type NH1 .and. segid PROA .and. resid 125 .and. (resname ARGO .or. resname ARU1 .or. resname ARU2) END
+cats SELE type NH2 .and. segid PROA .and. resid 125 .and. (resname ARGO .or. resname ARU1 .or. resname ARU2) END
+cats SELE type CZ .and. segid PROA .and. resid 125 .and. (resname ARGO .or. resname ARU1 .or. resname ARU2) END
+cats SELE type NE .and. segid PROA .and. resid 125 .and. (resname ARGO .or. resname ARU1 .or. resname ARU2) END
+cats SELE type CD .and. segid PROA .and. resid 125 .and. (resname ARGO .or. resname ARU1 .or. resname ARU2) END
+cats SELE type NH1 .and. segid PROA .and. resid 128 .and. (resname ARGO .or. resname ARU1 .or. resname ARU2) END
+cats SELE type NH2 .and. segid PROA .and. resid 128 .and. (resname ARGO .or. resname ARU1 .or. resname ARU2) END
+cats SELE type CZ .and. segid PROA .and. resid 128 .and. (resname ARGO .or. resname ARU1 .or. resname ARU2) END
+cats SELE type NE .and. segid PROA .and. resid 128 .and. (resname ARGO .or. resname ARU1 .or. resname ARU2) END
+cats SELE type CD .and. segid PROA .and. resid 128 .and. (resname ARGO .or. resname ARU1 .or. resname ARU2) END
+cats SELE type OG .and. segid PROA .and. resid 24 .and. (resname SERO .or. resname SERD) END
+cats SELE type CB .and. segid PROA .and. resid 24 .and. (resname SERO .or. resname SERD) END
+cats SELE type OG .and. segid PROA .and. resid 36 .and. (resname SERO .or. resname SERD) END
+cats SELE type CB .and. segid PROA .and. resid 36 .and. (resname SERO .or. resname SERD) END
+cats SELE type OG .and. segid PROA .and. resid 50 .and. (resname SERO .or. resname SERD) END
+cats SELE type CB .and. segid PROA .and. resid 50 .and. (resname SERO .or. resname SERD) END
+cats SELE type OG .and. segid PROA .and. resid 60 .and. (resname SERO .or. resname SERD) END
+cats SELE type CB .and. segid PROA .and. resid 60 .and. (resname SERO .or. resname SERD) END
+cats SELE type OG .and. segid PROA .and. resid 72 .and. (resname SERO .or. resname SERD) END
+cats SELE type CB .and. segid PROA .and. resid 72 .and. (resname SERO .or. resname SERD) END
+cats SELE type OG .and. segid PROA .and. resid 81 .and. (resname SERO .or. resname SERD) END
+cats SELE type CB .and. segid PROA .and. resid 81 .and. (resname SERO .or. resname SERD) END
+cats SELE type OG .and. segid PROA .and. resid 85 .and. (resname SERO .or. resname SERD) END
+cats SELE type CB .and. segid PROA .and. resid 85 .and. (resname SERO .or. resname SERD) END
+cats SELE type OG .and. segid PROA .and. resid 86 .and. (resname SERO .or. resname SERD) END
+cats SELE type CB .and. segid PROA .and. resid 86 .and. (resname SERO .or. resname SERD) END
+cats SELE type OG .and. segid PROA .and. resid 91 .and. (resname SERO .or. resname SERD) END
+cats SELE type CB .and. segid PROA .and. resid 91 .and. (resname SERO .or. resname SERD) END
+cats SELE type OG .and. segid PROA .and. resid 100 .and. (resname SERO .or. resname SERD) END
+cats SELE type CB .and. segid PROA .and. resid 100 .and. (resname SERO .or. resname SERD) END
+END

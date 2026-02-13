@@ -1,0 +1,11 @@
+BLOCK
+ scat on
+scat k 300.0
+cats SELE type CE .and. segid PROA .and. resid 3 .and. (resname LYSO .or. resname LYSU) END
+cats SELE type NZ .and. segid PROA .and. resid 3 .and. (resname LYSO .or. resname LYSU) END
+cats SELE type HE2 .and. segid PROA .and. resid 3 .and. (resname LYSO .or. resname LYSU) END
+cats SELE type HE1 .and. segid PROA .and. resid 3 .and. (resname LYSO .or. resname LYSU) END
+cats SELE type HZ2 .and. segid PROA .and. resid 3 .and. (resname LYSO .or. resname LYSU) END
+cats SELE type HZ3 .and. segid PROA .and. resid 3 .and. (resname LYSO .or. resname LYSU) END
+cats SELE type HZ1 .and. segid PROA .and. resid 3 .and. (resname LYSO .or. resname LYSU) END
+END

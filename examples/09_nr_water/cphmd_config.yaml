@@ -1,0 +1,42 @@
+# Neutral Red (NR) Ligand CpHMD Configuration
+# Custom titratable ligand with 2 protonation states
+
+solvation:
+  input_file: pdb/nr_protonated
+  output_dir: solvated
+  crystal_type: OCTAHEDRAL
+  padding: 10.0
+  salt_concentration: 0.10
+  extra_files:
+    - toppar/nr_protonated.cgenff.rtf
+    - toppar/nr_protonated.cgenff.prm
+
+patch:
+  input_folder: solvated
+  output_folder: solvated/prep
+  structure_file: solvated
+  hmr: true
+  selected_residues: []  # No standard amino acids — ligand only
+  extra_files:
+    - toppar/nr_protonated.cgenff.rtf
+    - toppar/nr_protonated.cgenff.prm
+    - toppar/nr_titratable.str
+  ligand_patches:
+    - resname: NRED
+      patch_file: toppar/nr_titratable.str
+      patches: [NRDU]
+      pka_values:
+        NRDU: 6.8
+
+alf:
+  input_folder: solvated
+  temperature: 298.15
+  hmr: true
+  auto_phase_switch: true
+  auto_stop: true
+  cleanup: false
+  no_pka_bias: true
+  extra_files:
+    - toppar/nr_protonated.cgenff.rtf
+    - toppar/nr_protonated.cgenff.prm
+    - toppar/nr_titratable.str

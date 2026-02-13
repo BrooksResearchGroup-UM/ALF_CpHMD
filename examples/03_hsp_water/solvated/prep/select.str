@@ -1,0 +1,3 @@
+DEFIne s1s1 SELEct segid PROA .and. resid 3 .and. resname HSPO END
+DEFIne s1s2 SELEct segid PROA .and. resid 3 .and. resname HSPD END
+DEFIne s1s3 SELEct segid PROA .and. resid 3 .and. resname HSPE END

@@ -1,0 +1,26 @@
+# Glutamic Acid ALF with Hybrid Analysis Method
+# Same system as 00_glu_water but uses hybrid (WHAM + LMALF) analysis
+
+solvation:
+  input_file: ../00_glu_water/pdb/glu
+  output_dir: solvated
+  crystal_type: OCTAHEDRAL
+  padding: 10.0
+  salt_concentration: 0.15
+
+patch:
+  input_folder: solvated
+  structure_file: solvated
+  hmr: true
+  selected_residues: [GLU]
+
+alf:
+  input_folder: solvated
+  temperature: 298.15
+  hmr: true
+  auto_phase_switch: true
+  auto_stop: true
+  cleanup: false
+  analysis_method: hybrid
+  restrain_hydrogens: true
+  g_imp_bins: [20, 32, 32]

@@ -1,0 +1,2 @@
+DEFIne s1s1 SELEct segid NRED .and. resid 1 .and. resname NREDO END
+DEFIne s1s2 SELEct segid NRED .and. resid 1 .and. resname NRDU END
