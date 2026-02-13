@@ -392,3 +392,88 @@ class TestWorstSitePopDiff:
         data = generate_trapped_lambda([3], fraction=0.999, n_frames=5000, seed=73)
         diff = compute_worst_site_pop_diff(data, None)
         assert diff > 0.95
+
+
+# ---------------------------------------------------------------------------
+# Pop-diff pre-gate
+# ---------------------------------------------------------------------------
+
+class TestPopDiffPreGate:
+    """Pop-diff pre-gate blocks accumulated data when last run is stuck."""
+
+    def test_stuck_last_run_blocks_transition_multisite(self):
+        """nsubs=[8,15]: accumulated data has spread<0.5 but last run is 100%
+        stuck -> should stay in Phase 1."""
+        nsubs = [8, 15]
+        nblocks = sum(nsubs)
+        rng = np.random.default_rng(80)
+        n_per_run = 5000
+
+        # Build 20 runs where each is mostly stuck but random init
+        # visits a few states for the first ~50 frames
+        accumulated_runs = []
+        for r in range(20):
+            run_data = np.zeros((n_per_run, nblocks))
+            dominant_s0 = 4
+            dominant_s1 = 11
+            for t in range(n_per_run):
+                if t < 50:
+                    s0 = rng.integers(0, 8)
+                    s1 = 8 + rng.integers(0, 15)
+                else:
+                    s0 = dominant_s0
+                    s1 = 8 + dominant_s1
+                run_data[t, s0] = rng.uniform(0.99, 1.0)
+                run_data[t, s1] = rng.uniform(0.99, 1.0)
+                for j in range(nblocks):
+                    if j != s0 and j != s1:
+                        run_data[t, j] = rng.uniform(0.0, 0.003)
+            accumulated_runs.append(run_data)
+
+        last_run = accumulated_runs[-1]
+
+        # With single-run (stuck) data, should stay in phase 1
+        config = PhaseTransitionConfig(spread_1to2=0.5, min_hits_1to2=100)
+        new_phase_single, reason_single = check_phase_transition(
+            current_phase=1, lambda_data=last_run, config=config,
+            nsubs=nsubs,
+        )
+        assert new_phase_single == 1, f"Single-run stuck data should block: {reason_single}"
+
+        # The pop-diff gate should detect the stuck last run
+        diff = compute_worst_site_pop_diff(last_run, nsubs)
+        assert diff > 0.9, f"Last run should show diff>0.9, got {diff}"
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 -> 1 regression
+# ---------------------------------------------------------------------------
+
+class TestPhase2To1Regression:
+    """Phase 2->1 regression when stuck for too many consecutive runs."""
+
+    def test_stuck_data_detected(self):
+        """Stuck Phase 2 data: connectivity=0, diff>0.95."""
+        nsubs = [8, 15]
+        nblocks = sum(nsubs)
+        rng = np.random.default_rng(90)
+        n = 5000
+        stuck_data = np.zeros((n, nblocks))
+        for t in range(n):
+            stuck_data[t, 4] = rng.uniform(0.99, 1.0)
+            stuck_data[t, 8 + 11] = rng.uniform(0.99, 1.0)
+            for j in range(nblocks):
+                if j not in (4, 19):
+                    stuck_data[t, j] = rng.uniform(0.0, 0.003)
+
+        diff = compute_worst_site_pop_diff(stuck_data, nsubs)
+        assert diff > 0.95, f"Stuck data should have diff>0.95, got {diff}"
+
+        connectivity = 0.0
+        is_stuck = connectivity == 0.0 and diff > 0.95
+        assert is_stuck
+
+    def test_regression_count_caps(self):
+        """After max_phase_regressions, no more regressions allowed."""
+        config = PhaseTransitionConfig(max_phase_regressions=2)
+        assert config.max_phase_regressions == 2

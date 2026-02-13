@@ -15,6 +15,7 @@ from cphmd.core.phase_switcher import (
     calculate_populations,
     check_phase3_stop,
     check_phase_transition,
+    compute_worst_site_pop_diff,
     ewbs_bottleneck_type,
     load_lambda_data,
     update_ewbs_state,
@@ -296,10 +297,25 @@ class ConvergenceTracker:
                     if states_visited >= 2:
                         multistate_count += 1
                 if multistate_count >= min_ms:
-                    lambda_data_for_check = np.vstack(accumulated)
-                    print(f"  Phase 1 check: accumulated {len(accumulated)} runs "
-                          f"({lambda_data_for_check.shape[0]} frames), "
-                          f"{multistate_count} multi-state")
+                    # Pop-diff pre-gate: check if last run is stuck.
+                    # If worst-site diff > threshold, accumulated data is
+                    # misleading (random-init noise, not real transitions).
+                    last_run_data = accumulated[-1]
+                    last_run_diff = compute_worst_site_pop_diff(
+                        last_run_data, nsubs,
+                    )
+                    max_diff = self.config.phase_transition.max_pop_diff_1to2
+                    if last_run_diff > max_diff:
+                        print(f"  Phase 1 check: accumulated {len(accumulated)} runs "
+                              f"({sum(a.shape[0] for a in accumulated)} frames), "
+                              f"{multistate_count} multi-state")
+                        print(f"  Pop-diff pre-gate: last-run worst-site diff="
+                              f"{last_run_diff:.3f}>{max_diff} — using single-run data")
+                    else:
+                        lambda_data_for_check = np.vstack(accumulated)
+                        print(f"  Phase 1 check: accumulated {len(accumulated)} runs "
+                              f"({lambda_data_for_check.shape[0]} frames), "
+                              f"{multistate_count} multi-state")
                 else:
                     print(f"  Phase 1 check: only {multistate_count}/{len(accumulated)} "
                           f"runs show multi-state behavior (need {min_ms}) "
@@ -331,6 +347,36 @@ class ConvergenceTracker:
             regenerate_g_imp_fn(old_phase, new_phase)
         else:
             print(f"Phase check: {reason}")
+
+        # Phase 2→1 regression: detect stuck Phase 2
+        if self.state.phase == 2:
+            connectivity = cut_params.get("connectivity", 1.0)
+            pop_diff = compute_worst_site_pop_diff(lambda_data, nsubs)
+            pt_cfg = self.config.phase_transition
+            is_stuck = (
+                connectivity == 0.0
+                and pop_diff > pt_cfg.stuck_diff_threshold
+            )
+            if is_stuck:
+                self.state.stuck_phase2_count += 1
+            else:
+                self.state.stuck_phase2_count = 0
+
+            if (self.state.stuck_phase2_count >= pt_cfg.max_stuck_phase2_runs
+                    and self.state.phase_regression_count < pt_cfg.max_phase_regressions):
+                self.state.phase_regression_count += 1
+                print(f"\nPHASE REGRESSION: 2 → 1 "
+                      f"(stuck for {self.state.stuck_phase2_count} consecutive runs, "
+                      f"regression {self.state.phase_regression_count}/"
+                      f"{pt_cfg.max_phase_regressions})")
+                print(f"  connectivity={connectivity:.2f}, "
+                      f"pop_diff={pop_diff:.3f}>{pt_cfg.stuck_diff_threshold}")
+                self.state.phase = 1
+                self.state.phase2_start_run = None
+                self.state.stuck_phase2_count = 0
+                if self.state.ewbs_state is not None:
+                    self.state.ewbs_state = EWBSState()
+                regenerate_g_imp_fn(2, 1)
 
     # ------------------------------------------------------------------
     # Stop criteria
