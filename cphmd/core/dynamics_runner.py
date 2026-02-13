@@ -287,10 +287,14 @@ class DynamicsRunner:
         from .block_builder import BlockConfig, build_block_command, read_variable_file
         from .charmm_utils import execute_block_command
         from .cphmd_params import (
+            adjust_tags_for_effective_ph,
             compute_all_site_parameters,
-            compute_bias_shifts,
+            compute_per_unit_shift,
             get_delta_pKa_for_phase,
             write_bias_files,
+        )
+        from .cphmd_params import (
+            replica_pH as compute_replica_pH,
         )
 
         if k > 0:
@@ -302,33 +306,47 @@ class DynamicsRunner:
         var_file = self.config.input_folder / f"variables{run_idx}.inp"
         variables = read_variable_file(var_file)
 
-        effective_pH = None
+        rep_pH = None
         delta_pKa = get_delta_pKa_for_phase(self.state.phase)
+        # Start with original patch_info; adjusted below if CpHMD is active
+        block_patch_info = self.state.patch_info
 
         if self.config.pH:
             cphmd_params = compute_all_site_parameters(
                 self.state.patch_info,
                 self.config.temperature,
             )
-            effective_pH = cphmd_params.effective_pH
+            ncentral = self.state.alf_info["ncentral"]
+
+            # Each replica runs at a different pH, fanning out from effective_pH
+            rep_pH = compute_replica_pH(
+                cphmd_params.effective_pH, delta_pKa, replica_idx, ncentral,
+            )
 
             if self.config.no_pka_bias:
                 nblocks = self.state.alf_info["nblocks"]
-                b_shift = np.zeros(nblocks)
-                b_fix_shift = np.zeros(nblocks)
+                b_shift = np.zeros(nblocks).tolist()
+                b_fix_shift = np.zeros(nblocks).tolist()
             else:
-                b_shift, b_fix_shift = compute_bias_shifts(
+                b_shift, b_fix_shift = compute_per_unit_shift(
                     cphmd_params,
                     self.state.patch_info,
                     delta_pKa,
-                    replica_idx,
                 )
-            write_bias_files(self.config.input_folder, b_shift, b_fix_shift)
+            # Only rank 0 writes shift files (all ranks compute same per-unit values)
+            if replica_idx == 0:
+                write_bias_files(self.config.input_folder, b_shift, b_fix_shift)
+
+            # Adjust TAG pKa values relative to effective_pH (multi-site correction).
+            # For single-site systems this is a no-op (effective_pH == site pH₀).
+            block_patch_info = adjust_tags_for_effective_ph(
+                self.state.patch_info, cphmd_params,
+            )
 
         block_config = BlockConfig(
             temperature=self.config.temperature,
             pH=self.config.pH,
-            effective_pH=effective_pH,
+            effective_pH=rep_pH,
             delta_pKa=delta_pKa,
             use_cphmd=(self.config.pH and delta_pKa != 0 and not self.config.no_pka_bias),
             initial_lambdas=self.state.forced_initial_lambdas,
@@ -337,7 +355,7 @@ class DynamicsRunner:
         )
 
         block_cmd = build_block_command(
-            self.state.patch_info, variables, block_config,
+            block_patch_info, variables, block_config,
             fnex=self.config.fnex,
             chi_offset=self.config.chi_offset,
             omega_decay=self.config.omega_decay,

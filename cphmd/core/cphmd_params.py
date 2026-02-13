@@ -194,32 +194,67 @@ def compute_all_site_parameters(
     return cphmd
 
 
-def compute_bias_shifts(
+def adjust_tags_for_effective_ph(
+    patch_info: pd.DataFrame,
+    cphmd: CpHMDParameters,
+) -> pd.DataFrame:
+    """Adjust TAG pKa values so they are relative to effective_pH.
+
+    When effective_pH differs from a site's pH₀ (multi-site systems),
+    the TAG micro-pKa must be shifted so that CHARMM's internal
+    ``ΔG = ±kTln10·(pH - pKa_TAG)`` gives zero bias at the central
+    replica's pH.  For single-site systems where effective_pH == pH₀
+    the adjustment is zero — a safe no-op.
+
+    Args:
+        patch_info: Original DataFrame with TAG column (not mutated).
+        cphmd: CpHMD parameters with per-site pH₀ values and effective_pH.
+
+    Returns:
+        Copy of patch_info with adjusted TAG pKa values.
+    """
+    adjusted = patch_info.copy()
+
+    for idx, row in adjusted.iterrows():
+        tag = str(row["TAG"]).strip()
+        site_id = row["site"]
+
+        if not (tag.upper().startswith("UPOS") or tag.upper().startswith("UNEG")):
+            continue
+
+        parts = tag.split()
+        if len(parts) < 2:
+            continue
+
+        original_pKa = float(parts[1])
+        site_params = cphmd.sites.get(site_id)
+        site_pH0 = site_params.pH0 if site_params else 7.0
+        new_pKa = original_pKa + (cphmd.effective_pH - site_pH0)
+        adjusted.at[idx, "TAG"] = f"{parts[0]} {new_pKa:.2f}"
+
+    return adjusted
+
+
+def compute_per_unit_shift(
     cphmd: CpHMDParameters,
     patch_info: pd.DataFrame,
     delta_pKa: float,
-    replica_idx: int = 0,
 ) -> tuple[list[float], list[float]]:
-    """Compute bias shift values for dynamics.
+    """Compute per-unit pH shift and pKa-fix shift for each block.
 
-    Creates two bias arrays:
-    1. b_shift: pH-dependent bias for dynamics (includes replica shifts)
-    2. b_fix_shift: Original pKa shifts for ALF analysis
+    Returns two arrays used by WHAM analysis to reconstruct per-replica biases:
+    1. b_shift: ±kTln10 × delta_pKa per block.  Analysis multiplies by (k - ncentral).
+    2. b_fix_shift: ±kTln10 × subsite_pKa_shift per block (replica-independent).
 
     Args:
         cphmd: CpHMD parameters
         patch_info: DataFrame from patches.dat
         delta_pKa: pH increment between replicas
-        replica_idx: Index of current replica (0-based)
 
     Returns:
         Tuple of (b_shift, b_fix_shift) arrays
     """
     kTln10 = cphmd.kTln10
-    ncentral = len(cphmd.sites) // 2
-
-    # Replica pH offset: each replica is shifted by delta_pKa from the central one
-    replica_shift = delta_pKa * (replica_idx - ncentral)
 
     b_shift: list[float] = []
     b_fix_shift: list[float] = []
@@ -237,10 +272,10 @@ def compute_bias_shifts(
         else:
             sign = 0
 
-        # b_shift: replica-specific pH bias for dynamics
-        b_shift.append(sign * kTln10 * replica_shift)
+        # b_shift: per-unit pH shift (multiplied by (k - ncentral) in analysis)
+        b_shift.append(sign * kTln10 * delta_pKa)
 
-        # b_fix_shift: original pKa shifts for analysis
+        # b_fix_shift: subsite pKa correction (same for all replicas)
         if site_id in cphmd.sites:
             pKa_shift = cphmd.sites[site_id].subsite_shifts.get(select_name, 0.0)
             b_fix_shift.append(sign * kTln10 * pKa_shift)
@@ -248,6 +283,31 @@ def compute_bias_shifts(
             b_fix_shift.append(0.0)
 
     return b_shift, b_fix_shift
+
+
+def replica_pH(
+    effective_pH: float,
+    delta_pKa: float,
+    replica_idx: int,
+    ncentral: int,
+) -> float:
+    """Compute the pH for a specific replica.
+
+    pH_k = effective_pH + delta_pKa × (replica_idx - ncentral)
+
+    The central replica (replica_idx == ncentral) runs at effective_pH.
+    Other replicas fan out symmetrically with delta_pKa spacing.
+
+    Args:
+        effective_pH: Reference pH (auto-computed from macro-pKa)
+        delta_pKa: pH spacing between adjacent replicas
+        replica_idx: 0-based index of this replica
+        ncentral: Index of the central replica (nreps // 2)
+
+    Returns:
+        pH value for this replica
+    """
+    return effective_pH + delta_pKa * (replica_idx - ncentral)
 
 
 def write_bias_files(
