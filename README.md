@@ -74,6 +74,13 @@ Enable `--auto-phase` to let the simulation decide when to advance:
 
 **Hybrid** -- WHAM for early phases, LMALF for later phases.
 
+**Nonlinear** -- L-BFGS maximum-likelihood optimization ([DOI: 10.1021/acs.jctc.4c00514](https://doi.org/10.1021/acs.jctc.4c00514)):
+- Directly optimizes the physical reweighting objective rather than solving a linear system
+- Combines moment-matching (MD vs MC ensemble agreement) with profile likelihood
+- Monte Carlo reference ensemble sampled from the implicit constraint distribution
+- L-BFGS with 50-vector history and regularization toward current bias values
+- Better suited for systems with many parameters where dense C-matrix inversion is expensive
+
 ### Convergence Visualization
 Automatically generated plots during simulation:
 - **Population convergence** -- per-site substate populations over ALF iterations
@@ -111,6 +118,8 @@ parameters from the energy landscape:
 - **G_imp entropy computation** -- ideal mixing free energies computed locally via
   Monte Carlo integration, cached at `~/.cache/cphmd/G_imp/`; bundled fallback data
   included for common configurations
+- **Constraint types** -- `fnex` (default softmax), `fpie` / `fnpwise` (piecewise
+  implicit constraint for large substituent counts); set via `constraint_type` in config
 - **FNEX centralization** -- all bias shape constants (OMEGA_DECAY, CHI_OFFSET,
   OMEGA_SCALE) derive from a single FNEX parameter; configurable via `ALFConfig(fnex=...)`
 - **DCA / Potts model** -- Direct Coupling Analysis for multi-site free energy estimation
@@ -145,9 +154,10 @@ pip install -e ".[dev]"
 - Matplotlib >= 3.4 (visualization)
 - PyArrow >= 10.0 (optional, for Parquet lambda files; install via `pip install -e ".[analysis]"`)
 
-### CUDA WHAM Library
+### CUDA Libraries
 
-The pre-compiled `libwham.so` is included. To recompile after editing `wham.cu`:
+Pre-compiled `libwham.so` and `libnonlinear.so` are included. To recompile after
+editing CUDA sources:
 
 ```bash
 cd cphmd/wham/src && make
@@ -248,7 +258,7 @@ cphmd utils lambda-info       Show metadata for a lambda file (.lmd or .parquet)
 | `--auto-stop` | off | Stop when converged in Phase 3 |
 | `--convergence-mode` | population | Convergence criterion: `population` or `rmsd` |
 | `--coupling` | 0 | Inter-site coupling: 0=none, 1=full, 2=c-only |
-| `--analysis-method` | wham | Analysis: `wham`, `lmalf`, or `hybrid` |
+| `--analysis-method` | wham | Analysis: `wham`, `lmalf`, `hybrid`, or `nonlinear` |
 | `--hh-plots` | off | Generate Henderson-Hasselbalch titration curves |
 | `--hmr/--no-hmr` | on | Hydrogen mass repartitioning (4 fs timestep) |
 | `--restrains` | SCAT | Restraint type: SCAT or NOE |
@@ -298,9 +308,9 @@ cphmd/
 ├── config/                       # Configuration system
 │   ├── loader.py                     # YAML config loader with CLI override merging
 │   └── defaults/                     # Default YAML configs (alf, patch, solvation)
-├── wham/                         # GPU WHAM/LMALF engine
+├── wham/                         # GPU WHAM/LMALF/Nonlinear engine
 │   ├── __init__.py                   # Python ctypes bindings + in-memory data packing
-│   └── src/                          # CUDA C source (wham.cu, Makefile)
+│   └── src/                          # CUDA C source (wham.cu, nonlinear.cu, Makefile)
 ├── presets/                      # Converged single-site bias presets
 │   └── biases.py                     # ASP/GLU/HSP/LYS/TYR across 10 electrostatic configs
 ├── utils/                        # Utilities
@@ -347,13 +357,25 @@ are sampled equally. Each iteration:
 
 The bias potential has the form:
 ```
-V_bias = b_i * (lambda_i - lambda_central) + c_ij * lambda_i * lambda_j
-       + x_i * f(lambda) + s_i * g(lambda)
+V_bias = b_i * λ_i + c_ij * λ_i * λ_j
+       + x_ij * λ_j * (1 - exp(-λ_i / ω))           # skew correction
+       + s_ij * λ_j * σ(λ_i, α_s)                    # endpoint (λ→1)
+       + t_ij * λ_j * σ_opp(λ_i, α_t)                # endpoint (λ→0)
+       + u_ij * λ_j² * σ(λ_i, α_u)                   # quadratic endpoint
 ```
 
-where `b` are linear biases, `c` are pairwise coupling terms, `x` are skew corrections
-(exponential decay, rate = FNEX), and `s` are endpoint corrections (sigmoid,
-offset = 4*exp(-FNEX)). For CpHMD, pH-dependent shifts are added:
+where:
+- `b` are linear biases, `c` are pairwise coupling terms
+- `x` are skew corrections (exponential decay, ω = 1/FNEX)
+- `s` are endpoint corrections at λ→1 (sigmoid, α_s = 4·exp(-FNEX))
+- `t` are opposite-endpoint corrections at λ→0 (inverted sigmoid, α_t from FNEX)
+- `u` are quadratic endpoint corrections (same sigmoid as `s`, but with λ_j² coupling)
+
+The default bias type is `bcxs` (b/c/x/s terms only). The extended `bcxstu` type
+adds t/u endpoint terms for systems with persistent endpoint trapping. Enable via
+`ALFConfig(bias_type="bcxstu")` or YAML `bias_type: bcxstu`.
+
+For CpHMD, pH-dependent shifts are added:
 ```
 b_shift = sign * kT * ln(10) * (pH - pKa_ref)
 ```
@@ -370,7 +392,7 @@ In Phase 3, convergence requires:
 ## Testing
 
 ```bash
-pytest tests/             # full suite (~190 tests)
+pytest tests/             # full suite (~300 tests)
 pytest tests/ -k phase    # filter by keyword
 pytest tests/ -v --tb=short
 ```
@@ -397,7 +419,11 @@ pytest tests/ -v --tb=short
    *pyCHARMM: Embedding CHARMM Functionality in a Python Framework.*
    J. Chem. Theory Comput. **19**, 3752-3762. [DOI: 10.1021/acs.jctc.3c00364](https://doi.org/10.1021/acs.jctc.3c00364)
 
-6. Brooks, B.R., et al. (2009)
+6. Hayes, R.L.; Cervantes, L.F.; Cruz Abad Santos, J.; Samadi, A.; Vilseck, J.Z.; Brooks, C.L. III (2024)
+   *How to Sample Dozens of Substitutions per Site with λ Dynamics.*
+   J. Chem. Theory Comput. **20**, 6505-6517. [DOI: 10.1021/acs.jctc.4c00514](https://doi.org/10.1021/acs.jctc.4c00514)
+
+7. Brooks, B.R., et al. (2009)
    *CHARMM: The Biomolecular Simulation Program.*
    J. Comput. Chem. **30**, 1545-1614. [DOI: 10.1002/jcc.21287](https://doi.org/10.1002/jcc.21287)
 

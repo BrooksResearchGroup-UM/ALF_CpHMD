@@ -31,6 +31,8 @@ class FreeEnergyResult:
         c_changes: Quadratic bias changes (nblocks x nblocks).
         x_changes: Cross-term x bias changes (nblocks x nblocks).
         s_changes: Cross-term s bias changes (nblocks x nblocks).
+        t_changes: Cross-term t bias changes (nblocks x nblocks).
+        u_changes: Cross-term u bias changes (nblocks x nblocks).
     """
 
     scaling: float
@@ -38,6 +40,8 @@ class FreeEnergyResult:
     c_changes: np.ndarray
     x_changes: np.ndarray
     s_changes: np.ndarray
+    t_changes: np.ndarray
+    u_changes: np.ndarray
 
 
 def _solve_with_svd(
@@ -258,8 +262,8 @@ def fallback_bias_update(
     return delta_b
 
 
-def _identify_param_type(idx: int, nsubs: np.ndarray) -> str:
-    """Map a parameter index back to its type (cutb/cutc/cutx/cuts).
+def _identify_param_type(idx: int, nsubs: np.ndarray, ntriangle: int = 5) -> str:
+    """Map a parameter index back to its type (cutb/cutc/cutx/cuts/cutt/cutu).
 
     Walks the full parameter layout (matching WHAM C/V dimensions) to
     determine which parameter type owns the given index.
@@ -285,6 +289,16 @@ def _identify_param_type(idx: int, nsubs: np.ndarray) -> str:
             return "cuts"
         offset += 2 * n2
 
+        if ntriangle >= 7:
+            if offset <= idx < offset + 2 * n2:
+                return "cutt"
+            offset += 2 * n2
+
+        if ntriangle >= 9:
+            if offset <= idx < offset + 2 * n2:
+                return "cutu"
+            offset += 2 * n2
+
     return "cutc2"  # Must be an inter-site parameter
 
 
@@ -296,6 +310,8 @@ def get_free_energy5(
     cutc: float = 8.0,
     cutx: float = 0.2,
     cuts: float = 0.2,
+    cutt: float = 0.0,
+    cutu: float = 0.0,
     cutc2: float = 1.0,
     cutx2: float = 0.5,
     cuts2: float = 0.5,
@@ -303,6 +319,8 @@ def get_free_energy5(
     calc_psi: bool = True,
     calc_chi: bool = True,
     calc_omega: bool = True,
+    calc_omega2: bool = False,
+    calc_omega3: bool = False,
     site_populations: list[np.ndarray] | None = None,
     transition_weights: np.ndarray | None = None,
     connectivity: float | None = None,
@@ -316,7 +334,8 @@ def get_free_energy5(
 
     The WHAM routine produces C.dat (Hessian) and V.dat (gradient) in
     multisite/. This routine adds regularization and inverts to find
-    optimal bias parameter changes, saved as b.dat, c.dat, x.dat, s.dat.
+    optimal bias parameter changes, saved as b.dat, c.dat, x.dat, s.dat,
+    t.dat, u.dat.
 
     Args:
         alf_info: ALF configuration dictionary or ALFInfo dataclass.
@@ -326,6 +345,8 @@ def get_free_energy5(
         cutc: Maximum change cap for c (coupling/psi) parameters.
         cutx: Maximum change cap for x (chi) parameters.
         cuts: Maximum change cap for s (omega) parameters.
+        cutt: Maximum change cap for t parameters (0 = disabled).
+        cutu: Maximum change cap for u parameters (0 = disabled).
         cutc2: Maximum change cap for inter-site c parameters.
         cutx2: Maximum change cap for inter-site x parameters.
         cuts2: Maximum change cap for inter-site s parameters.
@@ -333,6 +354,8 @@ def get_free_energy5(
         calc_psi: Include c (coupling) parameters in the matrix solve.
         calc_chi: Include x (exponential) parameters in the matrix solve.
         calc_omega: Include s (sigmoid) parameters in the matrix solve.
+        calc_omega2: Include t parameters in the matrix solve.
+        calc_omega3: Include u parameters in the matrix solve.
         transition_weights: Per-parameter regularization weights from transition counts.
             Weight > 1.0 means stronger regularization (less trust in poorly-sampled coupling).
         analysis_dir: Path to analysis directory. If None, uses cwd.
@@ -348,9 +371,11 @@ def get_free_energy5(
     result = _compute_free_energy(
         analysis_dir, alf_info, ms, msprof,
         cutb=cutb, cutc=cutc, cutx=cutx, cuts=cuts,
+        cutt=cutt, cutu=cutu,
         cutc2=cutc2, cutx2=cutx2, cuts2=cuts2,
         calc_phi=calc_phi, calc_psi=calc_psi,
         calc_chi=calc_chi, calc_omega=calc_omega,
+        calc_omega2=calc_omega2, calc_omega3=calc_omega3,
         site_populations=site_populations,
         transition_weights=transition_weights,
         connectivity=connectivity,
@@ -367,6 +392,8 @@ def _compute_free_energy(
     cutc: float = 8.0,
     cutx: float = 0.2,
     cuts: float = 0.2,
+    cutt: float = 0.0,
+    cutu: float = 0.0,
     cutc2: float = 1.0,
     cutx2: float = 0.5,
     cuts2: float = 0.5,
@@ -374,6 +401,8 @@ def _compute_free_energy(
     calc_psi: bool = True,
     calc_chi: bool = True,
     calc_omega: bool = True,
+    calc_omega2: bool = False,
+    calc_omega3: bool = False,
     site_populations: list[np.ndarray] | None = None,
     transition_weights: np.ndarray | None = None,
     connectivity: float | None = None,
@@ -385,11 +414,13 @@ def _compute_free_energy(
         alf_info: ALF configuration.
         ms: Intersite bias flag.
         msprof: Intersite profile flag.
-        cutb-cuts2: Maximum change caps for each parameter type.
+        cutb-cutu: Maximum change caps for each parameter type.
         calc_phi: Include b (linear) parameters.
         calc_psi: Include c (coupling) parameters.
         calc_chi: Include x (exponential) parameters.
         calc_omega: Include s (sigmoid) parameters.
+        calc_omega2: Include t parameters.
+        calc_omega3: Include u parameters.
         site_populations: Per-site population arrays for dampening.
             Each entry is a 1D array of normalized populations for one site.
             When provided, bias updates for poorly-sampled sites are dampened.
@@ -418,11 +449,27 @@ def _compute_free_energy(
     x_prev = np.loadtxt(analysis_dir / "x_prev.dat")
     s_prev = np.loadtxt(analysis_dir / "s_prev.dat")
 
+    # Determine ntriangle from active parameter types
+    # ntriangle = 1(c) + 2(x) + 2(s) [+ 2(t)] [+ 2(u)]
+    ntriangle = 5
+    if cutt > 0 or calc_omega2:
+        ntriangle = 7
+    if cutu > 0 or calc_omega3:
+        ntriangle = 9
+
+    # Load t/u previous biases (create zeros if files don't exist yet)
+    t_prev_path = analysis_dir / "t_prev.dat"
+    u_prev_path = analysis_dir / "u_prev.dat"
+    t_prev = np.loadtxt(t_prev_path) if t_prev_path.exists() else np.zeros((nblocks, nblocks))
+    u_prev = np.loadtxt(u_prev_path) if u_prev_path.exists() else np.zeros((nblocks, nblocks))
+
     # Initialize output arrays
     b = np.zeros((1, nblocks))
     c = np.zeros((nblocks, nblocks))
     x = np.zeros((nblocks, nblocks))
     s = np.zeros((nblocks, nblocks))
+    t = np.zeros((nblocks, nblocks))
+    u = np.zeros((nblocks, nblocks))
 
     # Count total parameters (always full — must match WHAM C.dat/V.dat dimensions)
     nparm = 0
@@ -432,9 +479,9 @@ def _compute_free_energy(
         for jsite in range(isite, len(nsubs)):
             n3 = nsubs[isite] * nsubs[jsite]
             if isite == jsite:
-                nparm += n1 + 5 * n2
+                nparm += n1 + ntriangle * n2
             elif ms == 1:
-                nparm += 5 * n3
+                nparm += ntriangle * n3
             elif ms == 2:
                 nparm += n3
 
@@ -452,6 +499,8 @@ def _compute_free_energy(
     c_indx: list[int] = []
     x_indx: list[int] = []
     s_indx: list[int] = []
+    t_indx: list[int] = []
+    u_indx: list[int] = []
     c2_indx: list[int] = []
     x2_indx: list[int] = []
     s2_indx: list[int] = []
@@ -490,6 +539,20 @@ def _compute_free_energy(
                     param_active[n0 : n0 + 2 * n2] = False
                 n0 += 2 * n2
 
+                if ntriangle >= 7:
+                    cutlist[n0 : n0 + 2 * n2] = cutt
+                    t_indx.extend(range(n0, n0 + 2 * n2))
+                    if not calc_omega2:
+                        param_active[n0 : n0 + 2 * n2] = False
+                    n0 += 2 * n2
+
+                if ntriangle >= 9:
+                    cutlist[n0 : n0 + 2 * n2] = cutu
+                    u_indx.extend(range(n0, n0 + 2 * n2))
+                    if not calc_omega3:
+                        param_active[n0 : n0 + 2 * n2] = False
+                    n0 += 2 * n2
+
             elif ms == 1:
                 # Inter-site parameters with full coupling
                 cutlist[n0 : n0 + n3] = cutc2
@@ -525,6 +588,34 @@ def _compute_free_energy(
                 if not calc_omega:
                     param_active[n0 : n0 + 2 * n3] = False
                 n0 += 2 * n3
+
+                # t cross-terms with regularization
+                if ntriangle >= 7:
+                    ind = n0
+                    for i in range(nsubs[isite]):
+                        for j in range(nsubs[jsite]):
+                            reglist[ind] = -t_prev[iblock + i, jblock + j]
+                            ind += 1
+                            reglist[ind] = -t_prev[jblock + j, iblock + i]
+                            ind += 1
+                    cutlist[n0 : n0 + 2 * n3] = cutt
+                    if not calc_omega2:
+                        param_active[n0 : n0 + 2 * n3] = False
+                    n0 += 2 * n3
+
+                # u cross-terms with regularization
+                if ntriangle >= 9:
+                    ind = n0
+                    for i in range(nsubs[isite]):
+                        for j in range(nsubs[jsite]):
+                            reglist[ind] = -u_prev[iblock + i, jblock + j]
+                            ind += 1
+                            reglist[ind] = -u_prev[jblock + j, iblock + i]
+                            ind += 1
+                    cutlist[n0 : n0 + 2 * n3] = cutu
+                    if not calc_omega3:
+                        param_active[n0 : n0 + 2 * n3] = False
+                    n0 += 2 * n3
 
             elif ms == 2:
                 # Inter-site with only c coupling
@@ -690,7 +781,7 @@ def _compute_free_energy(
         ratios = np.abs(coeff[0:n0] / safe_cutlist)
         ratios[~param_active] = 0.0  # inactive params can't be bottleneck
         bottleneck_idx = int(np.argmax(ratios))
-        bottleneck_type = _identify_param_type(bottleneck_idx, nsubs)
+        bottleneck_type = _identify_param_type(bottleneck_idx, nsubs, ntriangle)
     else:
         bottleneck_type = "none"
 
@@ -698,13 +789,13 @@ def _compute_free_energy(
     scaling_file = analysis_dir / "scaling.dat"
     with open(scaling_file, "w") as f:
         if connectivity is not None:
-            f.write("# scaling bottleneck cutb cutc cutx cuts connectivity\n")
+            f.write("# scaling bottleneck cutb cutc cutx cuts cutt cutu connectivity\n")
             f.write(f"{scaling:.6f} {bottleneck_type} {cutb:.4f} {cutc:.4f} "
-                    f"{cutx:.4f} {cuts:.4f} {connectivity:.4f}\n")
+                    f"{cutx:.4f} {cuts:.4f} {cutt:.4f} {cutu:.4f} {connectivity:.4f}\n")
         else:
-            f.write("# scaling bottleneck cutb cutc cutx cuts\n")
+            f.write("# scaling bottleneck cutb cutc cutx cuts cutt cutu\n")
             f.write(f"{scaling:.6f} {bottleneck_type} {cutb:.4f} {cutc:.4f} "
-                    f"{cutx:.4f} {cuts:.4f}\n")
+                    f"{cutx:.4f} {cuts:.4f} {cutt:.4f} {cutu:.4f}\n")
 
     # Unpack coefficients into bias matrices
     # (excluded params were zeroed in coeff, so output arrays get zeros naturally)
@@ -740,6 +831,22 @@ def _compute_free_energy(
                             s[iblock + i, jblock + j] = coeff[ind]
                             ind += 1
 
+                # Intra-site: t terms (sign-flipped)
+                if ntriangle >= 7:
+                    for i in range(nsubs[isite]):
+                        for j in range(nsubs[isite]):
+                            if i != j:
+                                t[iblock + i, jblock + j] = -coeff[ind]
+                                ind += 1
+
+                # Intra-site: u terms
+                if ntriangle >= 9:
+                    for i in range(nsubs[isite]):
+                        for j in range(nsubs[isite]):
+                            if i != j:
+                                u[iblock + i, jblock + j] = coeff[ind]
+                                ind += 1
+
             elif ms == 1:
                 # Inter-site: c terms
                 for i in range(nsubs[isite]):
@@ -762,6 +869,24 @@ def _compute_free_energy(
                         ind += 1
                         s[jblock + j, iblock + i] = coeff[ind]
                         ind += 1
+
+                # Inter-site: t terms (both directions, sign-flipped)
+                if ntriangle >= 7:
+                    for i in range(nsubs[isite]):
+                        for j in range(nsubs[jsite]):
+                            t[iblock + i, jblock + j] = -coeff[ind]
+                            ind += 1
+                            t[jblock + j, iblock + i] = -coeff[ind]
+                            ind += 1
+
+                # Inter-site: u terms (both directions)
+                if ntriangle >= 9:
+                    for i in range(nsubs[isite]):
+                        for j in range(nsubs[jsite]):
+                            u[iblock + i, jblock + j] = coeff[ind]
+                            ind += 1
+                            u[jblock + j, iblock + i] = coeff[ind]
+                            ind += 1
 
             elif ms == 2:
                 # Inter-site: only c terms
@@ -804,6 +929,8 @@ def _compute_free_energy(
     np.savetxt(analysis_dir / "c.dat", _clean_negzero(c), fmt=" %10.5f")
     np.savetxt(analysis_dir / "x.dat", _clean_negzero(x), fmt=" %10.5f")
     np.savetxt(analysis_dir / "s.dat", _clean_negzero(s), fmt=" %10.5f")
+    np.savetxt(analysis_dir / "t.dat", _clean_negzero(t), fmt=" %10.5f")
+    np.savetxt(analysis_dir / "u.dat", _clean_negzero(u), fmt=" %10.5f")
 
     return FreeEnergyResult(
         scaling=scaling,
@@ -811,4 +938,6 @@ def _compute_free_energy(
         c_changes=c,
         x_changes=x,
         s_changes=s,
+        t_changes=t,
+        u_changes=u,
     )

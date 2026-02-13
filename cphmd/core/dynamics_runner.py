@@ -359,6 +359,10 @@ class DynamicsRunner:
             fnex=self.config.fnex,
             chi_offset=self.config.chi_offset,
             omega_decay=self.config.omega_decay,
+            chi_offset_t=self.config.chi_offset_t,
+            chi_offset_u=self.config.chi_offset_u,
+            no_t_bias=self.config.no_t_bias,
+            no_u_bias=self.config.no_u_bias,
         )
 
         block_file = self.config.input_folder / f"run{run_idx}" / f"block.{k}.{replica_idx}.str"

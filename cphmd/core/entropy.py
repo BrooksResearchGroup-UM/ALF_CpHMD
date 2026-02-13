@@ -15,12 +15,10 @@ Usage:
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import os
 from multiprocessing import Pool
 from pathlib import Path
-from typing import Callable
 
 import numpy as np
 
@@ -49,6 +47,27 @@ DEFAULT_NMC = 5_000_000  # Monte Carlo samples
 DEFAULT_BINS = 32        # 2D bins (1D = bins²)
 CUTLSUM = 0.8            # Conditional threshold for G12
 MAX_BUNDLED_NDIM = 15    # Maximum ndim in bundled data
+
+# Upstream constraint type aliases (normalized to internal names before use)
+_CONSTRAINT_ALIASES = {
+    "fnpwise": "fpie",
+}
+_VALID_CONSTRAINT_TYPES = {"fnex", "fpie"}
+
+
+def normalize_constraint_type(constraint_type: str) -> str:
+    """Normalize constraint type aliases to internal names.
+
+    Accepts upstream aliases (e.g., "fnpwise") and maps them to
+    the internal name ("fpie"). Raises ValueError for unknown types.
+    """
+    ct = _CONSTRAINT_ALIASES.get(constraint_type, constraint_type)
+    if ct not in _VALID_CONSTRAINT_TYPES:
+        raise ValueError(
+            f"Unknown constraint_type: {constraint_type!r}. "
+            f"Valid types: {sorted(_VALID_CONSTRAINT_TYPES | set(_CONSTRAINT_ALIASES))}"
+        )
+    return ct
 
 
 def get_cache_dir() -> Path:
@@ -509,8 +528,7 @@ def compute_g_imp(
         - G1: 1D free energy array (bins²,)
         - G2: 2D free energy array (bins, bins)
     """
-    if constraint_type not in ("fnex", "fpie"):
-        raise ValueError(f"Unknown constraint_type: {constraint_type}")
+    constraint_type = normalize_constraint_type(constraint_type)
 
     if ndim < 2:
         raise ValueError(f"ndim must be >= 2, got {ndim}")
@@ -643,8 +661,7 @@ def compute_g12(
     Returns:
         G12 array of shape (bins²,) — symmetrized conditional profile.
     """
-    if constraint_type not in ("fnex", "fpie"):
-        raise ValueError(f"Unknown constraint_type: {constraint_type}")
+    constraint_type = normalize_constraint_type(constraint_type)
     if ndim < 2:
         raise ValueError(f"ndim must be >= 2, got {ndim}")
 

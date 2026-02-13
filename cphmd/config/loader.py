@@ -177,6 +177,18 @@ def config_to_alf(
         else:
             cfg["g_imp_bins"] = int(g_imp_bins)
 
+    # Deprecated: preset_config is now always auto-derived from elec_type + vdw_type
+    if "preset_config" in cfg:
+        import warnings
+
+        warnings.warn(
+            "preset_config is deprecated and will be ignored. "
+            "Preset configuration is now auto-derived from elec_type and vdw_type.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        cfg.pop("preset_config")
+
     return ALFConfig(**cfg)
 
 
@@ -332,7 +344,12 @@ def _run_patch(config_path: Path) -> None:
 
 
 def _run_alf(config_path: Path) -> None:
-    """Run the ALF step."""
+    """Run the ALF step.
+
+    Ensures mpi4py initializes MPI before pyCHARMM's C library loads.
+    """
+    from mpi4py import MPI  # noqa: F401 — must precede pyCHARMM
+
     from cphmd.core.alf_runner import run_alf_simulation
 
     config = config_to_alf(config_path)

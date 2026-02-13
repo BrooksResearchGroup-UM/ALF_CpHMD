@@ -467,9 +467,10 @@ def _fit_substate_curve(
 ) -> float | None:
     """Fit a sigmoid to one substate's simulation data and plot it.
 
-    Uses a generalized logistic: pop = L + (U - L) / (1 + 10^(s*(pH - pKa)))
-    where s = +1 for falling (UNEG/acidic), -1 for rising (UPOS/basic).
-    For NONE states, auto-detects direction from data trend.
+    Uses HH logistic: pop = U / (1 + 10^(s*(pKa - pH)))
+    where s = +1 for rising (UPOS/basic), -1 for falling (UNEG/acidic).
+    Lower asymptote is fixed at 0 (physical requirement: every substate
+    population must vanish at one pH extreme).
 
     Returns:
         Fitted pKa value, or None if fit failed or data is flat.
@@ -490,12 +491,12 @@ def _fit_substate_curve(
         trend = populations[np.argmax(pH_values)] - populations[np.argmin(pH_values)]
         s = -1 if trend < 0 else +1
 
-    def sigmoid(pH, pKa, L, U):
-        return L + (U - L) / (1.0 + 10.0 ** (s * (pKa - pH)))
+    def sigmoid(pH, pKa, U):
+        return U / (1.0 + 10.0 ** (s * (pKa - pH)))
 
     try:
-        p0 = [np.mean(pH_values), np.min(populations), np.max(populations)]
-        bounds = ([0, -0.1, -0.1], [14, 1.1, 1.1])
+        p0 = [np.mean(pH_values), np.max(populations)]
+        bounds = ([0, 0.01], [14, 1.1])
         popt, _ = curve_fit(sigmoid, pH_values, populations, p0=p0, bounds=bounds, maxfev=5000)
         ax.plot(pH_fit, sigmoid(pH_fit, *popt), color=color, linewidth=1.5, alpha=0.8)
         return float(popt[0])  # fitted pKa
@@ -673,38 +674,56 @@ def _load_run_populations(
 ) -> tuple[np.ndarray, dict[int, np.ndarray], int] | None:
     """Load one run's lambda data and compute per-state populations.
 
+    Each repeat file within a replica becomes a separate data point at
+    that replica's pH, so the scatter plot shows run-to-run spread.
+
     Returns:
         (valid_pH_array, state_populations, n_states) or None if insufficient data.
-        state_populations maps state_idx to array of populations at each valid pH.
+        state_populations maps state_idx to array of populations (one per repeat).
     """
-    from cphmd.core.phase_switcher import load_lambda_data_per_replica
+    from cphmd.core.phase_switcher import _organize_by_replica
+    from cphmd.utils.lambda_io import read_lambda_values
 
     pH_values = np.array([pH + delta_pKa * (j - ncentral) for j in range(nreps)])
 
-    replica_data = load_lambda_data_per_replica(
-        data_dir, pH, delta_pKa, nreps, ncentral
-    )
-    if len(replica_data) < 3:
+    replica_files = _organize_by_replica(data_dir)
+    if replica_files is None:
         return None
 
-    replica_pH_map = {rd.replica_idx: rd for rd in replica_data}
-    n_states = replica_data[0].lambda_data.shape[1]
+    # Build per-repeat data: each repeat file is a separate data point
+    all_pH: list[float] = []
+    all_repeat_data: list[np.ndarray] = []  # each entry is (frames, n_states)
+    n_states = None
 
-    valid_pH_values: list[float] = []
-    valid_replica_indices: list[int] = []
-    for j in range(nreps):
-        if j in replica_pH_map:
-            valid_replica_indices.append(j)
-            valid_pH_values.append(pH_values[j])
+    for replica_idx in sorted(replica_files.keys()):
+        if replica_idx >= nreps:
+            continue
+        replica_pH = pH_values[replica_idx]
 
-    valid_pH_array = np.array(valid_pH_values)
+        for fpath in sorted(replica_files[replica_idx]):
+            try:
+                data = read_lambda_values(fpath)
+                if data.ndim == 1:
+                    data = data.reshape(1, -1)
+                if data.size == 0:
+                    continue
+                if n_states is None:
+                    n_states = data.shape[1]
+                all_pH.append(replica_pH)
+                all_repeat_data.append(data)
+            except Exception:
+                continue
+
+    if len(all_pH) < 3 or n_states is None:
+        return None
+
+    valid_pH_array = np.array(all_pH)
 
     state_populations: dict[int, np.ndarray] = {}
     for state_idx in range(n_states):
         pops = []
-        for j in valid_replica_indices:
-            rd = replica_pH_map[j]
-            mask = rd.lambda_data[:, state_idx] > lambda_threshold
+        for data in all_repeat_data:
+            mask = data[:, state_idx] > lambda_threshold
             pops.append(mask.mean())
         state_populations[state_idx] = np.array(pops)
 
@@ -720,7 +739,7 @@ def generate_hh_analysis(
     nreps: int,
     output_dir: Path,
     ncentral: int | None = None,
-    lambda_threshold: float = 0.8,
+    lambda_threshold: float = 0.985,
 ) -> dict[str, SiteHHResult]:
     """Main entry point for HH curve analysis with multi-replica pH.
 
@@ -742,7 +761,7 @@ def generate_hh_analysis(
         nreps: Number of replicas
         output_dir: Directory for output plots
         ncentral: Central replica index (defaults to nreps // 2)
-        lambda_threshold: Threshold for state occupancy (default 0.8)
+        lambda_threshold: Threshold for state occupancy (default 0.985)
 
     Returns:
         Dict mapping site IDs to SiteHHResult with full analysis

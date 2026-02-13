@@ -337,15 +337,22 @@ def generate_ldbv_statements(
     fnex: float = 5.5,
     chi_offset: float | None = None,
     omega_decay: float | None = None,
+    chi_offset_t: float = 0.012,
+    chi_offset_u: float = 0.012,
+    no_t_bias: bool = True,
+    no_u_bias: bool = True,
 ) -> str:
     """Generate LDBI/LDBV statements for variable lambda potentials.
 
-    Three types of potentials:
+    Up to five types of potentials:
     1. Quadratic barriers (type 6) - prevent lambda from crossing site boundaries
-    2. Endpoint potentials (type 8, REF=CHI_OFFSET) - bias toward physical endpoints
-    3. Skew potentials (type 10, REF=-OMEGA_DECAY) - asymmetric bias between states
+    2. Endpoint potentials (type 8, REF=CHI_OFFSET) - s-term bias toward endpoints
+    3. Skew potentials (type 10, REF=-OMEGA_DECAY) - x-term asymmetric bias
+    4. t-term potentials (type 8, REF=-(1+chi_offset_t)) - second sigmoid (bcxstu)
+    5. u-term potentials (type 12, REF=+chi_offset_u) - new basis function (bcxstu)
 
     The REF values for types 8 and 10 are derived from FNEX via bias_constants.
+    t/u terms are independent of FNEX and disabled by default.
 
     Args:
         patch_info: DataFrame from patches.dat
@@ -353,12 +360,19 @@ def generate_ldbv_statements(
         fnex: FNEX softmax constraint parameter (default 5.5)
         chi_offset: Override s-term sigmoid offset (None = derive from fnex).
         omega_decay: Override x-term exponential decay (None = derive from fnex).
+        chi_offset_t: t-term sigmoid offset (default 0.012).
+        chi_offset_u: u-term offset (default 0.012).
+        no_t_bias: If True, skip t-term LDBV generation.
+        no_u_bias: If True, skip u-term LDBV generation.
 
     Returns:
         CHARMM LDBI/LDBV statements
     """
     from .bias_constants import derive_bias_constants
-    constants = derive_bias_constants(fnex, chi_offset=chi_offset, omega_decay=omega_decay)
+    constants = derive_bias_constants(
+        fnex, chi_offset=chi_offset, omega_decay=omega_decay,
+        chi_offset_t=chi_offset_t, chi_offset_u=chi_offset_u,
+    )
     # Build all LDBV statements first to count them
     ldbv_lines = []
     idx = 0
@@ -435,6 +449,57 @@ def generate_ldbv_statements(
 
     ldbv_lines.extend(skew_lines)
 
+    # Type 8 (second sigmoid): t-term Potentials (bcxstu)
+    if not no_t_bias:
+        t_lines = [
+            "!------------------------------------------",
+            "! t-term Potentials (bcxstu)",
+            "!------------------------------------------\n",
+        ]
+
+        for site in patch_info["site"].unique():
+            site_data = patch_info[patch_info["site"] == site]
+
+            for i1, row1 in site_data.iterrows():
+                for i2, row2 in site_data.iterrows():
+                    if i2 != i1:
+                        idx += 1
+                        block1 = i1 + 2
+                        block2 = i2 + 2
+                        var_key = f"t{row1['SELECT']}{row2['SELECT']}"
+                        t_val = variables.get(var_key, 0.0)
+                        ref_t = -(1.0 + constants.chi_offset_t)
+                        t_lines.append(
+                            f"ldbv {idx:<3} {block1:<2} {block2:<2} {8:<4} {ref_t:<8.5f} {-t_val:<6} {0:<1}"
+                        )
+
+        ldbv_lines.extend(t_lines)
+
+    # Type 12: u-term Potentials (bcxstu)
+    if not no_u_bias:
+        u_lines = [
+            "!------------------------------------------",
+            "! u-term Potentials (bcxstu)",
+            "!------------------------------------------\n",
+        ]
+
+        for site in patch_info["site"].unique():
+            site_data = patch_info[patch_info["site"] == site]
+
+            for i1, row1 in site_data.iterrows():
+                for i2, row2 in site_data.iterrows():
+                    if i2 != i1:
+                        idx += 1
+                        block1 = i1 + 2
+                        block2 = i2 + 2
+                        var_key = f"u{row1['SELECT']}{row2['SELECT']}"
+                        u_val = variables.get(var_key, 0.0)
+                        u_lines.append(
+                            f"ldbv {idx:<3} {block1:<2} {block2:<2} {12:<4} {constants.chi_offset_u:<8.5f} {u_val:<6} {2:<1}"
+                        )
+
+        ldbv_lines.extend(u_lines)
+
     # Prepend LDBI with total count
     header = [
         "!------------------------------------------",
@@ -456,6 +521,10 @@ def build_block_command(
     fpie_force: float = 100.0,
     chi_offset: float | None = None,
     omega_decay: float | None = None,
+    chi_offset_t: float = 0.012,
+    chi_offset_u: float = 0.012,
+    no_t_bias: bool = True,
+    no_u_bias: bool = True,
 ) -> str:
     """Build complete BLOCK command string.
 
@@ -469,6 +538,10 @@ def build_block_command(
         fpie_force: FPIE flat-bottom force constant (when constraint_type="fpie")
         chi_offset: Override s-term sigmoid offset (None = derive from fnex).
         omega_decay: Override x-term exponential decay (None = derive from fnex).
+        chi_offset_t: t-term sigmoid offset (default 0.012).
+        chi_offset_u: u-term offset (default 0.012).
+        no_t_bias: If True, skip t-term LDBV generation.
+        no_u_bias: If True, skip u-term LDBV generation.
 
     Returns:
         Complete CHARMM BLOCK command
@@ -489,7 +562,9 @@ def build_block_command(
             fpie_force=fpie_force,
         ),
         generate_ldbv_statements(patch_info, variables, fnex=fnex,
-                                 chi_offset=chi_offset, omega_decay=omega_decay),
+                                 chi_offset=chi_offset, omega_decay=omega_decay,
+                                 chi_offset_t=chi_offset_t, chi_offset_u=chi_offset_u,
+                                 no_t_bias=no_t_bias, no_u_bias=no_u_bias),
         "END",
     ]
 
@@ -507,6 +582,10 @@ def write_block_file(
     fpie_force: float = 100.0,
     chi_offset: float | None = None,
     omega_decay: float | None = None,
+    chi_offset_t: float = 0.012,
+    chi_offset_u: float = 0.012,
+    no_t_bias: bool = True,
+    no_u_bias: bool = True,
 ) -> str:
     """Generate and write BLOCK command to file.
 
@@ -521,6 +600,10 @@ def write_block_file(
         fpie_force: FPIE flat-bottom force constant (when constraint_type="fpie")
         chi_offset: Override s-term sigmoid offset (None = derive from fnex).
         omega_decay: Override x-term exponential decay (None = derive from fnex).
+        chi_offset_t: t-term sigmoid offset (default 0.012).
+        chi_offset_u: u-term offset (default 0.012).
+        no_t_bias: If True, skip t-term LDBV generation.
+        no_u_bias: If True, skip u-term LDBV generation.
 
     Returns:
         The generated BLOCK command string
@@ -535,6 +618,10 @@ def write_block_file(
         fpie_force=fpie_force,
         chi_offset=chi_offset,
         omega_decay=omega_decay,
+        chi_offset_t=chi_offset_t,
+        chi_offset_u=chi_offset_u,
+        no_t_bias=no_t_bias,
+        no_u_bias=no_u_bias,
     )
 
     with open(output_path, "w") as f:
