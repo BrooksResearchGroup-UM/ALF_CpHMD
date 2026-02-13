@@ -22,7 +22,6 @@ from typing import Literal
 import numpy as np
 import pandas as pd
 
-
 # Physical constants
 KB = 0.0019872041  # Boltzmann constant in kcal·mol⁻¹·K⁻¹
 
@@ -53,21 +52,19 @@ class CpHMDParameters:
 
     Attributes:
         temperature: Temperature in Kelvin
-        target_pH: User-specified target pH
         kTln10: Thermal energy factor (kB * T * ln(10))
         sites: Dictionary mapping site IDs to SiteParameters
         effective_pH: Computed effective pH for PHMD command
+                      (auto-set from macro-pKa values by compute_all_site_parameters)
     """
     temperature: float
-    target_pH: float
     kTln10: float = field(init=False)
     sites: dict[str, SiteParameters] = field(default_factory=dict)
-    effective_pH: float = field(init=False)
+    effective_pH: float = 0.0
 
     def __post_init__(self):
         """Compute derived values."""
         self.kTln10 = KB * self.temperature * np.log(10.0)
-        self.effective_pH = self.target_pH
 
 
 def parse_tag_value(tag: str) -> tuple[str, float | None]:
@@ -162,19 +159,21 @@ def compute_site_parameters(
 def compute_all_site_parameters(
     patch_info: pd.DataFrame,
     temperature: float,
-    target_pH: float,
 ) -> CpHMDParameters:
     """Compute CpHMD parameters for all titratable sites.
+
+    The effective_pH is auto-computed from the macro-pKa values:
+    - Single unique pH₀ → effective_pH = that pKa
+    - Multiple different pH₀ → effective_pH = 0.0 (neutral reference)
 
     Args:
         patch_info: DataFrame from patches.dat with site/sub columns
         temperature: Simulation temperature in Kelvin
-        target_pH: User-specified target pH
 
     Returns:
         CpHMDParameters containing all site parameters
     """
-    cphmd = CpHMDParameters(temperature=temperature, target_pH=target_pH)
+    cphmd = CpHMDParameters(temperature=temperature)
 
     # Process each site
     for site_id in patch_info["site"].unique():
@@ -182,7 +181,7 @@ def compute_all_site_parameters(
         site_params = compute_site_parameters(site_id, site_patches)
         cphmd.sites[site_id] = site_params
 
-    # Determine effective pH for PHMD command
+    # Determine effective pH from macro-pKa values
     pH0_values = [s.pH0 for s in cphmd.sites.values()]
 
     if len(set(pH0_values)) == 1:
@@ -191,7 +190,6 @@ def compute_all_site_parameters(
     elif len(set(pH0_values)) > 1:
         # Multiple different pH₀ values - use neutral reference
         cphmd.effective_pH = 0.0
-    # else: keep target_pH as effective_pH
 
     return cphmd
 
@@ -220,9 +218,8 @@ def compute_bias_shifts(
     kTln10 = cphmd.kTln10
     ncentral = len(cphmd.sites) // 2
 
-    # Compute replica-specific pH shift
+    # Replica pH offset: each replica is shifted by delta_pKa from the central one
     replica_shift = delta_pKa * (replica_idx - ncentral)
-    total_delta_pH = (cphmd.target_pH - cphmd.effective_pH) + replica_shift
 
     b_shift: list[float] = []
     b_fix_shift: list[float] = []
@@ -240,8 +237,8 @@ def compute_bias_shifts(
         else:
             sign = 0
 
-        # b_shift: bias for dynamics (pH + replica effects)
-        b_shift.append(sign * kTln10 * total_delta_pH)
+        # b_shift: replica-specific pH bias for dynamics
+        b_shift.append(sign * kTln10 * replica_shift)
 
         # b_fix_shift: original pKa shifts for analysis
         if site_id in cphmd.sites:

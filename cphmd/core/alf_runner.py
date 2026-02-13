@@ -58,7 +58,7 @@ class ALFConfig:
         input_folder: Path to the prepared system folder (contains prep/ subdirectory)
         toppar_dir: Path to topology/parameter files
         temperature: Simulation temperature in Kelvin
-        pH: Target pH for CpHMD (None for standard ALF without pH coupling)
+        pH: Enable CpHMD pH coupling (effective_pH auto-computed from macro-pKa)
         hmr: Whether to use hydrogen mass repartitioning (4fs timestep).
              None = auto (True for default prep, False for legacy prep).
         start: Starting run number
@@ -79,7 +79,7 @@ class ALFConfig:
     input_folder: str | Path
     toppar_dir: str | Path = "toppar"
     temperature: float = 298.15
-    pH: float | None = None
+    pH: bool = False
     hmr: bool | None = None
     start: int = 1
     end: int = 20
@@ -1473,7 +1473,7 @@ class ALFSimulation:
             # Generate Henderson-Hasselbalch plots if enabled
             # Guard: require nreps > 3 for meaningful multi-point HH fitting
             if (self.config.generate_hh_plots and
-                self.config.pH is not None and
+                self.config.pH and
                 self.config.nreps > 3 and
                 self.state.patch_info is not None):
                 from cphmd.analysis.henderson_hasselbalch import generate_hh_analysis
@@ -1484,7 +1484,6 @@ class ALFSimulation:
                 cphmd_params = compute_all_site_parameters(
                     self.state.patch_info,
                     self.config.temperature,
-                    self.config.pH,
                 )
 
                 generate_hh_analysis(

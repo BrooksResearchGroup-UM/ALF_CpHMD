@@ -31,13 +31,13 @@ class BlockConfig:
 
     Attributes:
         temperature: Simulation temperature in Kelvin
-        pH: Target pH (None for non-CpHMD simulations)
-        effective_pH: Computed effective pH for PHMD command
+        pH: Whether CpHMD is enabled
+        effective_pH: Auto-computed effective pH for PHMD command
         delta_pKa: pH increment between replicas
         use_cphmd: Whether to include PHMD and TAG directives
     """
     temperature: float = 298.15
-    pH: float | None = None
+    pH: bool = False
     effective_pH: float | None = None
     delta_pKa: float = 0.0
     use_cphmd: bool = True
@@ -172,7 +172,7 @@ def generate_dynamics_setup(config: BlockConfig) -> str:
             "!----------------------------------------\n",
             f"PHMD pH {config.effective_pH:.3f}\n",
         ])
-    elif config.pH is not None:
+    elif config.pH:
         lines.extend([
             "!----------------------------------------",
             "!CpHMD disabled (delta_pKa=0)",

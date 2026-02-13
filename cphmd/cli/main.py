@@ -157,7 +157,7 @@ def _parse_g_imp_bins(value: str | None) -> "int | list[int] | None":
 def alf(
     input_folder: str = typer.Option(None, "-i", "--input", help="Input folder with prep/ directory"),
     temperature: float = typer.Option(None, "-t", "--temp", help="Temperature (K)"),
-    pH: float = typer.Option(None, "-pH", "--pH", help="Target pH for CpHMD (None for standard ALF)"),
+    pH: bool = typer.Option(None, "--pH/--no-pH", help="Enable CpHMD pH coupling (effective_pH auto-computed from pKa)"),
     hmr: bool = typer.Option(None, "--hmr/--no-hmr", help="Use hydrogen mass repartitioning"),
     start: int = typer.Option(None, "-s", "--start", help="Start run number"),
     end: int = typer.Option(None, "-e", "--end", help="End run number"),
@@ -194,7 +194,6 @@ def alf(
     """
     # Initialize MPI via mpi4py BEFORE importing pyCHARMM (triggered by cphmd.core).
     # pyCHARMM detects MPI is already initialized and skips its own MPI_Init.
-    from mpi4py import MPI
 
     from cphmd.config import config_to_alf
 
@@ -233,7 +232,8 @@ def alf(
     alf_config = config_to_alf(config, cli)
 
     console.print(f"[cyan]Starting ALF simulation for {alf_config.input_folder}/[/cyan]")
-    console.print(f"[dim]Temp: {alf_config.temperature}K, pH: {alf_config.pH}, Phase: {alf_config.phase}, Runs: {alf_config.start}-{alf_config.end}[/dim]")
+    cphmd_str = "CpHMD" if alf_config.pH else "ALF"
+    console.print(f"[dim]Temp: {alf_config.temperature}K, Mode: {cphmd_str}, Phase: {alf_config.phase}, Runs: {alf_config.start}-{alf_config.end}[/dim]")
     console.print(f"[dim]HMR: {alf_config.hmr}, Restraints: {alf_config.restrains}[/dim]")
     console.print(f"[dim]Electrostatics: {alf_config.elec_type}, VDW: {alf_config.vdw_type}[/dim]")
     if alf_config.no_pka_bias:
@@ -425,7 +425,8 @@ def lambda_convert(
     Use --concat to combine multiple files into one output.
     """
     from pathlib import Path
-    from cphmd.utils import convert_lambda_to_parquet, concatenate_lambda_files
+
+    from cphmd.utils import concatenate_lambda_files, convert_lambda_to_parquet
 
     if concat:
         # Concatenate mode
@@ -456,6 +457,7 @@ def lambda_info(
 ):
     """Show information about a lambda file."""
     from pathlib import Path
+
     from cphmd.utils import read_lambda_binary, read_lambda_parquet
 
     path = Path(filepath)
@@ -463,7 +465,7 @@ def lambda_info(
 
     if path.suffix == '.lmd':
         data, meta = read_lambda_binary(path)
-        console.print(f"[dim]Format: CHARMM binary[/dim]")
+        console.print("[dim]Format: CHARMM binary[/dim]")
         console.print(f"  Steps: {meta.nfile}")
         console.print(f"  Blocks: {meta.nblocks}")
         console.print(f"  Sites: {meta.nsitemld}")
@@ -473,7 +475,7 @@ def lambda_info(
         console.print(f"  Title: {meta.title}")
     elif path.suffix == '.parquet':
         data = read_lambda_parquet(path)
-        console.print(f"[dim]Format: Parquet[/dim]")
+        console.print("[dim]Format: Parquet[/dim]")
         console.print(f"  Steps: {len(data)}")
         console.print(f"  Columns: {data.shape[1]}")
         console.print(f"  Time range: {data[0, 0]:.1f} - {data[-1, 0]:.1f} ps")

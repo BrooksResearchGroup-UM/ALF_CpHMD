@@ -50,7 +50,7 @@ sbatch submit.sh alf
 ## Configuration
 
 See `cphmd_config.yaml` for all settings. Key options:
-- `alf.pH: 4.0` — simulation pH
+- `alf.pH: true` — enable CpHMD (effective pH auto-computed from macro-pKa values)
 - `alf.coupling: 1` — full inter-site coupling (c/x/s terms)
 - `patch.selected_residues: []` — empty list patches all titratable residues
 - `alf.hh_plots: true` — generate Henderson-Hasselbalch titration curves
