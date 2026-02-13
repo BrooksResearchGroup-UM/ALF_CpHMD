@@ -336,6 +336,9 @@ def plot_hh_curves(
         print("matplotlib not available, skipping HH plots")
         return
 
+    from cphmd.analysis.plot_style import apply_pub_style, clean_axes, savefig
+
+    apply_pub_style()
     output_path.mkdir(parents=True, exist_ok=True)
 
     # Create pH array for fitted curves
@@ -365,27 +368,22 @@ def plot_hh_curves(
 
         ax.plot(pH_fit, y_fit, 'r-', linewidth=2, label=label)
 
-        # Formatting
-        ax.set_xlabel('pH', fontsize=12)
-        ax.set_ylabel('Population', fontsize=12)
-        ax.set_title(f'{resname} - Run {run_idx}', fontsize=14)
+        ax.set_xlabel('pH')
+        ax.set_ylabel('Population')
+        ax.set_title(f'{resname} \u2014 Run {run_idx}', fontweight='bold')
         ax.set_xlim(pH_range)
         ax.set_ylim(-0.05, 1.05)
-        ax.legend(loc='best', fontsize=10)
-        ax.grid(True, alpha=0.3)
+        ax.legend(loc='best')
+        clean_axes(ax)
 
-        # Add R² annotation
         ax.annotate(
-            f"R² = {result.r_squared:.3f}",
+            f"R\u00b2 = {result.r_squared:.3f}",
             xy=(0.05, 0.95),
             xycoords='axes fraction',
-            fontsize=10,
             verticalalignment='top',
         )
 
-        plt.tight_layout()
-        fig.savefig(output_path / f"hh_{resname}_run{run_idx}.png", dpi=150)
-        plt.close(fig)
+        savefig(fig, output_path / f"combined_{resname}_run{run_idx}.png")
 
     print(f"HH plots saved to {output_path}")
 
@@ -479,18 +477,19 @@ def plot_site_substates(
     """
     try:
         import matplotlib.pyplot as plt
-        from matplotlib import cm
     except ImportError:
         print("matplotlib not available, skipping substate plots")
         return
 
+    from cphmd.analysis.plot_style import apply_pub_style, clean_axes, get_state_colors, savefig
+
+    apply_pub_style()
     output_path.mkdir(parents=True, exist_ok=True)
 
     fig, ax = plt.subplots(figsize=(8, 5))
 
-    # Color map for substates
     n_substates = len(site_result.substates)
-    colors = cm.tab10(np.linspace(0, 1, max(n_substates, 1)))
+    colors = get_state_colors(n_substates)
     markers = ['o', 's', '^', 'v', 'D', 'p', 'h', '*']
 
     pH_fit = np.linspace(pH_range[0], pH_range[1], 100)
@@ -523,32 +522,26 @@ def plot_site_substates(
                 alpha=0.7,
             )
 
-    # Formatting
     site_label = f"{site_result.segid}:{site_result.resname}{site_result.resid}"
-    ax.set_xlabel('pH', fontsize=12)
-    ax.set_ylabel('Population', fontsize=12)
-    ax.set_title(f'{site_label} Substates - Run {run_idx}', fontsize=14)
+    ax.set_xlabel('pH')
+    ax.set_ylabel('Population')
+    ax.set_title(f'{site_label} Substates \u2014 Run {run_idx}', fontweight='bold')
     ax.set_xlim(pH_range)
     ax.set_ylim(-0.05, 1.05)
-    ax.legend(loc='best', fontsize=9, ncol=2)
-    ax.grid(True, alpha=0.3)
+    ax.legend(loc='best', ncol=2)
+    clean_axes(ax)
 
-    # Add fit info
     fit = site_result.fit_result
-    info_text = f"Fit: {fit.fit_type}, pKa = {fit.pKa_eff:.2f}, R² = {fit.r_squared:.3f}"
+    info_text = f"Fit: {fit.fit_type}, pKa = {fit.pKa_eff:.2f}, R\u00b2 = {fit.r_squared:.3f}"
     ax.annotate(
         info_text,
         xy=(0.02, 0.98),
         xycoords='axes fraction',
-        fontsize=9,
         verticalalignment='top',
         bbox=dict(boxstyle='round', facecolor='white', alpha=0.8),
     )
 
-    plt.tight_layout()
-    fname = f"hh_substates_{site_result.segid}_{site_result.resname}{site_result.resid}_run{run_idx}.png"
-    fig.savefig(output_path / fname, dpi=150)
-    plt.close(fig)
+    savefig(fig, output_path / f"site{site_result.site_id}_run{run_idx}.png")
 
 
 def write_hh_csv(
@@ -569,7 +562,7 @@ def write_hh_csv(
         Path to the written CSV file
     """
     output_path.mkdir(parents=True, exist_ok=True)
-    csv_path = output_path / f"hh_curve_data_run{run_idx}.csv"
+    csv_path = output_path / f"data_run{run_idx}.csv"
 
     with open(csv_path, 'w', newline='') as f:
         writer = csv.writer(f)
@@ -833,18 +826,15 @@ def generate_hh_analysis(
         legacy_results[f"{segid}:{resname}{resid}"] = fit_result
         populations_data[f"{segid}:{resname}{resid}"] = (valid_pH_array, total_charged_pop)
 
-    # Generate plots
-    output_dir = Path(output_dir)
+    # Generate plots — all HH output goes to hh_plots/ subdirectory
+    hh_dir = Path(output_dir) / "hh_plots"
     pH_range = (valid_pH_array.min() - 0.5, valid_pH_array.max() + 0.5)
 
-    # Legacy combined plots
-    plot_hh_curves(legacy_results, pH_range, populations_data, output_dir, run_idx)
-
-    # New substate plots
+    # Per-site substate plots
     for site_result in results.values():
-        plot_site_substates(site_result, pH_range, output_dir, run_idx)
+        plot_site_substates(site_result, pH_range, hh_dir, run_idx)
 
     # CSV export
-    write_hh_csv(results, output_dir, run_idx)
+    write_hh_csv(results, hh_dir, run_idx)
 
     return results

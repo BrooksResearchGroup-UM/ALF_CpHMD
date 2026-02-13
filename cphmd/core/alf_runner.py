@@ -97,7 +97,7 @@ class ALFConfig:
     phase_transition: PhaseTransitionConfig = field(default_factory=PhaseTransitionConfig)
     convergence_mode: ConvergenceMode = "population"  # "population" or "rmsd"
     cleanup_old_analysis: bool = False  # Remove old analysis directories to save disk space
-    generate_hh_plots: bool = False  # Generate Henderson-Hasselbalch plots
+    generate_hh_plots: bool = True  # Generate Henderson-Hasselbalch plots
     cent_ncres: int | bool = False
 
     # Preset biases (converged single-site biases from cubic box simulations)
@@ -336,6 +336,7 @@ class ALFSimulation:
         self._comm = None
         self._initialized = False
         self._log_file = None  # Current CHARMM log file object (kept for compat)
+        self._python_log = None  # Per-rank Python output file
         self._bias_analyzer = BiasAnalyzer(config)
         self._convergence = ConvergenceTracker(config, self.state)
         self._dynamics = DynamicsRunner(config, self.state)
@@ -406,6 +407,21 @@ class ALFSimulation:
                 return available_gpus[local_rank]
 
         return local_rank
+
+    def _redirect_python_output(self):
+        """Redirect Python stdout to per-rank log files.
+
+        Must be called AFTER _init_mpi() (need rank) and BEFORE _init_charmm()
+        (pyCHARMM's Fortran engine may hijack fd 1).  This matches the legacy
+        script pattern that redirects sys.stdout before ``import pycharmm``.
+
+        stderr is kept on the real stderr so that Python tracebacks and errors
+        remain visible in the SLURM output.
+        """
+        log_path = self.config.input_folder / f"python_log_rank{self.state.rank}.out"
+        self._python_log = open(log_path, "w")
+        sys.stdout = self._python_log
+        # Keep sys.stderr pointing to real stderr — errors must stay visible
 
     def _redirect_output(self, run_idx: int, k: int, replica_idx: int):
         """Redirect CHARMM output to a separate log file."""
@@ -774,25 +790,41 @@ class ALFSimulation:
     def initialize(self):
         """Perform full initialization sequence."""
         self._init_mpi()
-        self._comm.Barrier()
+        self._redirect_python_output()
 
-        self._init_charmm()
+        # Save real stderr for error reporting (sys.stdout is now redirected)
+        real_stderr = sys.__stderr__
 
-        if self.config.prep_format == "legacy":
-            pass  # Legacy mode: no patches.dat to load
-        else:
-            self._load_patch_info()
+        try:
+            self._comm.Barrier()
 
-        self._comm.Barrier()
+            self._init_charmm()
 
-        if self.config.prep_format == "legacy":
-            self._init_alf_legacy()
-        else:
-            self._init_alf()
+            if self.config.prep_format == "legacy":
+                pass  # Legacy mode: no patches.dat to load
+            else:
+                self._load_patch_info()
 
-        self._comm.Barrier()
+            self._comm.Barrier()
 
-        self._initialized = True
+            if self.config.prep_format == "legacy":
+                self._init_alf_legacy()
+            else:
+                self._init_alf()
+
+            self._comm.Barrier()
+
+            self._initialized = True
+        except Exception:
+            # Print the error to real stderr so it appears in SLURM output
+            import traceback
+            print(
+                f"\n[RANK {self.state.rank}] INITIALIZATION FAILED:\n"
+                f"{traceback.format_exc()}",
+                file=real_stderr,
+                flush=True,
+            )
+            raise
 
     def run(self):
         """Execute the ALF simulation.
