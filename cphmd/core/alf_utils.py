@@ -272,6 +272,8 @@ def init_vars(
     preset_residue: str | None = None,
     preset_config: str | None = None,
     site_residue_types: list[str] | None = None,
+    b_init: np.ndarray | None = None,
+    c_init: np.ndarray | None = None,
 ) -> Path:
     """Initialize ALF analysis directory with biases.
 
@@ -289,6 +291,10 @@ def init_vars(
             If None, uses default.
         site_residue_types: For multi-site systems, list of residue type
             names (one per site). Overrides preset_residue.
+        b_init: Initial linear biases with shape (1, nblocks). If provided
+            (and use_presets=False), written to b_prev.dat instead of zeros.
+        c_init: Initial quadratic barriers with shape (nblocks, nblocks).
+            If provided (and use_presets=False), written to c_prev.dat.
 
     Returns:
         Path to analysis0/ directory.
@@ -305,6 +311,11 @@ def init_vars(
         b, c, x, s = _load_preset_biases(
             alf_info, preset_residue, preset_config, site_residue_types
         )
+    elif b_init is not None or c_init is not None:
+        b = b_init if b_init is not None else np.zeros([1, nblocks])
+        c = c_init if c_init is not None else np.zeros([nblocks, nblocks])
+        x = np.zeros([nblocks, nblocks])
+        s = np.zeros([nblocks, nblocks])
     else:
         # All zeros (legacy behavior)
         b = np.zeros([1, nblocks])

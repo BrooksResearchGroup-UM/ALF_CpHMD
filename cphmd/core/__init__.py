@@ -24,6 +24,7 @@ from .alf_utils import (
     set_vars,
     set_vars_from_analysis_dir,
 )
+from .bias_analyzer import BiasAnalyzer
 from .bias_constants import (
     CHI_OFFSET,
     DEFAULT_FNEX,
@@ -31,6 +32,11 @@ from .bias_constants import (
     OMEGA_SCALE,
     BiasConstants,
     derive_bias_constants,
+)
+from .bias_guesser import (
+    guess_initial_biases,
+    guess_initial_biases_combined,
+    guess_initial_biases_vacuum,
 )
 from .bias_search import (
     BiasSearchConfig,
@@ -54,6 +60,7 @@ from .charmm_utils import (
     setup_crystal,
     setup_nonbonded,
 )
+from .convergence_tracker import ConvergenceTracker
 from .cphmd_params import (
     CpHMDParameters,
     SiteParameters,
@@ -61,6 +68,7 @@ from .cphmd_params import (
     compute_bias_shifts,
     get_delta_pKa_for_phase,
 )
+from .dynamics_runner import DynamicsRunner
 from .entropy import (
     clear_cache,
     compute_g_imp,
@@ -74,6 +82,7 @@ from .free_energy import (
     get_free_energy5,
     get_populations_from_lambda,
 )
+from .g_imp_provisioner import GImpProvisioner
 from .generate_block import (
     BlockGeneratorConfig,
     BlockGeneratorResult,
@@ -158,10 +167,17 @@ __all__ = [
     "PatchConfig",
     "PatchParser",
     "patch_system",
-    # ALF Runner
+    # ALF Runner + extracted sub-classes
     "ALFConfig",
     "ALFSimulation",
     "run_alf_simulation",
+    "BiasAnalyzer",
+    "guess_initial_biases",
+    "guess_initial_biases_combined",
+    "guess_initial_biases_vacuum",
+    "ConvergenceTracker",
+    "DynamicsRunner",
+    "GImpProvisioner",
     # CpHMD Parameters
     "CpHMDParameters",
     "SiteParameters",

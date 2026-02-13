@@ -34,16 +34,13 @@ from cphmd.core.alf_utils import (
     init_vars,
     set_vars_from_analysis_dir,
 )
-from cphmd.core.free_energy import get_free_energy5
+from cphmd.core.bias_analyzer import BiasAnalyzer
+from cphmd.core.convergence_tracker import ConvergenceTracker
+from cphmd.core.dynamics_runner import DynamicsRunner
+from cphmd.core.g_imp_provisioner import GImpProvisioner
 from cphmd.core.phase_switcher import (
     PhaseTransitionConfig,
-    StopCriteriaConfig,
-    _per_site_ranges,
-    calculate_populations,
-    check_phase3_stop,
-    check_phase_transition,
     load_lambda_data,
-    write_populations_file,
 )
 
 # Type aliases
@@ -113,6 +110,9 @@ class ALFConfig:
 
     # FNEX softmax constraint parameter (controls bias potential shape)
     fnex: float = 5.5
+    # Optional overrides for bias potential shape constants (None = derive from fnex)
+    chi_offset: float | None = None  # s-term sigmoid offset (default: 4*exp(-fnex))
+    omega_decay: float | None = None  # x-term exponential decay (default: fnex)
 
     # Lambda dynamics mass and friction (per-block via LDIN)
     # None = auto: HMR(4fs) → mass=12.0/fbeta=5.0; non-HMR(2fs) → mass=5.0/fbeta=7.0
@@ -331,7 +331,10 @@ class ALFSimulation:
         self.state.phase = config.phase  # Initialize phase from config
         self._comm = None
         self._initialized = False
-        self._log_file = None  # Current CHARMM log file object
+        self._log_file = None  # Current CHARMM log file object (kept for compat)
+        self._bias_analyzer = BiasAnalyzer(config)
+        self._convergence = ConvergenceTracker(config, self.state)
+        self._dynamics = DynamicsRunner(config, self.state)
 
     def _ntersite(self) -> list[int]:
         """Compute [ms, msprof] from coupling config."""
@@ -401,46 +404,12 @@ class ALFSimulation:
         return local_rank
 
     def _redirect_output(self, run_idx: int, k: int, replica_idx: int):
-        """Redirect CHARMM output to a separate log file for this replica/repeat.
-
-        Creates a log file at run{run_idx}/log.{k}.{replica_idx}.out and redirects
-        CHARMM's output unit (OUTU) to write to it. This separates CHARMM output
-        by replica and repeat for easier debugging.
-
-        Args:
-            run_idx: Current run number
-            k: Repeat index within run
-            replica_idx: MPI replica index
-        """
-        import pycharmm
-        import pycharmm.lingo as lingo
-
-        run_dir = self.config.input_folder / f"run{run_idx}"
-        log_path = run_dir / f"log.{k}.{replica_idx}.out"
-
-        # Create CharmmFile for log output
-        self._log_file = pycharmm.CharmmFile(
-            file_name=str(log_path),
-            file_unit=self.LOG_UNIT,
-            read_only=False,
-            formatted=True,
-        )
-
-        # Redirect CHARMM output to this file unit
-        lingo.charmm_script(f"OUTUnit {self.LOG_UNIT}")
+        """Redirect CHARMM output to a separate log file."""
+        self._dynamics.redirect_output(run_idx, k, replica_idx)
 
     def _return_output(self):
-        """Return CHARMM output to standard output (unit 6).
-
-        Closes the current log file and restores CHARMM's output to stdout.
-        """
-        import pycharmm.lingo as lingo
-
-        if self._log_file is not None:
-            # Restore output to stdout (unit 6)
-            lingo.charmm_script("OUTUnit 6")
-            self._log_file.close()
-            self._log_file = None
+        """Return CHARMM output to standard output."""
+        self._dynamics.return_output()
 
     def _init_charmm(self):
         """Initialize CHARMM and read topology files."""
@@ -680,159 +649,123 @@ class ALFSimulation:
             init_vars(self.config.input_folder, alf_info)
 
     def _ensure_g_imp(self):
-        """Ensure G_imp entropy data is available for WHAM.
-
-        Priority:
-        1. Use existing G_imp/ in input folder (validate bins if configured)
-        2. Copy from bundled cphmd/data/G_imp/ (validate bins if configured)
-        3. Compute via Monte Carlo using cphmd.core.entropy
-        """
-        dst = self.config.input_folder / "G_imp"
-        expected_bins = ALFConfig.resolve_g_imp_bins(
-            self.config.g_imp_bins, self.state.phase
-        )
+        """Ensure G_imp entropy data is available for WHAM."""
         nsubs = (
             self.state.alf_info.get("nsubs", [])
             if self.state.alf_info
             else []
         )
-
-        # --- Tier 1: use existing G_imp/ ---
-        if dst.exists():
-            actual_bins = self._detect_g_imp_bins(dst)
-            if expected_bins is not None and actual_bins != expected_bins:
-                print(
-                    f"G_imp: existing has bins={actual_bins}, "
-                    f"need {expected_bins}. Regenerating..."
-                )
-                if dst.is_symlink():
-                    dst.unlink()
-                else:
-                    shutil.rmtree(dst)
-            else:
-                if len(nsubs) > 0:
-                    self._supplement_g_imp(dst, nsubs, actual_bins)
-                print(
-                    f"G_imp: using existing ({dst}, bins={actual_bins})"
-                )
-                return
-
-        # --- Tier 2: copy from bundled data ---
-        from cphmd import PACKAGE_DIR
-
-        bundled = PACKAGE_DIR / "data" / "G_imp"
-        if bundled.exists() and any(bundled.glob("G1_*.dat")):
-            bundled_bins = self._detect_g_imp_bins(bundled)
-            if expected_bins is not None and bundled_bins != expected_bins:
-                print(
-                    f"G_imp: bundled has bins={bundled_bins}, "
-                    f"need {expected_bins}. Computing fresh..."
-                )
-            else:
-                shutil.copytree(bundled, dst)
-                if len(nsubs) > 0:
-                    self._supplement_g_imp(dst, nsubs, bundled_bins)
-                print(
-                    f"G_imp: copied bundled data ({dst}, "
-                    f"bins={bundled_bins})"
-                )
-                return
-
-        # --- Tier 3: compute via Monte Carlo ---
-        from cphmd.core.entropy import ensure_g_imp_available
-
-        bins = expected_bins if expected_bins is not None else 32
-        if len(nsubs) == 0:
-            raise ValueError(
-                "Cannot compute G_imp: nsubs not yet initialized. "
-                "Run init_vars() first."
-            )
-        print(
-            f"G_imp: computing via Monte Carlo "
-            f"(bins={bins}, fnex={self.config.fnex}, "
-            f"nsubs={list(nsubs)})..."
+        expected_bins = ALFConfig.resolve_g_imp_bins(
+            self.config.g_imp_bins, self.state.phase
         )
-        g_imp_dir = ensure_g_imp_available(
-            constraint_type="fnex",
+        provisioner = GImpProvisioner(
+            input_folder=self.config.input_folder,
             nsubs=nsubs,
-            bins=bins,
             fnex=self.config.fnex,
             cutlsum=self.config.cutlsum,
+            g_imp_bins=expected_bins,
         )
-        try:
-            dst.symlink_to(g_imp_dir)
-            print(f"G_imp: cached at {g_imp_dir}, linked to {dst}")
-        except OSError:
-            shutil.copytree(g_imp_dir, dst, dirs_exist_ok=True)
-            print(f"G_imp: cached at {g_imp_dir}, copied to {dst}")
+        provisioner.ensure_available()
 
     def _regenerate_g_imp_if_needed(self, old_phase: int, new_phase: int):
         """Regenerate G_imp if the new phase requires different bins."""
-        old_bins = ALFConfig.resolve_g_imp_bins(self.config.g_imp_bins, old_phase)
-        new_bins = ALFConfig.resolve_g_imp_bins(self.config.g_imp_bins, new_phase)
-        if old_bins == new_bins:
-            return
-        print(
-            f"G_imp: bins {old_bins} → {new_bins} for phase {new_phase}, "
-            f"regenerating..."
+        nsubs = (
+            self.state.alf_info.get("nsubs", [])
+            if self.state.alf_info
+            else []
         )
-        dst = self.config.input_folder / "G_imp"
-        if dst.exists():
-            if dst.is_symlink():
-                dst.unlink()
-            else:
-                shutil.rmtree(dst)
-        self._ensure_g_imp()
-        self.state.alf_info["g_imp_bins"] = new_bins or 32
+        new_bins = ALFConfig.resolve_g_imp_bins(self.config.g_imp_bins, new_phase)
+        provisioner = GImpProvisioner(
+            input_folder=self.config.input_folder,
+            nsubs=nsubs,
+            fnex=self.config.fnex,
+            cutlsum=self.config.cutlsum,
+            g_imp_bins=new_bins,
+        )
+        provisioner.regenerate_if_needed(
+            old_phase, new_phase,
+            resolve_bins=lambda p: ALFConfig.resolve_g_imp_bins(self.config.g_imp_bins, p),
+            alf_info=self.state.alf_info,
+        )
 
     def _supplement_g_imp(self, g_imp_dir: Path, nsubs, bins: int | None):
         """Ensure G1, G12 and cross-site files exist, computing if missing."""
-        from cphmd.core.entropy import compute_g1_cross, compute_g12, compute_g_imp
-
-        actual_bins = bins if bins is not None else 32
-        # CUDA indexes G_imp files by dimension: G1_{nsubs}.dat, G12_{nsubs}.dat, etc.
-        unique_ndims = sorted(set(nsubs)) if len(nsubs) > 0 else []
-
-        for ndim in unique_ndims:
-            g1_path = g_imp_dir / f"G1_{ndim}.dat"
-            g2_path = g_imp_dir / f"G2_{ndim}.dat"
-            if not g1_path.exists() or not g2_path.exists():
-                print(f"G_imp: computing missing G1_{ndim}/G2_{ndim}.dat...")
-                G1, G2 = compute_g_imp("fnex", ndim, bins=actual_bins)
-                if not g1_path.exists():
-                    np.savetxt(g1_path, G1)
-                if not g2_path.exists():
-                    np.savetxt(g2_path, G2)
-
-            g12_path = g_imp_dir / f"G12_{ndim}.dat"
-            if not g12_path.exists():
-                print(f"G_imp: computing missing G12_{ndim}.dat...")
-                G12 = compute_g12("fnex", ndim, bins=actual_bins, cutlsum=self.config.cutlsum)
-                np.savetxt(g12_path, G12)
-
-        for ndim_i in unique_ndims:
-            for ndim_j in unique_ndims:
-                cross_path = g_imp_dir / f"G1_{ndim_i}_{ndim_j}.dat"
-                if not cross_path.exists():
-                    print(f"G_imp: computing missing G1_{ndim_i}_{ndim_j}.dat...")
-                    G_cross = compute_g1_cross(
-                        "fnex", ndim_i, ndim_j, bins=actual_bins,
-                    )
-                    np.savetxt(cross_path, G_cross)
+        provisioner = GImpProvisioner(
+            input_folder=self.config.input_folder,
+            nsubs=nsubs,
+            fnex=self.config.fnex,
+            cutlsum=self.config.cutlsum,
+        )
+        provisioner.supplement(g_imp_dir, bins)
 
     @staticmethod
     def _detect_g_imp_bins(g_imp_dir: Path) -> int | None:
-        """Detect bin count from existing G_imp files.
+        """Detect bin count from existing G_imp files."""
+        return GImpProvisioner.detect_bins(g_imp_dir)
 
-        Reads the first G2_*.dat file and counts lines (= 2D bins).
-        Returns None if no G2 files found.
+    def _run_bias_guessing_phase(self):
+        """Run initial bias guessing before the main simulation loop.
+
+        Evaluates solvated-vacuum energy differences to estimate initial
+        linear (b) and barrier (c) biases.  Only runs on rank 0 when
+        presets are not in use and ``.biases_guessed`` marker is absent.
+
+        After guessing, clears the CHARMM session so the main loop
+        starts with a fresh PSF load.
         """
-        g2_files = sorted(g_imp_dir.glob("G2_[0-9]*.dat"))
-        if not g2_files:
-            return None
-        # G2 file has `bins` lines of `bins` columns → line count = bins
-        with open(g2_files[0]) as f:
-            return sum(1 for line in f if line.strip())
+        if self.config.use_presets:
+            return
+        marker = self.config.input_folder / "analysis0" / ".biases_guessed"
+        if marker.exists():
+            return
+
+        if self.state.rank == 0:
+            import pycharmm.lingo as lingo
+
+            from .alf_utils import init_vars
+            from .bias_guesser import guess_initial_biases_combined
+            from .charmm_utils import clear_block, clear_crystal
+
+            nsubs = self.state.alf_info["nsubs"].astype(int).tolist()
+
+            print("Guessing initial biases from solvated-vacuum energy difference...")
+            sys.stdout.flush()
+
+            # Load PSF, coordinates, crystal, and nonbonded for energy evaluation
+            self._dynamics.setup_crystal(
+                run_idx=self.config.start, letter="", k=0, replica_idx=0
+            )
+
+            try:
+                b, c = guess_initial_biases_combined(
+                    self.state.patch_info, nsubs, fnex=self.config.fnex,
+                )
+            except Exception as e:
+                print(f"  Bias guessing failed: {e}. Using zero biases.")
+                b, c = None, None
+
+            if b is not None:
+                init_vars(
+                    self.config.input_folder, self.state.alf_info,
+                    b_init=b, c_init=c,
+                )
+                print(
+                    f"  Initial bias guess applied: "
+                    f"b range [{b.min():.2f}, {b.max():.2f}], "
+                    f"c range [{c.min():.2f}, {c.max():.2f}]"
+                )
+
+            marker.touch()
+
+            # Clear CHARMM session — main loop will reload fresh
+            clear_block()
+            clear_crystal()
+            lingo.charmm_script("delete atom sele all end")
+            self.state.structure_loaded = False
+
+            sys.stdout.flush()
+
+        self._comm.Barrier()
 
     def initialize(self):
         """Perform full initialization sequence."""
@@ -868,6 +801,9 @@ class ALFSimulation:
         """
         if not self._initialized:
             self.initialize()
+
+        # Phase 0: Initial bias guessing (before main loop)
+        self._run_bias_guessing_phase()
 
         # Find last completed run and resume
         start_run = self._find_last_run()
@@ -1130,794 +1066,68 @@ class ALFSimulation:
         self._comm.Barrier()
 
     def _setup_crystal(self, run_idx: int, letter: str, k: int, replica_idx: int):
-        """Setup crystal/periodic boundary conditions.
-
-        Reads box parameters, loads structure, configures crystal images,
-        and sets up non-bonded interactions.
-        """
-        import random
-
-        import pycharmm.read as read
-        import pycharmm.settings as settings
-
-        from .charmm_utils import (
-            BoxParameters,
-            FFTParameters,
-            NonBondedConfig,
-            clear_block,
-            clear_crystal,
-            define_selections,
-            setup_crystal,
-            setup_nonbonded,
-        )
-
-        prep_dir = self.config.input_folder / "prep"
-        # Use structure_loaded flag to determine if this is the first run in this session
-        # This is more reliable than checking run_idx == config.start because
-        # _find_last_run() may return a different starting run
-        is_first_run = not self.state.structure_loaded and k == 0
-
-        # Skip setup for subsequent repeats (k > 0) within any run
-        # Structure is already loaded from k=0, just need to run dynamics again
-        if k > 0:
-            return
-
-
-        if is_first_run:
-            # Read PSF file (suppress non-integer charge warning for MSLD systems)
-            settings.set_bomb_level(-1)
-            if self.config.hmr:
-                psf_file = prep_dir / "system_hmr.psf"
-                if not psf_file.exists():
-                    # Generate HMR PSF from regular PSF
-                    psf_file = prep_dir / "system.psf"
-                    read.psf_card(str(psf_file))
-                    import pycharmm.psf as pycharmm_psf
-                    pycharmm_psf.hmr(newpsf=str(prep_dir / "system_hmr.psf"))
-                else:
-                    read.psf_card(str(psf_file))
-            else:
-                psf_file = prep_dir / "system.psf"
-                read.psf_card(str(psf_file))
-            settings.set_bomb_level(0)
-
-            # Define selections for titratable groups
-            if self.state.patch_info is not None:
-                define_selections(self.state.patch_info)
-
-            # Mark structure as loaded for this session
-            self.state.structure_loaded = True
-        else:
-            # Clear previous setup for subsequent runs
-            clear_block()
-            if self.config.restrains == "NOE":
-                from .charmm_utils import clear_noe
-                clear_noe()
-            clear_crystal()
-
-        # Determine restart run for coordinate loading
-        if run_idx > 5:
-            self.state.restart_run = random.randint(run_idx - 5, run_idx - 1)
-        else:
-            self.state.restart_run = 1
-
-        # Load box parameters
-        box_params = BoxParameters.from_file(prep_dir / "box.dat")
-        self.state.crystal_type = box_params.crystal_type
-        self.state.box_size = box_params.dimensions
-        self.state.box_angles = box_params.angles
-
-        # Load coordinates
-        if (prep_dir / "system_min.crd").exists():
-            crd_file = prep_dir / "system_min.crd"
-        elif self.config.hmr:
-            crd_file = prep_dir / "system_hmr.crd"
-        else:
-            crd_file = prep_dir / "system.crd"
-
-        read.coor_card(str(crd_file))
-
-        # Try loading restart coordinates if not first run
-        if self.state.restart_run != 1:
-            restart_candidates = [
-                f"run{self.state.restart_run}/prod.{k}.{replica_idx}.crd",
-                f"run{self.state.restart_run}/prod.crd{letter}",
-                f"run{self.state.restart_run}/prod.crd",
-            ]
-            for crd_name in restart_candidates:
-                crd_path = self.config.input_folder / crd_name
-                if crd_path.exists():
-                    read.coor_card(str(crd_path))
-                    break
-
-        # Load FFT parameters
-        fft_params = FFTParameters.from_file(prep_dir / "fft.dat")
-
-        # Setup non-bonded configuration
-        nb_config = NonBondedConfig(
-            cutnb=self.config.cutnb,
-            cutim=self.config.cutnb,
-            ctofnb=self.config.ctofnb,
-            ctonnb=self.config.ctonnb,
-            elec_type=self.config.elec_type,
-            vdw_type=self.config.vdw_type,
-            fftx=fft_params.fftx,
-            ffty=fft_params.ffty,
-            fftz=fft_params.fftz,
-        )
-
-        # Setup crystal
-        setup_crystal(box_params, nb_config, use_image_centering=not self.config.cent_ncres)
-
-        # Setup non-bonded interactions
-        setup_nonbonded(nb_config)
+        """Setup crystal/periodic boundary conditions."""
+        self._dynamics.setup_crystal(run_idx, letter, k, replica_idx)
 
     def _setup_legacy(self, run_idx: int, letter: str, k: int, replica_idx: int):
-        """Set up CHARMM session by streaming a legacy setup script.
-
-        For legacy (msld-py-prep) prep folders:
-        1. Stream variables file (sets bias CHARMM variables)
-        2. Pre-process and stream setup script (topology, patches, crystal, BLOCK)
-        3. Stream setup script
-        4. Load minimized / restart coordinates
-        5. Setup nonbonded parameters
-        6. Stream user-provided restraints (prep/restrains.str)
-        """
-        import random
-
-        import pycharmm.lingo as lingo
-        import pycharmm.settings as settings
-
-        from .charmm_utils import (
-            NonBondedConfig,
-            clear_block,
-            clear_crystal,
-            setup_nonbonded,
-        )
-
-        prep_dir = self.config.input_folder / "prep"
-        is_first_run = not self.state.structure_loaded and k == 0
-
-        # Skip setup for subsequent repeats (k > 0) within any run
-        if k > 0:
-            return
-
-        if not is_first_run:
-            # Clear previous CHARMM state before rebuilding
-            clear_block()
-            if self.config.restrains == "NOE":
-                from .charmm_utils import clear_noe
-                clear_noe()
-            clear_crystal()
-            # Delete all atoms so the setup script can regenerate segments
-            lingo.charmm_script("delete atom sele all end")
-
-        # Determine restart run for coordinate loading
-        if run_idx > 5:
-            self.state.restart_run = random.randint(run_idx - 5, run_idx - 1)
-        else:
-            self.state.restart_run = 1
-
-        # 1. Stream variables file (sets @lam*, @c*, @x*, @s* CHARMM variables)
-        var_file = self.config.input_folder / f"variables{run_idx}.inp"
-        if not var_file.exists():
-            raise FileNotFoundError(f"Variables file not found: {var_file}")
-        lingo.charmm_script(f"stream {var_file}")
-
-        # 2. Pre-process setup script: replace placeholder values with actual ones
-        #    msld-py-prep generates "set box = ????" as a placeholder
-        setup_script = prep_dir / self.config.legacy_setup_script
-        script_text = setup_script.read_text()
-
-        box = self.state.alf_info["box"]
-        import re
-        script_text = re.sub(
-            r"(?i)set\s+box\s*=\s*\S+",
-            f"set box = {box}",
-            script_text,
-        )
-        script_text = re.sub(
-            r"(?i)set\s+builddir\s*=\s*\S+",
-            f"set builddir = {prep_dir}",
-            script_text,
-        )
-
-        # Write processed script to a temp file and stream it
-        processed_script = self.config.input_folder / f".setup_{run_idx}.inp"
-        processed_script.write_text(script_text)
-
-        # 3. Stream processed setup script (topology, patches, selections, crystal, BLOCK)
-        settings.set_bomb_level(-2)
-        lingo.charmm_script(f"stream {processed_script}")
-        settings.set_bomb_level(0)
-
-        # Clean up temp file
-        processed_script.unlink(missing_ok=True)
-
-        self.state.structure_loaded = True
-
-        # 4. Load minimized / restart coordinates (if available)
-        #    The setup script reads PDB fragments (un-minimized).
-        #    On run 1, _run_minimization() will create system_min.crd.
-        #    On run 2+, we must read it back to start from minimized state.
-        import pycharmm.read as pycharmm_read
-
-        min_crd = prep_dir / "system_min.crd"
-        if min_crd.exists():
-            pycharmm_read.coor_card(str(min_crd))
-
-        # Try restart coordinates from a previous run
-        if self.state.restart_run and self.state.restart_run != 1:
-            restart_candidates = [
-                f"run{self.state.restart_run}/prod.{k}.{replica_idx}.crd",
-                f"run{self.state.restart_run}/prod.crd{letter}",
-                f"run{self.state.restart_run}/prod.crd",
-            ]
-            for crd_name in restart_candidates:
-                crd_path = self.config.input_folder / crd_name
-                if crd_path.exists():
-                    pycharmm_read.coor_card(str(crd_path))
-                    break
-
-        # 5. Setup nonbonded parameters (setup script does not handle this)
-
-        nb_config = NonBondedConfig(
-            cutnb=self.config.cutnb,
-            cutim=self.config.cutnb,
-            ctofnb=self.config.ctofnb,
-            ctonnb=self.config.ctonnb,
-            elec_type=self.config.elec_type,
-            vdw_type=self.config.vdw_type,
-        )
-        setup_nonbonded(nb_config)
-
-        # 6. Apply restraints (SCAT or NOE) from user-provided file
-        #    Legacy (msld-py-prep) systems use globally unique atom names per
-        #    substituent, so auto-generation from shared atom names cannot work.
-        #    The user must provide prep/restrains.str with the restraint commands.
-        self._apply_legacy_restraints()
+        """Set up CHARMM session by streaming a legacy setup script."""
+        self._dynamics.setup_legacy(run_idx, letter, k, replica_idx)
 
     def _apply_legacy_restraints(self):
-        """Stream user-provided restraints for legacy mode.
-
-        msld-py-prep gives each atom a globally unique name (C164, C195, ...),
-        so the standard auto-generation (which relies on shared atom names across
-        subs) cannot produce valid restraints.  Instead, we stream the
-        user-provided prep/restrains.str file directly.
-        """
-        import logging
-
-        import pycharmm.lingo as lingo
-
-        prep_dir = self.config.input_folder / "prep"
-        restraint_file = prep_dir / "restrains.str"
-
-        if restraint_file.exists():
-            lingo.charmm_script(f"stream {restraint_file}")
-            return
-
-        if self.config.restrains:
-            logging.getLogger(__name__).warning(
-                "Restraints requested (restrains=%r) but prep/restrains.str not found. "
-                "Legacy (msld-py-prep) systems require a hand-written restraints file. "
-                "See the example in examples/88_marcella/prep/restrains.str.",
-                self.config.restrains,
-            )
+        """Stream user-provided restraints for legacy mode."""
+        self._dynamics.apply_legacy_restraints()
 
     def _build_block_commands(self, run_idx: int, letter: str, k: int, replica_idx: int):
         """Build and execute BLOCK/MSLD commands for lambda dynamics."""
-        from .block_builder import BlockConfig, build_block_command, read_variable_file
-        from .charmm_utils import execute_block_command
-        from .cphmd_params import (
-            compute_all_site_parameters,
-            compute_bias_shifts,
-            get_delta_pKa_for_phase,
-            write_bias_files,
-        )
-
-        # Skip BLOCK setup for subsequent repeats (k > 0)
-        # BLOCK commands persist from k=0
-        if k > 0:
-            return
-
-        if self.state.patch_info is None:
-            raise ValueError("patch_info not loaded")
-
-        # Read ALF variables file
-        var_file = self.config.input_folder / f"variables{run_idx}.inp"
-        variables = read_variable_file(var_file)
-
-        # Compute CpHMD parameters if pH is specified
-        effective_pH = self.config.pH
-        delta_pKa = get_delta_pKa_for_phase(self.state.phase)
-
-        if self.config.pH is not None:
-            cphmd_params = compute_all_site_parameters(
-                self.state.patch_info,
-                self.config.temperature,
-                self.config.pH,
-            )
-            effective_pH = cphmd_params.effective_pH
-
-            # Compute and write bias shifts (or zeros if pKa bias disabled)
-            if self.config.no_pka_bias:
-                # Write zero bias shifts
-                nblocks = self.state.alf_info["nblocks"]
-                b_shift = np.zeros(nblocks)
-                b_fix_shift = np.zeros(nblocks)
-            else:
-                b_shift, b_fix_shift = compute_bias_shifts(
-                    cphmd_params,
-                    self.state.patch_info,
-                    delta_pKa,
-                    replica_idx,
-                )
-            write_bias_files(self.config.input_folder, b_shift, b_fix_shift)
-
-        # Build BLOCK configuration
-        block_config = BlockConfig(
-            temperature=self.config.temperature,
-            pH=self.config.pH,
-            effective_pH=effective_pH,
-            delta_pKa=delta_pKa,
-            use_cphmd=(self.config.pH is not None and delta_pKa != 0 and not self.config.no_pka_bias),
-            initial_lambdas=self.state.forced_initial_lambdas,
-            lambda_mass=self.config.lambda_mass,
-            lambda_fbeta=self.config.lambda_fbeta,
-        )
-
-        # Generate and execute BLOCK command
-        block_cmd = build_block_command(self.state.patch_info, variables, block_config)
-
-        # Write block file for debugging
-        block_file = self.config.input_folder / f"run{run_idx}" / f"block.{k}.{replica_idx}.str"
-        block_file.write_text(block_cmd)
-
-        # Execute BLOCK command
-        execute_block_command(block_cmd)
+        self._dynamics.build_block_commands(run_idx, letter, k, replica_idx)
 
     def _apply_restraints(self, run_idx: int, k: int = 0):
         """Apply SCAT or NOE restraints to titratable atoms."""
-        import pycharmm.lingo as lingo
-
-        from .restraints import generate_noe_restraints, generate_scat_restraints
-
-        # Skip restraint setup for subsequent repeats (k > 0)
-        # Restraints persist from k=0
-        if k > 0:
-            return
-
-        if self.state.patch_info is None:
-            raise ValueError("patch_info not loaded")
-
-        # Generate appropriate restraint command
-        include_hydrogen = self.config.restrain_hydrogens
-
-        if self.config.restrains == "NOE":
-            restraint_cmd = generate_noe_restraints(
-                self.state.patch_info, include_hydrogen
-            )
-        else:
-            restraint_cmd = generate_scat_restraints(
-                self.state.patch_info, include_hydrogen
-            )
-
-        # Write restraints file
-        restraint_file = self.config.input_folder / "prep" / "restrains.str"
-        restraint_file.write_text(restraint_cmd)
-
-        # Execute restraint command
-        lingo.charmm_script(restraint_cmd)
+        self._dynamics.apply_restraints(run_idx, k)
 
     def _run_minimization(self, run_idx: int, replica_idx: int):
-        """Run energy minimization before dynamics.
-
-        Only runs if no minimized coordinates exist.  Uses steepest-descent
-        minimisation (BLADE supports SD but not ABNR).
-        """
-        import pycharmm.energy as energy
-        import pycharmm.minimize as minimize
-        import pycharmm.shake as shake
-        import pycharmm.write as write
-
-        min_crd = self.config.input_folder / "prep" / "system_min.crd"
-        if min_crd.exists():
-            return  # Already minimized
-
-        print(f"Running minimization for run {run_idx}...")
-
-        # Enable SHAKE for minimization
-        shake.on(fast=True, bonh=True, param=True, tol=1e-7)
-
-        # Steepest descent (250 steps, CPU)
-        minimize.run_sd(nstep=250, nprint=50, step=0.005, tolenr=1e-3, tolgrd=1e-3)
-
-        # Save minimized coordinates
-        write.coor_card(str(min_crd))
-        print(f"Minimized coordinates saved to {min_crd}")
-
-        energy.show()
+        """Run energy minimization before dynamics."""
+        self._dynamics.run_minimization(run_idx, replica_idx)
 
     def _run_dynamics(self, run_idx: int, letter: str, k: int, replica_idx: int):
-        """Execute molecular dynamics with BLADE GPU acceleration.
-
-        This method runs equilibration and production dynamics using pyCHARMM
-        with BLADE GPU acceleration. Lambda dynamics files are written for
-        subsequent ALF analysis.
-
-        Args:
-            run_idx: Current run number
-            letter: Run letter suffix (for replica identification)
-            k: Repeat index within run
-            replica_idx: MPI replica index
-        """
-        import pycharmm
-        import pycharmm.lingo as lingo
-        import pycharmm.psf as psf
-
-        # File units
-        dcd_unit = 51
-        rst_unit = 52
-        lmd_unit = 53
-        rpr_unit = 54
-
-        # Dynamics parameters vary by phase
-        if self.state.phase == 1:
-            nsteps_eq = 0        # No equilibration in phase 1
-            nsteps_prod = 50000  # 100 ps
-            nsavc = 0            # No DCD saving by default
-            nsavl = 1            # Save lambda every 2 fs
-        elif self.state.phase == 2:
-            nsteps_eq = 10000    # 20 ps equilibration
-            nsteps_prod = 500000 # 1 ns
-            nsavc = 0            # No DCD saving by default
-            nsavl = 1            # Save lambda every 2 fs
-        else:  # Phase 3
-            nsteps_eq = 0        # No equilibration in phase 3
-            nsteps_prod = 1000000 # 2 ns
-            nsavc = 0            # No DCD saving by default
-            nsavl = 1            # Save lambda every 2 fs
-
-        # HMR allows 4fs timestep
-        timestep = 0.002
-        if self.config.hmr:
-            nsteps_eq //= 2
-            nsteps_prod //= 2
-            nsavc //= 2
-            nsavl = max(nsavl, 1)
-            timestep = 0.004
-
-        # Legacy mode: match classic ALF lambda-save frequency
-        if self.config.prep_format == "legacy":
-            nsavl = 10
-
-        # Initialize dynamics: SHAKE, FASTER, BLADE
-        import pycharmm.dynamics as dyn
-        import pycharmm.shake as shake
-
-        # SHAKE for hydrogen constraints
-        shake.on(fast=True, bonh=True, param=True, tol=1e-7)
-
-        # Enable FASTER algorithm
-        lingo.charmm_script("faster on")
-
-        # Enable BLADE GPU
-        gpuid = replica_idx % 8  # Assume max 8 GPUs
-        lingo.charmm_script(f"blade on gpuid {gpuid}")
-
-        # Set friction coefficients for Langevin dynamics
-        dyn.set_fbetas(np.full(psf.get_natom(), self.config.gscale, dtype=float))
-
-        # Initialize BLADE energy calculation (required before first dynamics step)
-        lingo.charmm_script("energy blade")
-
-        # Base dynamics parameters
-        dyn_param = {
-            "start": True,
-            "restart": False,
-            "blade": True,
-            "prmc": True,
-            "iprs": 100,
-            "prdv": 100,
-            "cpt": True,  # Constant pressure
-            "timestep": timestep,
-            "firstt": self.config.temperature,
-            "finalt": self.config.temperature,
-            "tstruc": self.config.temperature,
-            "tbath": self.config.temperature,
-            "ichecw": 0,  # Don't scale velocities
-            "ihtfrq": 0,  # No heating
-            "ieqfrq": 0,  # No velocity scaling
-            "iasors": 1,  # Assign velocities during heating
-            "iasvel": 1,  # Gaussian velocity distribution
-            "iscvel": 0,
-            "inbfrq": -1,  # Auto-update neighbor lists
-            "ilbfrq": 0,
-            "imgfrq": -1,  # Auto-update images
-            "ntrfrq": 0,
-            "echeck": -1,  # Disable energy check
-            "iunldm": lmd_unit,
-            "iunwri": rst_unit,
-            "iuncrd": dcd_unit if nsavc > 0 else -1,  # -1 = don't write DCD
-            "nsavc": nsavc,
-            "nsavl": nsavl,
-            "nprint": 10000,
-            "iprfrq": 10000,
-            "isvfrq": 0,  # Will be set to nstep before each run (save RST only at end)
-        }
-
-        # NPT ensemble settings
-        dyn_param.update({
-            "pconstant": True,
-            "pmass": psf.get_natom() * 0.12,
-            "pref": 1.0,
-            "pgamma": 20.0,
-            "hoover": True,
-            "reft": self.config.temperature,
-            "tmass": 1000,
-        })
-
-        name = self.config.input_folder.name
-        run_dir = self.config.input_folder / f"run{run_idx}"
-        res_dir = run_dir / "res"
-        dcd_dir = run_dir / "dcd"
-        if nsavc > 0:
-            dcd_dir.mkdir(exist_ok=True)
-
-        # === Equilibration Run ===
-        if nsteps_eq > 0:
-            rst_fn = str(res_dir / f"{name}_eq.{k}.{replica_idx}.rst")
-            lmd_fn = str(res_dir / f"{name}_eq.{k}.{replica_idx}.lmd")
-
-            # Only open DCD file if nsavc > 0
-            dcd = None
-            if nsavc > 0:
-                dcd_fn = str(dcd_dir / f"{name}_eq.{k}.{replica_idx}.dcd")
-                dcd = pycharmm.CharmmFile(file_name=dcd_fn, file_unit=dcd_unit,
-                                          read_only=False, formatted=False)
-            rst = pycharmm.CharmmFile(file_name=rst_fn, file_unit=rst_unit,
-                                      read_only=False, formatted=True)
-            lmd = pycharmm.CharmmFile(file_name=lmd_fn, file_unit=lmd_unit,
-                                      read_only=False, formatted=False)
-
-            dyn_param.update({"nstep": nsteps_eq, "isvfrq": nsteps_eq})
-            pycharmm.DynamicsScript(**dyn_param).run()
-
-            if dcd is not None:
-                dcd.close()
-            rst.close()
-            lmd.close()
-
-        lingo.charmm_script("energy blade")
-
-        # === Production Run ===
-        if nsteps_prod > 0:
-            sim_type = "flat" if self.state.phase in (1, 2) else "prod"
-
-            rst_fn = str(res_dir / f"{name}_{sim_type}.{k}.{replica_idx}.rst")
-            lmd_fn = str(res_dir / f"{name}_{sim_type}.{k}.{replica_idx}.lmd")
-
-            # Update for restart from equilibration
-            dyn_param.update({"start": False, "restart": True, "iunrea": rpr_unit})
-
-            # Find restart file
-            rpr_fn = None
-            if sim_type == "flat":
-                candidates = [
-                    res_dir / f"{name}_eq.{k}.{replica_idx}.rst",
-                    res_dir / f"{name}_eq.rst",
-                ]
-            else:
-                restart_run = run_idx - 1
-                candidates = [
-                    self.config.input_folder / f"run{restart_run}" / "res" / f"{name}_prod.{k}.{replica_idx}.rst",
-                    self.config.input_folder / f"run{restart_run}" / "res" / f"{name}_flat.{k}.{replica_idx}.rst",
-                ]
-
-            for candidate in candidates:
-                if candidate.exists():
-                    rpr_fn = str(candidate)
-                    break
-
-            if rpr_fn is None and sim_type == "flat":
-                # No restart file - start fresh
-                dyn_param.update({"start": True, "restart": False})
-                dyn_param.pop("iunrea", None)
-                rpr = None
-            elif rpr_fn is None:
-                raise RuntimeError(f"No restart file found for production run {run_idx}")
-            else:
-                rpr = pycharmm.CharmmFile(file_name=rpr_fn, file_unit=rpr_unit,
-                                          read_only=True, formatted=True)
-
-            # Only open DCD file if nsavc > 0
-            dcd = None
-            if nsavc > 0:
-                dcd_fn = str(dcd_dir / f"{name}_{sim_type}.{k}.{replica_idx}.dcd")
-                dcd = pycharmm.CharmmFile(file_name=dcd_fn, file_unit=dcd_unit,
-                                          read_only=False, formatted=False)
-            rst = pycharmm.CharmmFile(file_name=rst_fn, file_unit=rst_unit,
-                                      read_only=False, formatted=True)
-            lmd = pycharmm.CharmmFile(file_name=lmd_fn, file_unit=lmd_unit,
-                                      read_only=False, formatted=False)
-
-            dyn_param.update({"nstep": nsteps_prod, "isvfrq": nsteps_prod})
-            pycharmm.DynamicsScript(**dyn_param).run()
-
-            if dcd is not None:
-                dcd.close()
-            rst.close()
-            lmd.close()
-            if rpr is not None:
-                rpr.close()
-
-        lingo.charmm_script("blade off")
+        """Execute molecular dynamics with BLADE GPU acceleration."""
+        self._dynamics.run_dynamics(run_idx, letter, k, replica_idx)
 
     def _is_wham_output_invalid(self, analysis_dir: Path, cut_params: dict | None = None) -> bool:
-        """Check for invalid WHAM output (all-zero, NaN, or Inf).
-
-        Only checks files whose parameter types are active (non-zero cutoff).
-        When a parameter type is disabled (cutoff=0), its output file is
-        expected to be all zeros and should not trigger a retry.
-
-        Args:
-            analysis_dir: Path to analysis directory containing b.dat, c.dat, etc.
-            cut_params: Cutoff parameters dict. Used to skip validation for
-                disabled parameter types.
-
-        Returns:
-            True if output is invalid and WHAM should be retried
-        """
-        # Map output files to their cutoff keys
-        file_cut_map = {
-            'b.dat': 'cutb',
-            'c.dat': 'cutc',
-            'b_sum.dat': 'cutb',
-            'c_sum.dat': 'cutc',
-        }
-
-        for fname, cut_key in file_cut_map.items():
-            # Skip validation for disabled parameter types
-            if cut_params and cut_params.get(cut_key, 1.0) == 0:
-                continue
-
-            fpath = analysis_dir / fname
-            if not fpath.exists():
-                continue
-            try:
-                data = np.loadtxt(fpath)
-                if data.size == 0:
-                    print(f"WHAM validation: {fname} is empty")
-                    return True
-                if np.all(data == 0):
-                    print(f"WHAM validation: {fname} contains all zeros")
-                    return True
-                if np.any(np.isnan(data)):
-                    print(f"WHAM validation: {fname} contains NaN")
-                    return True
-                if np.any(np.isinf(data)):
-                    print(f"WHAM validation: {fname} contains Inf")
-                    return True
-            except Exception as e:
-                print(f"WHAM validation: error reading {fname}: {e}")
-                return True
-
-        return False
+        """Check for invalid WHAM output (all-zero, NaN, or Inf)."""
+        return BiasAnalyzer.is_output_invalid(analysis_dir, cut_params)
 
     def _cleanup_invalid_wham(self, analysis_dir: Path) -> None:
-        """Remove invalid WHAM output files for retry.
-
-        Args:
-            analysis_dir: Path to analysis directory
-        """
-        files_to_remove = [
-            'b.dat', 'c.dat', 'x.dat', 's.dat',
-            'b_sum.dat', 'c_sum.dat', 'x_sum.dat', 's_sum.dat',
-        ]
-        for fname in files_to_remove:
-            fpath = analysis_dir / fname
-            if fpath.exists():
-                fpath.unlink()
-
-        # Also remove multisite directory if present
-        multisite_dir = analysis_dir / 'multisite'
-        if multisite_dir.exists():
-            shutil.rmtree(multisite_dir)
+        """Remove invalid WHAM output files for retry."""
+        BiasAnalyzer.cleanup_invalid(analysis_dir)
 
     # --- Adaptive cutoff helpers ---
 
     def _adapt_cutoffs(self, run_idx: int) -> dict:
-        """Compute fixed staged cutoffs for Phase 1.
-
-        Phase 1 uses fixed cutoffs based on run index. No scaling.dat feedback
-        is used because trapped-state data produces unreliable bottleneck
-        direction and scaling signals.
-
-        Returns:
-            dict of cutoff/calc parameters to pass to get_free_energy5.
-        """
-        # Phase 1 parameter staging:
-        #   Runs 0-19: larger cutoffs to build up biases quickly from scratch.
-        #   Runs 20+:  tighter cutoffs for refinement.
-        #   x/s always disabled in Phase 1 (no inter-site transition data).
-        if run_idx < 20:
-            cutb = 5.0
-            cutc = 20.0
-        else:
-            cutb = 2.5
-            cutc = 10.0
-        cutx, cuts = 0.0, 0.0
-        print(f"  Phase 1 cutoffs: cutb={cutb:.1f} cutc={cutc:.1f} (fixed, run {run_idx})")
-
-        # Build cut_params dict with exclusion flags
-        # A cutoff of 0 means "exclude this parameter type entirely"
-        cut_params = {"cutb": cutb, "cutc": cutc, "cutx": cutx, "cuts": cuts}
-        if self.config.no_b_bias or cutb == 0:
-            cut_params["calc_phi"] = False
-        if self.config.no_c_bias or cutc == 0:
-            cut_params["calc_psi"] = False
-        if self.config.no_x_bias or cutx == 0:
-            cut_params["calc_chi"] = False
-        if self.config.no_s_bias or cuts == 0:
-            cut_params["calc_omega"] = False
-
-        return cut_params
+        """Compute fixed staged cutoffs for Phase 1."""
+        return self._bias_analyzer.compute_cutoffs(
+            phase=1, run_idx=run_idx, coupling_scale=0.0,
+            phase2_start_run=None, alf_info=self.state.alf_info,
+            input_folder=self.config.input_folder,
+        )
 
     def _phase2_cutoffs(self, run_idx: int, coupling_scale: float) -> dict:
         """Compute Phase 2 warmup cutoffs (log-space decay over 20 runs)."""
-        warmup_runs = 20
-        p2_start = self.state.phase2_start_run or run_idx
-        runs_in_p2 = max(run_idx - p2_start, 0)
-        decay = min(runs_in_p2 / warmup_runs, 1.0)
-
-        # Start values (moderate) → Target values (tight)
-        cutb_start, cutb_target = 1.0, 0.05
-        cutc_start = 4.0 * coupling_scale
-        cutc_target = 0.5 * coupling_scale
-
-        # Log-space interpolation: start * (target/start)^decay
-        cutb = cutb_start * (cutb_target / cutb_start) ** decay
-        cutc = cutc_start * (cutc_target / cutc_start) ** decay
-
-        cut_params = {
-            "cutb": cutb, "cutc": cutc,
-            "cutx": cutc, "cuts": cutc,
-        }
-        if runs_in_p2 < warmup_runs:
-            print(f"  Phase 2 warmup ({runs_in_p2}/{warmup_runs}): "
-                  f"cutb={cutb:.3f} cutc={cutc:.3f}")
-        return cut_params
+        return self._bias_analyzer.compute_cutoffs(
+            phase=2, run_idx=run_idx, coupling_scale=coupling_scale,
+            phase2_start_run=self.state.phase2_start_run,
+            alf_info=self.state.alf_info,
+            input_folder=self.config.input_folder,
+        )
 
     def _phase3_cutoffs(self, run_idx: int, coupling_scale: float) -> dict:
         """Compute Phase 3 cutoffs (tight, with recovery for skewed populations)."""
-        prev_pop_file = (
-            self.config.input_folder / f"analysis{run_idx - 1}" / "pop_strict.dat"
+        return self._bias_analyzer.compute_cutoffs(
+            phase=3, run_idx=run_idx, coupling_scale=coupling_scale,
+            phase2_start_run=self.state.phase2_start_run,
+            alf_info=self.state.alf_info,
+            input_folder=self.config.input_folder,
         )
-        if prev_pop_file.exists():
-            try:
-                prev_pops = np.loadtxt(prev_pop_file)
-                nsubs = self.state.alf_info.get("nsubs", [len(prev_pops)])
-                col = 0
-                for n in nsubs:
-                    site_pops = prev_pops[col:col + n]
-                    if len(site_pops) > 0 and site_pops.max() - site_pops.min() > 0.7:
-                        print("  Phase 3 recovery: pop diff > 70% → using Phase 2 cutoffs")
-                        return {
-                            "cutb": 0.05,
-                            "cutc": 0.5 * coupling_scale,
-                            "cutx": 0.5 * coupling_scale,
-                            "cuts": 0.5 * coupling_scale,
-                        }
-                    col += n
-            except Exception:
-                pass
-
-        return {
-            "cutb": 0.02,
-            "cutc": 0.2 * coupling_scale,
-            "cutx": 0.1 * coupling_scale,
-            "cuts": 0.1 * coupling_scale,
-        }
 
     def _run_wham_with_retry(
         self,
@@ -1928,125 +1138,18 @@ class ALFSimulation:
         cut_params: dict,
         max_attempts: int = 3,
     ) -> tuple[bool, str]:
-        """Run analysis (WHAM or LMALF) with retry on failure or invalid output.
-
-        Verbose WHAM output is redirected to analysis.log in the current directory.
-        Only summary messages are returned to be printed to main output.
-
-        Args:
-            run_idx: Current run number
-            nf: Number of files (N * nreps)
-            ms: Multisite parameter
-            msprof: Multisite profile parameter
-            cut_params: Cutoff parameters (cutb, cutc, etc.)
-            max_attempts: Maximum number of retry attempts
-
-        Returns:
-            Tuple of (success: bool, summary_message: str)
-        """
-        import contextlib
-
-        analysis_dir = Path.cwd()  # We're already chdir'd to analysis dir
-        method = self.config.analysis_method
-        log_file = analysis_dir / "analysis.log"
-
-        # Append WHAM verbose output to existing log file
-        with open(log_file, "a") as log_f:
-            for attempt in range(max_attempts):
-                try:
-                    log_f.write(f"{method.upper()} attempt {attempt + 1}/{max_attempts}...\n")
-                    log_f.flush()
-
-                    # Redirect stdout to log file during WHAM execution
-                    with contextlib.redirect_stdout(log_f):
-                        if method == "hybrid":
-                            self._run_hybrid_analysis(nf, ms, msprof, cut_params)
-                        elif method == "lmalf":
-                            self._run_lmalf_analysis(nf, ms, msprof, cut_params)
-                        else:
-                            self._run_wham_analysis(nf, ms, msprof, cut_params)
-
-                    # Validate output
-                    if self._is_wham_output_invalid(analysis_dir, cut_params):
-                        msg = f"{method.upper()} output invalid on attempt {attempt + 1}"
-                        log_f.write(f"{msg}\n")
-                        log_f.flush()
-                        self._cleanup_invalid_wham(analysis_dir)
-                        continue
-
-                    msg = f"{method.upper()} succeeded on attempt {attempt + 1}"
-                    log_f.write(f"{msg}\n")
-                    return True, msg
-
-                except Exception as e:
-                    msg = f"{method.upper()} attempt {attempt + 1} failed: {e}"
-                    log_f.write(f"{msg}\n")
-                    log_f.flush()
-                    self._cleanup_invalid_wham(analysis_dir)
-
-                    if attempt == max_attempts - 1:
-                        msg = f"{method.upper()} failed after {max_attempts} attempts"
-                        log_f.write(f"{msg}\n")
-                        return False, msg
-
-        return False, f"{method.upper()} failed after {max_attempts} attempts"
+        """Run analysis with retry on failure or invalid output."""
+        return self._bias_analyzer.run_with_retry(
+            run_idx=run_idx, nf=nf, ms=ms, msprof=msprof,
+            cut_params=cut_params, alf_info=self.state.alf_info,
+            phase=self.state.phase, max_attempts=max_attempts,
+        )
 
     def _run_wham_analysis(
         self, nf: int, ms: int, msprof: int, cut_params: dict
     ) -> None:
-        """Run WHAM analysis using bundled GPU library.
-
-        Uses in-memory data passing when available (self._wham_lambda set by
-        _alf_analysis), falls back to file-based path otherwise.
-
-        Args:
-            nf: Number of simulation files
-            ms: Multisite parameter
-            msprof: Multisite profile parameter
-            cut_params: Cutoff parameters
-        """
-        nsubs = self.state.alf_info["nsubs"]
-        nblocks = self.state.alf_info["nblocks"]
-
-        if hasattr(self, '_wham_lambda') and self._wham_lambda:
-            from cphmd.wham import run_wham_from_memory
-
-            run_wham_from_memory(
-                lambda_arrays=self._wham_lambda,
-                energy_matrix=self._wham_energy,
-                nblocks=nblocks,
-                nf=nf,
-                temp=self.config.temperature,
-                nts0=ms,
-                nts1=msprof,
-                use_gshift=False,
-                nsubs=nsubs,
-                g_imp_path="../G_imp",
-                gshift_data=self._wham_gshift,
-                output_dir=Path.cwd(),
-                log_file="analysis.log",
-                fnex=self.config.fnex,
-                cutlsum=self.config.cutlsum,
-            )
-        else:
-            from cphmd.wham import run_wham
-
-            run_wham(
-                analysis_dir=Path.cwd(),
-                nf=nf,
-                temp=self.config.temperature,
-                nts0=ms,
-                nts1=msprof,
-                use_gshift=False,
-                nsubs=nsubs,
-                g_imp_path="../G_imp",
-                log_file="analysis.log",
-                fnex=self.config.fnex,
-                cutlsum=self.config.cutlsum,
-            )
-        get_free_energy5(
-            self.state.alf_info, ms=ms, msprof=msprof, **cut_params
-        )
+        """Run WHAM analysis using bundled GPU library."""
+        self._bias_analyzer._run_wham(nf, ms, msprof, cut_params, self.state.alf_info)
 
     def _invoke_lmalf(
         self,
@@ -2057,278 +1160,41 @@ class ALFSimulation:
         max_iter: int | None = None,
         tolerance: float | None = None,
     ) -> bool:
-        """Run LMALF optimization, loading lambda from memory or files.
-
-        Returns True if lambda data was found and LMALF ran, False otherwise.
-        """
-        from cphmd.wham import run_lmalf_from_memory
-
-        nsubs = self.state.alf_info["nsubs"]
-
-        # Load lambda data: prefer in-memory, fall back to parquet files
-        if hasattr(self, '_wham_lambda') and self._wham_lambda:
-            lambda_combined = np.vstack(self._wham_lambda)
-            print(f"[LMALF] {lambda_combined.shape[0]} frames, "
-                  f"{lambda_combined.shape[1]} blocks (in-memory)")
-        else:
-            from cphmd.utils.lambda_io import find_lambda_files, read_lambda_values
-            lambda_files = find_lambda_files(Path("data"))
-            if not lambda_files:
-                return False
-            print(f"[LMALF] Found {len(lambda_files)} lambda files (file-based)")
-            lambda_combined = np.vstack(
-                [read_lambda_values(f) for f in lambda_files]
-            )
-
-        # Load previous bias parameters
-        x_file, s_file = Path("x_prev.dat"), Path("s_prev.dat")
-        x_prev = np.loadtxt(x_file) if x_file.exists() else None
-        s_prev = np.loadtxt(s_file) if s_file.exists() else None
-
-        # Use config defaults unless overridden
-        if max_iter is None:
-            max_iter = self.config.lmalf_max_iter
-        if tolerance is None:
-            tolerance = self.config.lmalf_tolerance
-
-        print(f"[LMALF] Running optimization ({lambda_combined.shape[0]} frames)...")
-        run_lmalf_from_memory(
-            lambda_combined=lambda_combined,
-            ensweight=None,
-            nf=nf,
-            temp=self.config.temperature,
-            ms=ms,
-            msprof=msprof,
-            max_iter=max_iter,
-            tolerance=tolerance,
-            nsubs=nsubs,
-            g_imp_path="../G_imp",
-            x_prev=x_prev,
-            s_prev=s_prev,
-            output_dir=Path.cwd(),
-            log_file="analysis.log",
-            fnex=self.config.fnex,
+        """Run LMALF optimization."""
+        return self._bias_analyzer._invoke_lmalf(
+            nf, ms, msprof, self.state.alf_info,
+            max_iter=max_iter, tolerance=tolerance,
         )
-        return True
 
     def _run_lmalf_analysis(
         self, nf: int, ms: int, msprof: int, cut_params: dict
     ) -> None:
-        """Run LMALF analysis using bundled GPU library.
-
-        Args:
-            nf: Number of simulation files
-            ms: Multisite parameter
-            msprof: Multisite profile parameter
-            cut_params: Cutoff parameters for GetFreeEnergyLM
-        """
-        from cphmd.core.alf_utils import get_free_energy_lm
-
-        print("[LMALF] Starting analysis...", flush=True)
-        if not self._invoke_lmalf(nf, ms, msprof):
-            raise FileNotFoundError(
-                "No Lambda.*.*.parquet (or .dat) files found in data/"
-            )
-        print("[LMALF] LMALF optimization finished")
-
-        # Check if LMALF produced valid output (not all zeros)
-        out_file = Path("OUT.dat")
-        if out_file.exists():
-            out_data = np.loadtxt(out_file)
-            if np.all(out_data == 0):
-                print("[LMALF] Warning: LMALF produced all zeros - falling back to WHAM")
-                self._run_wham_analysis(nf, ms, msprof, cut_params)
-                return
-
-        # Convert OUT.dat to b/c/x/s.dat
-        print("[LMALF] Converting OUT.dat to b/c/x/s.dat...")
-        lm_keys = {"cutb", "cutc", "cutx", "cuts", "cutc2", "cutx2", "cuts2"}
-        lm_params = {k: v for k, v in cut_params.items() if k in lm_keys}
-        get_free_energy_lm(
-            self.state.alf_info, ms=ms, msprof=msprof, **lm_params,
-        )
-        print("[LMALF] Analysis complete")
+        """Run LMALF analysis using bundled GPU library."""
+        self._bias_analyzer._run_lmalf(nf, ms, msprof, cut_params, self.state.alf_info)
 
     def _run_hybrid_analysis(
         self, nf: int, ms: int, msprof: int, cut_params: dict
     ) -> None:
-        """Run WHAM followed by short LMALF refinement.
-
-        Phase 1: WHAM -> LMALF (5 iterations) for better solutions.
-        Phase 2/3: WHAM only (landscape is stable, refinement unnecessary).
-        """
-        # Step 1: Run WHAM to get initial C.dat/V.dat and solve
-        self._run_wham_analysis(nf, ms, msprof, cut_params)
-
-        # Step 2: If Phase 1, refine with short LMALF
-        if self.state.phase != 1:
-            return
-
-        from cphmd.core.alf_utils import get_free_energy_lm
-
-        print("[Hybrid] LMALF refinement (5 iterations)...")
-        if not self._invoke_lmalf(nf, ms, msprof, max_iter=5):
-            print("[Hybrid] No lambda files found, skipping LMALF refinement")
-            return
-
-        # Check if LMALF produced valid output before overwriting WHAM result
-        out_file = Path("OUT.dat")
-        if out_file.exists():
-            out_data = np.loadtxt(out_file)
-            if np.all(out_data == 0):
-                print("[Hybrid] LMALF produced all zeros - keeping WHAM output")
-                return
-
-        # Re-run GetFreeEnergy on LMALF's output
-        lm_keys = {"cutb", "cutc", "cutx", "cuts", "cutc2", "cutx2", "cuts2"}
-        lm_params = {k: v for k, v in cut_params.items() if k in lm_keys}
-        get_free_energy_lm(
-            self.state.alf_info, ms=ms, msprof=msprof, **lm_params,
+        """Run WHAM followed by short LMALF refinement."""
+        self._bias_analyzer._run_hybrid(
+            nf, ms, msprof, cut_params, self.state.alf_info, self.state.phase,
         )
-        print("[Hybrid] LMALF refinement complete")
 
     def _generate_analysis_plots(
         self, run_idx: int, nsubs, msprof: int
     ) -> None:
         """Generate convergence and diagnostic plots after analysis."""
-        plots_dir = Path(self.config.input_folder) / "plots"
-
-        # Population convergence plots
-        from cphmd.analysis.population_convergence import generate_population_plots
-        generate_population_plots(
-            input_folder=Path(".."),
-            max_run=run_idx,
-            output_dir=plots_dir,
-            nsubs=self.state.alf_info.get("nsubs"),
+        self._convergence.generate_plots(
+            run_idx, nsubs, msprof, self.config.input_folder,
         )
 
-        # RMSD convergence plots (need multisite/ G-files)
-        try:
-            if (Path("..") / f"analysis{run_idx}" / "multisite").is_dir():
-                from cphmd.analysis.rmsd_convergence_plot import (
-                    generate_rmsd_convergence_plots,
-                )
-                generate_rmsd_convergence_plots(
-                    input_folder=Path(".."),
-                    max_run=run_idx,
-                    output_dir=plots_dir,
-                    nsubs=list(nsubs),
-                    rmsd_state=getattr(self.state, "rmsd_state", None),
-                )
-        except Exception as e:
-            print(f"Warning: RMSD convergence plots failed: {e}")
-
-        # b-bias convergence plot
-        try:
-            from cphmd.analysis.population_convergence import (
-                _read_phases_from_runs,
-            )
-            from cphmd.analysis.rmsd_convergence_plot import (
-                _collect_b_biases_from_dirs,
-                plot_b_bias_convergence,
-            )
-            b_runs, b_values = _collect_b_biases_from_dirs(
-                Path(".."), run_idx, list(nsubs),
-            )
-            if len(b_runs) >= 1:
-                b_phases = _read_phases_from_runs(Path(".."), b_runs)
-                plot_b_bias_convergence(
-                    runs=b_runs,
-                    b_values=b_values,
-                    nsubs=list(nsubs),
-                    output_path=plots_dir / "b_bias_convergence.png",
-                    phases=b_phases,
-                )
-        except Exception as e:
-            print(f"Warning: b-bias convergence plot failed: {e}")
-
-        # 1D energy profile plots
-        try:
-            from cphmd.analysis.energy_profiles import plot_1d_profiles
-            plot_1d_profiles(analysis_dir=Path.cwd(), nsubs=list(nsubs))
-        except Exception as e:
-            print(f"Warning: 1D energy profile plots failed: {e}")
-
-        # WHAM free energy profile plots
-        try:
-            from cphmd.analysis.wham_profiles import plot_wham_profiles
-            plot_wham_profiles(
-                analysis_dir=Path.cwd(), nsubs=list(nsubs), msprof=msprof,
-            )
-        except Exception as e:
-            print(f"Warning: WHAM profile plots failed: {e}")
-
     def _detect_forced_initial_lambdas(
-        self,
-        run_idx: int,
-        pop_strict: list,
-        nsubs,
-        trans_matrices,
+        self, run_idx: int, pop_strict: list, nsubs, trans_matrices,
     ) -> None:
-        """Detect unsampled states and set biased Dirichlet initial lambdas.
-
-        Uses a sliding window of population history (last 5 runs) to identify
-        persistently unsampled states and biases initial lambda toward them.
-        Falls back to transition-based detection if no population-based biases
-        are needed.
-        """
-        nsubs_eff = nsubs if nsubs is not None else [len(pop_strict)]
-        if self.state.patch_info is not None:
-            sites = list(self.state.patch_info["site"].unique())
-        else:
-            sites = list(range(1, len(nsubs_eff) + 1))
-
-        # Collect population history from last 5 analysis dirs
-        pop_history = []
-        for prev_r in range(max(run_idx - 4, 1), run_idx + 1):
-            prev_pop_file = (
-                self.config.input_folder / f"analysis{prev_r}" / "pop_strict.dat"
-            )
-            if prev_pop_file.exists():
-                try:
-                    prev_pops = np.loadtxt(prev_pop_file)
-                    if len(prev_pops) == len(pop_strict):
-                        pop_history.append(prev_pops)
-                except Exception:
-                    pass
-        # Always include current run
-        pop_history.append(np.array(pop_strict))
-
-        # Average over history window
-        avg_pops = np.mean(pop_history, axis=0)
-
-        biased_alphas = {}
-        for site_idx, (start, end) in enumerate(_per_site_ranges(nsubs_eff)):
-            site_pops = avg_pops[start:end]
-            # States with < 5% average population over window
-            low_mask = site_pops < 0.05
-            if low_mask.any() and not low_mask.all():
-                low_indices = np.where(low_mask)[0]
-                worst = low_indices[np.argmin(site_pops[low_indices])]
-                alpha = np.ones(len(site_pops))
-                alpha_val = 10.0 if self.state.phase >= 2 else 3.0
-                alpha[worst] = alpha_val
-                biased_alphas[sites[site_idx]] = alpha.tolist()
-                print(f"  Biased Dirichlet site {sites[site_idx]}: "
-                      f"alpha[{worst}]={alpha_val:.0f} (avg pop "
-                      f"{site_pops[worst]:.1%} over {len(pop_history)} runs)")
-
-        # If no population-based Dirichlet, check transitions
-        if not biased_alphas and trans_matrices is not None:
-            from cphmd.core.transitions import find_weakest_transitions
-            weak_transitions = find_weakest_transitions(
-                trans_matrices, nsubs_eff, threshold_count=5
-            )
-            for site_idx, (si, sj) in weak_transitions.items():
-                alpha = np.ones(nsubs_eff[site_idx])
-                alpha[si] = 2.0
-                alpha[sj] = 2.0
-                biased_alphas[sites[site_idx]] = alpha.tolist()
-                print(f"  Transition Dirichlet site {sites[site_idx]}: "
-                      f"alpha[{si}]=alpha[{sj}]=2 "
-                      f"(weak {si}<->{sj} transition)")
-
-        self.state.forced_initial_lambdas = biased_alphas or None
+        """Detect unsampled states and set biased Dirichlet initial lambdas."""
+        self._convergence.detect_forced_lambdas(
+            run_idx, pop_strict, nsubs, trans_matrices, self.config.input_folder,
+        )
 
     def _detect_phase_from_logs(self, run_idx: int) -> int | None:
         """Detect simulation phase from NSTEP in log files.
@@ -2467,18 +1333,8 @@ class ALFSimulation:
                                         p.unlink()
 
                     # Compute WHAM inputs in memory (no intermediate text files)
-                    if self.state.phase == 1:
-                        skipE = 10   # 40K samples → 4K per simulation
-                    else:
-                        skipE = 100  # 450K+ samples → 4.5K per simulation
-                    from cphmd.core.alf_utils import compute_wham_inputs
-                    (
-                        self._wham_lambda,
-                        self._wham_energy,
-                        self._wham_gshift,
-                        nf,
-                    ) = compute_wham_inputs(
-                        self.state.alf_info, im5, run_idx, skipE=skipE
+                    nf = self._bias_analyzer.prepare_data(
+                        self.state.alf_info, run_idx, self.state.phase,
                     )
 
             # Write nsubs and nblocks files for WHAM library
@@ -2576,363 +1432,39 @@ class ALFSimulation:
                 np.savetxt("s.dat", np.zeros((nblocks, nblocks)), fmt=" %10.5f")
 
             # Update EWBS (Energy-Weighted Bias Stability) from b/c/x/s.dat
-            from cphmd.core.phase_switcher import (
-                EWBSState,
-                ewbs_bottleneck_type,
-                update_ewbs_state,
+            self._convergence.update_ewbs()
+
+            # Compute populations from lambda data
+            lambda_data, pop_data, pop_strict = (
+                self._convergence.compute_populations(nsubs)
             )
-            if self.state.ewbs_state is None:
-                ewbs_path = Path("..") / "ewbs_state.json"
-                if ewbs_path.exists():
-                    self.state.ewbs_state = EWBSState.load(ewbs_path)
-                else:
-                    self.state.ewbs_state = EWBSState()
-            try:
-                b_dat = np.loadtxt("b.dat")
-                c_dat = np.loadtxt("c.dat")
-                x_dat = np.loadtxt("x.dat")
-                s_dat = np.loadtxt("s.dat")
-            except (FileNotFoundError, ValueError, OSError) as e:
-                print(f"Warning: Cannot read bias files for EWBS: {e}")
-                b_dat = c_dat = x_dat = s_dat = None
 
-            if b_dat is not None:
-                ewbs_val = update_ewbs_state(
-                    self.state.ewbs_state, b_dat, c_dat, x_dat, s_dat
+            if pop_strict is not None and len(pop_strict) > 0:
+                # Detect unsampled states and set biased initial lambdas
+                self._convergence.detect_forced_lambdas(
+                    run_idx, pop_strict, nsubs, trans_matrices,
+                    self.config.input_folder,
                 )
-                btn = ewbs_bottleneck_type(self.state.ewbs_state)
-                st = self.state.ewbs_state
-                print(f"EWBS: {ewbs_val:.4f} (b={st.ema_b:.4f} c={st.ema_c:.4f} "
-                      f"x={st.ema_x:.4f} s={st.ema_s:.4f}, bottleneck={btn})")
-                try:
-                    self.state.ewbs_state.save(Path("..") / "ewbs_state.json")
-                except OSError as e:
-                    print(f"Warning: Could not save EWBS state: {e}")
+                # Save pop_strict for future history lookups
+                np.savetxt("pop_strict.dat", np.array(pop_strict), fmt=" %.6f")
 
-            # Load lambda data for phase checking and population stats
-            data_dir = Path("data")
-            lambda_data, _ = load_lambda_data(data_dir)
-
+            # Generate convergence and diagnostic plots
             if lambda_data is not None:
-                # Write population statistics at two thresholds
-                nsubs = self.state.alf_info.get("nsubs")
-                pop_data = calculate_populations(
-                    lambda_data, thresholds=(0.8, 0.985), nsubs=nsubs,
-                )
-                write_populations_file(Path("populations.dat"), pop_data)
-
-                # Print short population summary for λ > 0.985
-                if pop_data:
-                    pop_strict = pop_data.get("pop_strict_norm", [])
-                    if len(pop_strict) > 0:
-                        if nsubs is not None and len(nsubs) > 1:
-                            # Per-site populations on separate lines
-                            print("Populations (λ>0.985):")
-                            site_diffs = []
-                            for si, (start, end) in enumerate(_per_site_ranges(nsubs)):
-                                s = pop_strict[start:end]
-                                site_diffs.append((max(s) - min(s)) * 100)
-                                site_str = ", ".join(f"{p:.1%}" for p in s)
-                                print(f"  Site {si+1} ({nsubs[si]} subs): [{site_str}] "
-                                      f"diff={site_diffs[-1]:.1f}%")
-                            print(f"  Worst-site diff={max(site_diffs):.1f}%")
-                        else:
-                            pop_str = ", ".join(f"{p:.1%}" for p in pop_strict)
-                            frac_diff = (max(pop_strict) - min(pop_strict)) * 100
-                            print(f"Populations (λ>0.985): [{pop_str}] diff={frac_diff:.1f}%")
-
-                        # Detect unsampled states and set biased initial lambdas
-                        self._detect_forced_initial_lambdas(
-                            run_idx, pop_strict, nsubs, trans_matrices,
-                        )
-
-                        # Save pop_strict for future history lookups
-                        np.savetxt("pop_strict.dat", np.array(pop_strict),
-                                   fmt=" %.6f")
-
-                # Generate convergence and diagnostic plots
-                self._generate_analysis_plots(run_idx, nsubs, msprof)
-
-            # --- RMSD-based convergence check ---
-            if (self.config.convergence_mode == "rmsd"
-                    and self.config.auto_phase_switch):
-                from .rmsd_convergence import (
-                    RMSDConvergenceConfig,
-                    RMSDState,
-                    check_rmsd_phase_transition,
-                    check_rmsd_stop,
-                    compute_site_rmsd,
-                )
-                if self.state.rmsd_state is None:
-                    self.state.rmsd_state = RMSDState()
-
-                rmsd_cfg = RMSDConvergenceConfig()
-                analysis_dir = Path(f"analysis{run_idx}")
-
-                # Find reference analysis directory (lag iterations ago)
-                ref_run = run_idx - rmsd_cfg.lag
-                ref_dir = Path(f"analysis{ref_run}")
-
-                if ref_dir.is_dir() and (ref_dir / "multisite").is_dir():
-                    site_rmsds, site_coverages = compute_site_rmsd(
-                        analysis_dir, ref_dir, list(nsubs),
-                    )
-                    self.state.rmsd_state.rmsd_history.append(site_rmsds)
-                    self.state.rmsd_state.coverage_history.append(site_coverages)
-                    self.state.rmsd_state.run_indices.append(run_idx)
-
-                    rmsd_label = ", ".join(
-                        f"s{i+1}={r:.2f}({c:.0%})"
-                        for i, (r, c) in enumerate(zip(site_rmsds, site_coverages))
-                    )
-                    print(f"RMSD (vs run {ref_run}): {rmsd_label}")
-
-                    # Phase transition check
-                    new_phase, reason = check_rmsd_phase_transition(
-                        self.state.phase, self.state.rmsd_state, rmsd_cfg,
-                    )
-                    if new_phase != self.state.phase:
-                        print(f"PHASE TRANSITION: {self.state.phase} → {new_phase}")
-                        print(f"  {reason}")
-                        if new_phase == 2 and self.state.phase2_start_run is None:
-                            self.state.phase2_start_run = run_idx
-                        old_phase = self.state.phase
-                        self.state.phase = new_phase
-                        self._regenerate_g_imp_if_needed(old_phase, new_phase)
-                    else:
-                        print(f"Phase check: {reason}")
-
-                    # Auto-stop check in Phase 3
-                    if self.config.auto_stop and self.state.phase == 3:
-                        should_stop, stop_reason = check_rmsd_stop(
-                            self.state.rmsd_state, rmsd_cfg,
-                        )
-                        if confirmation:
-                            if should_stop:
-                                self.state.converged = True
-                                self.state.stop_reason = stop_reason
-                                self.state.needs_confirmation = False
-                                print(f"\n{'='*60}")
-                                print(f"RMSD CONVERGENCE CONFIRMED at run {run_idx}")
-                                print(f"  {stop_reason}")
-                                print(f"{'='*60}\n")
-                                with open("CONVERGED", "w") as f:
-                                    f.write(f"RMSD converged at run {run_idx}\n")
-                                    f.write(f"{stop_reason}\n")
-                            else:
-                                self.state.needs_confirmation = False
-                                print(f"RMSD convergence NOT confirmed: {stop_reason}")
-                        elif should_stop:
-                            self.state.needs_confirmation = True
-                            print(f"\n{'='*60}")
-                            print(f"RMSD CONVERGENCE CANDIDATE at run {run_idx}")
-                            print(f"  {stop_reason}")
-                            print("  Triggering confirmation repeat...")
-                            print(f"{'='*60}\n")
-                        else:
-                            print(f"RMSD stop check: {stop_reason}")
-
-                    # Persist RMSD state
-                    self.state.rmsd_state.save(Path("..") / "rmsd_state.json")
-                else:
-                    print(f"RMSD: reference analysis{ref_run} not available yet (need {rmsd_cfg.lag} runs)")
-
-            # --- Population-based phase transition check (default) ---
-            elif self.config.auto_phase_switch and lambda_data is not None:
-                # Get delta_pKa for current phase
-                from .cphmd_params import get_delta_pKa_for_phase
-                delta_pKa = get_delta_pKa_for_phase(self.state.phase)
-
-                # Build CpHMD parameters if pH is set
-                cphmd_kwargs = {}
-                if (self.config.pH is not None and self.config.nreps > 3
-                        and self.state.patch_info is not None):
-                    from .cphmd_params import compute_all_site_parameters
-                    cphmd_params = compute_all_site_parameters(
-                        self.state.patch_info,
-                        self.config.temperature,
-                        self.config.pH,
-                    )
-                    cphmd_kwargs = {
-                        "data_dir": data_dir,
-                        "patch_info": self.state.patch_info,
-                        "effective_pH": cphmd_params.effective_pH,
-                        "delta_pKa": delta_pKa,
-                        "nreps": self.config.nreps,
-                    }
-
-                # For Phase 1→2, accumulate lambda data from recent runs.
-                # Single-run data can't show inter-run state hopping that
-                # occurs when ALF biases shift the dominant state between runs.
-                # Guard: require min 20 runs before accumulating, so random
-                # initialization (lambda placed randomly across states) can't
-                # fake balanced populations before biases are refined.
-                lambda_data_for_check = lambda_data
-                min_phase1_runs = 20  # 10 c-only + 10 b+c refinement
-                if self.state.phase == 1 and run_idx >= min_phase1_runs:
-                    window = 20
-                    accumulated = []
-                    for prev_r in range(max(1, run_idx - window + 1), run_idx + 1):
-                        prev_data_dir = Path("..") / f"analysis{prev_r}" / "data"
-                        if prev_data_dir.exists():
-                            prev_data, _ = load_lambda_data(prev_data_dir)
-                            if prev_data is not None:
-                                accumulated.append(prev_data)
-                    if len(accumulated) >= 2:
-                        # Per-run quality gate: check that individual runs
-                        # show genuine multi-state behavior (2+ states visited).
-                        # This prevents random init from creating fake balanced
-                        # populations when runs are concatenated.
-                        lam_thresh = self.config.phase_transition.lambda_threshold
-                        min_ms = self.config.phase_transition.min_multistate_runs_1to2
-                        multistate_count = 0
-                        for run_data in accumulated:
-                            run_mask = run_data > lam_thresh
-                            states_visited = int((run_mask.sum(axis=0) > 0).sum())
-                            if states_visited >= 2:
-                                multistate_count += 1
-                        if multistate_count >= min_ms:
-                            lambda_data_for_check = np.vstack(accumulated)
-                            print(f"  Phase 1 check: accumulated {len(accumulated)} runs "
-                                  f"({lambda_data_for_check.shape[0]} frames), "
-                                  f"{multistate_count} multi-state")
-                        else:
-                            print(f"  Phase 1 check: only {multistate_count}/{len(accumulated)} "
-                                  f"runs show multi-state behavior (need {min_ms}) "
-                                  f"— using single-run data")
-
-                # Compute Phase 2 run count for minimum duration check
-                p2_run_count = None
-                if (self.state.phase == 2
-                        and self.state.phase2_start_run is not None):
-                    p2_run_count = run_idx - self.state.phase2_start_run
-
-                new_phase, reason = check_phase_transition(
-                    self.state.phase,
-                    lambda_data_for_check,
-                    config=self.config.phase_transition,
-                    **cphmd_kwargs,
-                    nsubs=nsubs,
-                    connectivity=cut_params.get("connectivity"),
-                    phase2_run_count=p2_run_count,
-                    ewbs_state=self.state.ewbs_state,
+                self._convergence.generate_plots(
+                    run_idx, nsubs, msprof, self.config.input_folder,
                 )
 
-                if new_phase != self.state.phase:
-                    print(f"PHASE TRANSITION: {self.state.phase} → {new_phase}")
-                    print(f"  Reason: {reason}")
-                    if new_phase == 2 and self.state.phase2_start_run is None:
-                        self.state.phase2_start_run = run_idx
-                    old_phase = self.state.phase
-                    self.state.phase = new_phase
-                    self._regenerate_g_imp_if_needed(old_phase, new_phase)
-                else:
-                    print(f"Phase check: {reason}")
+            # Check phase transitions (RMSD or population-based)
+            self._convergence.check_and_update_phase(
+                run_idx, lambda_data, nsubs, cut_params, trans_matrices,
+                self._regenerate_g_imp_if_needed,
+            )
 
             # Always save current phase to file (for resumption)
             np.savetxt("phase.dat", np.array([self.state.phase]), fmt="%d")
 
-            # Check stop criteria if in Phase 3 and auto_stop is enabled (population mode only)
-            if (self.config.auto_stop and self.state.phase == 3
-                    and lambda_data is not None
-                    and self.config.convergence_mode == "population"):
-                # Build stop criteria config (step5-style)
-                timestep_fs = 4.0 if self.config.hmr else 2.0
-                stop_config = StopCriteriaConfig(
-                    timestep_fs=timestep_fs,
-                    max_frac_diff=0.02,  # 2% population difference threshold
-                )
-
-                # Build bias history from recent b_sum.dat files
-                bias_history = None
-                bias_rows = []
-                for prev_r in range(max(1, run_idx - stop_config.bias_window + 1),
-                                    run_idx + 1):
-                    bsum_file = Path("..") / f"analysis{prev_r}" / "b_sum.dat"
-                    if bsum_file.exists():
-                        try:
-                            row = np.loadtxt(bsum_file).ravel()
-                            bias_rows.append(row)
-                        except Exception:
-                            pass
-                if len(bias_rows) >= 2:
-                    bias_history = np.array(bias_rows)
-
-                should_stop, stop_reason, stop_result = check_phase3_stop(
-                    lambda_data, stop_config,
-                    bias_history=bias_history, nsubs=nsubs,
-                    ewbs_state=self.state.ewbs_state,
-                )
-
-                if confirmation:
-                    # This is the confirmation re-analysis
-                    if should_stop:
-                        # Confirmed! Stop criteria met with additional data
-                        self.state.converged = True
-                        self.state.stop_reason = stop_reason
-                        self.state.needs_confirmation = False
-                        print(f"\n{'='*60}")
-                        print(f"CONVERGENCE CONFIRMED at run {run_idx}")
-                        print(f"  {stop_reason}")
-                        print(f"  Fractions (λ>{stop_config.threshold_strict}): {stop_result.fractions}")
-                        print(f"  Fraction diff: {stop_result.frac_diff_pct:.2f}%")
-                        print(f"  Entropy (norm): {stop_result.entropy_normalized:.2f}")
-                        print(f"  Block variance: {stop_result.block_variance:.4f}")
-                        if stop_result.ewbs < float("inf"):
-                            print(f"  EWBS: {stop_result.ewbs:.4f} "
-                                  f"(bottleneck={stop_result.ewbs_bottleneck})")
-                        print(f"  Bias stable: {stop_result.bias_stable} "
-                              f"(std={stop_result.bias_rolling_std:.3f})")
-                        print(f"  Score: {stop_result.score:.4f}")
-                        print(f"{'='*60}\n")
-
-                        # Write convergence marker file
-                        with open("CONVERGED", "w") as f:
-                            f.write(f"Converged at run {run_idx}\n")
-                            f.write(f"{stop_reason}\n")
-                            f.write(f"Fractions: {stop_result.fractions}\n")
-                            f.write(f"Entropy (norm): {stop_result.entropy_normalized:.2f}\n")
-                            f.write(f"Block variance: {stop_result.block_variance:.4f}\n")
-                            if stop_result.ewbs < float("inf"):
-                                f.write(f"EWBS: {stop_result.ewbs:.4f} "
-                                        f"({stop_result.ewbs_bottleneck})\n")
-                            f.write(f"Bias stable: {stop_result.bias_stable}\n")
-                            f.write(f"Score: {stop_result.score:.4f}\n")
-                    else:
-                        # Confirmation failed - continue search
-                        self.state.needs_confirmation = False
-                        print(f"\n{'='*60}")
-                        print(f"CONVERGENCE NOT CONFIRMED at run {run_idx}")
-                        print(f"  With additional data: {stop_reason}")
-                        print("  Continuing optimization...")
-                        print(f"{'='*60}\n")
-                else:
-                    # Normal check (first pass)
-                    if should_stop:
-                        # Trigger confirmation repeat
-                        self.state.needs_confirmation = True
-                        print(f"\n{'='*60}")
-                        print(f"CONVERGENCE CANDIDATE at run {run_idx}")
-                        print(f"  {stop_reason}")
-                        print(f"  Fractions: {stop_result.fractions}")
-                        print(f"  Fraction diff: {stop_result.frac_diff_pct:.2f}%")
-                        print(f"  Entropy (norm): {stop_result.entropy_normalized:.2f}")
-                        print(f"  Block variance: {stop_result.block_variance:.4f}")
-                        if stop_result.ewbs < float("inf"):
-                            print(f"  EWBS: {stop_result.ewbs:.4f} "
-                                  f"(bottleneck={stop_result.ewbs_bottleneck})")
-                        print("  Triggering confirmation repeat...")
-                        print(f"{'='*60}\n")
-                    else:
-                        # Print compact diagnostics alongside reason
-                        diag = (f"entropy={stop_result.entropy_normalized:.2f}, "
-                                f"block_var={stop_result.block_variance:.4f}")
-                        if stop_result.ewbs < float("inf"):
-                            diag += (f", ewbs={stop_result.ewbs:.4f}"
-                                     f"({stop_result.ewbs_bottleneck})")
-                        if stop_result.bias_rolling_std > 0:
-                            diag += f", bias_std={stop_result.bias_rolling_std:.3f}"
-                        print(f"Stop check: {stop_reason} [{diag}]")
+            # Check stop criteria (Phase 3 convergence)
+            self._convergence.check_stop(run_idx, lambda_data, nsubs, confirmation)
 
             # Generate Henderson-Hasselbalch plots if enabled
             # Guard: require nreps > 3 for meaningful multi-point HH fitting
@@ -2942,7 +1474,7 @@ class ALFSimulation:
                 self.state.patch_info is not None):
                 from cphmd.analysis.henderson_hasselbalch import generate_hh_analysis
 
-                from .cphmd_params import compute_all_site_parameters
+                from .cphmd_params import compute_all_site_parameters, get_delta_pKa_for_phase
 
                 delta_pKa = get_delta_pKa_for_phase(self.state.phase)
                 cphmd_params = compute_all_site_parameters(

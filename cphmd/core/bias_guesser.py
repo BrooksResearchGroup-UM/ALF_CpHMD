@@ -121,16 +121,80 @@ def generate_lambda_configs(
     return configs
 
 
+def _generate_zero_ldbv(patch_info: pd.DataFrame, fnex: float = 5.5) -> str:
+    """Generate LDBI/LDBV statements with zero coefficients.
+
+    Required to allocate CHARMM's internal bias arrays (ibvidi, ibvidj, etc.)
+    even when we want zero bias contribution.  Without these, the Fortran
+    module-level allocatables in lambdadyn.F90 are never allocated, and
+    ``msld_add_biasenergy`` segfaults on access.
+
+    Args:
+        patch_info: DataFrame from patches.dat (must have site/sub columns).
+        fnex: FNEX parameter (used for type-8/10 REF values).
+
+    Returns:
+        CHARMM LDBI + LDBV string.
+    """
+    from .bias_constants import derive_bias_constants
+
+    constants = derive_bias_constants(fnex)
+    ldbv_lines: list[str] = []
+    idx = 0
+
+    # Type 6: quadratic barriers (c) — one per intra-site pair
+    for site in patch_info["site"].unique():
+        site_data = patch_info[patch_info["site"] == site]
+        for i1, row1 in site_data.iterrows():
+            for i2, row2 in site_data.iterrows():
+                if i2 > i1:
+                    idx += 1
+                    ldbv_lines.append(
+                        f"ldbv {idx:<3} {i1 + 2:<2} {i2 + 2:<2} {6:<4} {0.0:<8} {0.0:<6} {0:<1}"
+                    )
+
+    # Type 8: endpoint potentials (s) — one per ordered intra-site pair
+    for site in patch_info["site"].unique():
+        site_data = patch_info[patch_info["site"] == site]
+        for i1, row1 in site_data.iterrows():
+            for i2, row2 in site_data.iterrows():
+                if i2 != i1:
+                    idx += 1
+                    ldbv_lines.append(
+                        f"ldbv {idx:<3} {i1 + 2:<2} {i2 + 2:<2} {8:<4} "
+                        f"{constants.chi_offset:<8.5f} {0.0:<6} {0:<1}"
+                    )
+
+    # Type 10: skew potentials (x) — one per ordered intra-site pair
+    for site in patch_info["site"].unique():
+        site_data = patch_info[patch_info["site"] == site]
+        for i1, row1 in site_data.iterrows():
+            for i2, row2 in site_data.iterrows():
+                if i2 != i1:
+                    idx += 1
+                    ldbv_lines.append(
+                        f"ldbv {idx:<3} {i1 + 2:<2} {i2 + 2:<2} {10:<4} "
+                        f"{-constants.omega_decay:<8} {0.0:<6} {0:<1}"
+                    )
+
+    header = f"LDBI {idx}"
+    return header + "\n" + "\n".join(ldbv_lines) + "\n\n"
+
+
 def _build_energy_block_command(
     patch_info: pd.DataFrame,
     site_lambdas: dict[int, np.ndarray],
     nsubs: list[int],
     fnex: float = 5.5,
 ) -> str:
-    """Build a minimal BLOCK command for single-point energy evaluation.
+    """Build a BLOCK command for single-point energy evaluation.
 
-    Sets LDIN with specified lambda values per site, zero biases, and FNEX
-    constraint. No LDBV terms (we want raw physical energy, not biased).
+    Sets up MSLD with LDIN, RMLA MSLD FNEX, and zero-coefficient LDBV.
+    The LDBV section is required to allocate CHARMM's internal bias arrays
+    (prevents segfault in ``msld_add_biasenergy``).  All LDBV coefficients
+    are zero so they contribute no bias energy.
+
+    BLADE must be OFF before calling this (caller's responsibility).
 
     Args:
         patch_info: DataFrame from patches.dat.
@@ -177,7 +241,7 @@ def _build_energy_block_command(
         ldin_lines.append(f"LDIN {idx + 2:<4} {l0:<8.5f} {0.0:<4} {12.0:<4} {0.0:<2} {5.0:<4}")
     ldin_str = "\n".join(ldin_lines) + "\n\n"
 
-    # Minimal dynamics setup (needed for BLOCK to work, but no actual dynamics)
+    # MSLD setup (no actual dynamics — just for energy evaluation)
     dynamics_setup = "QLDM THETA\nLANG TEMP 298.15\nSOFT ON\n\n"
 
     parts = [
@@ -187,14 +251,14 @@ def _build_energy_block_command(
         dynamics_setup,
         ldin_str,
         generate_rmla_msld(patch_info, constraint_type="fnex", fnex=fnex),
-        # NO LDBV — we want raw physical energy differences
+        _generate_zero_ldbv(patch_info, fnex=fnex),
         "END",
     ]
     return "\n".join(parts)
 
 
 def _evaluate_energy() -> float:
-    """Evaluate current CHARMM energy and return total."""
+    """Evaluate current CHARMM energy on CPU (no BLADE) and return total."""
     import pycharmm.energy as energy
 
     energy.show()
@@ -226,7 +290,12 @@ def guess_initial_biases(
     Returns:
         (b, c) where b has shape (1, nblocks) and c has shape (nblocks, nblocks).
     """
+    import pycharmm.lingo as lingo
+
     from .charmm_utils import clear_block, execute_block_command
+
+    # Ensure BLADE GPU is off — we evaluate energy on CPU only
+    lingo.charmm_script("blade off")
 
     configs = generate_lambda_configs(nsubs)
     endpoint_energies: dict[int, np.ndarray] = {}
@@ -281,6 +350,126 @@ def guess_initial_biases(
         b.max(),
         c.min(),
         c.max(),
+    )
+
+    return b, c
+
+
+def _setup_vacuum_nonbonded():
+    """Delete solvent/ions and switch to vacuum nonbonded settings."""
+    import pycharmm.lingo as lingo
+    import pycharmm.settings as settings
+
+    # Lower bomb level through entire transition — deleting atoms with
+    # image centering active triggers LEVEL 0 warning, and the first
+    # energy evaluation after clearing PME may trigger colfft LEVEL -5
+    # warnings as the FFT grid is invalidated.
+    settings.set_bomb_level(-6)
+
+    # Delete water and ion atoms
+    lingo.charmm_script("delete atom sele segid SOLV .or. segid IONS end")
+
+    # Clear crystal (removes PBC and PME)
+    lingo.charmm_script("CRYSTAL FREE")
+
+    # Set up vacuum nonbonded: force-shift, large cutoffs, no PME.
+    # NOEWald explicitly disables PME (FSHIFT alone does not clear it).
+    lingo.charmm_script(
+        "NBONDS ELEC ATOM CDIE EPS 1 NOEWald "
+        "CUTNB 999.0 CUTIM 999.0 CTOFNB 998.0 CTONNB 990.0 "
+        "FSHIFT VSWITCH "
+        "INBFRQ -1 IMGFRQ -1 NBXMOD 5"
+    )
+
+    settings.set_bomb_level(0)
+
+
+def guess_initial_biases_vacuum(
+    patch_info: pd.DataFrame,
+    nsubs: list[int],
+    fnex: float = 5.5,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Estimate initial biases in vacuum (no solvent).
+
+    Same as guess_initial_biases() but first removes solvent/ions and
+    switches to vacuum nonbonded. This gives cleaner electrostatic
+    differences between protonation states without solvent screening.
+
+    WARNING: This permanently modifies the CHARMM session (atoms deleted).
+    The caller must reload PSF/CRD afterward if further simulation is needed.
+
+    Args:
+        patch_info: DataFrame from patches.dat.
+        nsubs: Number of substates per site.
+        fnex: FNEX constraint value.
+
+    Returns:
+        (b, c) where b has shape (1, nblocks) and c has shape (nblocks, nblocks).
+    """
+    import pycharmm.settings as settings
+
+    _setup_vacuum_nonbonded()
+
+    # Keep bomb level low during vacuum energy evaluations — the first
+    # nonbond list rebuild after clearing PME may still trigger residual
+    # colfft warnings from the invalidated FFT grid.
+    settings.set_bomb_level(-6)
+    try:
+        result = guess_initial_biases(patch_info, nsubs, fnex=fnex)
+    finally:
+        settings.set_bomb_level(0)
+
+    return result
+
+
+# Scale factor for c (barrier) biases: at the FNEX midpoint, λ_i ≈ λ_j ≈ 0.5,
+# so the LDBV barrier V_c = COEF × λ_i × λ_j ≈ COEF/4. The single-point
+# evaluation measures the barrier height directly, so COEF ≈ 4 × barrier.
+C_MIDPOINT_SCALE = 4.0
+
+
+def guess_initial_biases_combined(
+    patch_info: pd.DataFrame,
+    nsubs: list[int],
+    fnex: float = 5.5,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Estimate initial biases from solvated−vacuum energy difference.
+
+    Computes ΔΔE_solvation = (vacuum bias) − (solvated bias) for both b and c.
+    This isolates the differential solvation energy between protonation states,
+    giving correct sign for ~7/9 residue types (b) and 9/9 (c).
+
+    The c values are scaled by C_MIDPOINT_SCALE (~4) to account for the
+    λ_i × λ_j ≈ 0.25 product at the FNEX transition midpoint.
+
+    WARNING: Vacuum evaluation permanently modifies the CHARMM session
+    (deletes solvent atoms). Must be called before dynamics.
+
+    Args:
+        patch_info: DataFrame from patches.dat.
+        nsubs: Number of substates per site.
+        fnex: FNEX constraint value.
+
+    Returns:
+        (b, c) where b has shape (1, nblocks) and c has shape (nblocks, nblocks).
+    """
+    from .charmm_utils import clear_block
+
+    # Solvated evaluation first (non-destructive)
+    b_solv, c_solv = guess_initial_biases(patch_info, nsubs, fnex=fnex)
+    clear_block()
+
+    # Vacuum evaluation (destructive — deletes solvent)
+    b_vac, c_vac = guess_initial_biases_vacuum(patch_info, nsubs, fnex=fnex)
+    clear_block()
+
+    # ΔΔE_solvation: isolates differential solvation contribution
+    b = b_vac - b_solv
+    c = C_MIDPOINT_SCALE * (c_vac - c_solv)
+
+    logger.info(
+        "Combined bias guess (ΔΔE_solv): b range [%.2f, %.2f], c range [%.2f, %.2f]",
+        b.min(), b.max(), c.min(), c.max(),
     )
 
     return b, c
