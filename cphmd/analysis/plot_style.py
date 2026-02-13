@@ -34,13 +34,12 @@ def apply_pub_style() -> None:
 def get_state_colors(n: int) -> list:
     """Return a deterministic color list for *n* items.
 
-    Uses ``tab10`` for <= 10 items, ``tab20`` for <= 20, and ``turbo``
-    beyond that.  The same *n* always produces the same palette, so a
-    given state/pair index gets the same color across plot types.
+    Uses ``Set1`` (red, blue, green, purple, orange, ...) to match
+    population_convergence.py.  Falls back to ``tab20`` for > 9 items
+    and ``turbo`` beyond 20.
     """
-    if n <= 10:
-        cmap = plt.get_cmap("tab10")
-        return [cmap(i) for i in range(n)]
+    if n <= 9:
+        return list(plt.cm.Set1.colors[:n])
     elif n <= 20:
         cmap = plt.get_cmap("tab20")
         return [cmap(i) for i in range(n)]
