@@ -125,6 +125,9 @@ class ALFConfig:
     g_imp_bins: int | list[int] | None = None
     cutlsum: float = 0.8  # G12 conditional threshold (λ_i + λ_j > cutlsum)
 
+    # gshift correction in WHAM Stage 2 profile extraction
+    use_gshift: bool = True  # Apply G_imp entropy shifts (recommended; see docs/WHAM/gshift_theory.md)
+
     # Analysis method configuration
     analysis_method: AnalysisMethod = "wham"  # "wham" or "lmalf"
     lmalf_max_iter: int = 0  # Maximum L-BFGS iterations (0 = use default)

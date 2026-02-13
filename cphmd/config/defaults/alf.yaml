@@ -10,6 +10,7 @@ analysis_method: wham
 elec_type: pmeex
 vdw_type: vswitch
 fnex: 5.5
+use_gshift: true          # Apply G_imp entropy shifts in WHAM Stage 2
 # chi_offset: null    # s-term sigmoid offset (null = 4*exp(-fnex))
 # omega_decay: null    # x-term exponential decay (null = fnex)
 hmr: true
