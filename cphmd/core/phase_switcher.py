@@ -84,6 +84,23 @@ class PhaseTransitionConfig:
     ewbs_2to3: float = 0.10
     ewbs_2to3_window: int = 5  # Consecutive runs below threshold
 
+    # Maximum worst-site population diff (at λ>0.985) for the LAST run
+    # when using accumulated data for Phase 1→2 check. If the last run's
+    # worst-site diff exceeds this, accumulated data is discarded and
+    # single-run data is used instead (which blocks transition naturally).
+    # Prevents random-init noise in accumulated data from masking a stuck system.
+    max_pop_diff_1to2: float = 0.9
+
+    # Phase 2→1 regression: consecutive stuck runs before reverting to Phase 1.
+    # "Stuck" = connectivity=0.0 AND worst-site pop diff > stuck_diff_threshold.
+    max_stuck_phase2_runs: int = 15
+
+    # Pop diff threshold for determining "stuck" in Phase 2
+    stuck_diff_threshold: float = 0.95
+
+    # Maximum Phase 2→1 regressions before giving up (prevents ping-pong)
+    max_phase_regressions: int = 2
+
 
 @dataclass
 class StopCriteriaConfig:
@@ -286,6 +303,49 @@ def _normalize_per_site(
         if site_total > 0:
             norm[start:end] = raw_fracs[start:end] / site_total
     return norm
+
+
+def compute_worst_site_pop_diff(
+    lambda_data: np.ndarray,
+    nsubs: list[int] | None = None,
+    strict_threshold: float = 0.985,
+) -> float:
+    """Compute worst-site population diff at strict lambda threshold.
+
+    For each site, computes normalized populations at the strict threshold
+    and returns max(max_pop - min_pop) across all sites.
+
+    Args:
+        lambda_data: Lambda data array (frames x states)
+        nsubs: Substates per site. If None, treats all states as one site.
+        strict_threshold: Lambda threshold for physical-state assignment.
+
+    Returns:
+        Worst-site population difference in [0, 1].
+    """
+    if lambda_data is None or lambda_data.size == 0:
+        return 1.0
+    mask = lambda_data > strict_threshold
+    raw_fracs = mask.mean(axis=0)
+    if nsubs is None:
+        total = raw_fracs.sum()
+        if total > 0:
+            norm = raw_fracs / total
+        else:
+            return 1.0
+        return float(np.max(norm) - np.min(norm))
+    worst = 0.0
+    for start, end in _per_site_ranges(nsubs):
+        site_raw = raw_fracs[start:end]
+        site_total = site_raw.sum()
+        if site_total > 0:
+            site_norm = site_raw / site_total
+        else:
+            worst = max(worst, 1.0)
+            continue
+        diff = float(np.max(site_norm) - np.min(site_norm))
+        worst = max(worst, diff)
+    return worst
 
 
 def good_overlap(
