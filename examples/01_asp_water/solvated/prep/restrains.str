@@ -1,0 +1,12 @@
+BLOCK
+ scat on
+scat k 300.0
+cats SELE type OD2 .and. segid PROA .and. resid 3 .and. (resname ASPO .or. resname ASH1 .or. resname ASH2) END
+cats SELE type CB .and. segid PROA .and. resid 3 .and. (resname ASPO .or. resname ASH1 .or. resname ASH2) END
+cats SELE type OD1 .and. segid PROA .and. resid 3 .and. (resname ASPO .or. resname ASH1 .or. resname ASH2) END
+cats SELE type CG .and. segid PROA .and. resid 3 .and. (resname ASPO .or. resname ASH1 .or. resname ASH2) END
+cats SELE type HB1 .and. segid PROA .and. resid 3 .and. (resname ASPO .or. resname ASH1 .or. resname ASH2) END
+cats SELE type HB2 .and. segid PROA .and. resid 3 .and. (resname ASPO .or. resname ASH1 .or. resname ASH2) END
+cats SELE type HD2 .and. segid PROA .and. resid 3 .and. (resname ASPO .or. resname ASH1 .or. resname ASH2) END
+cats SELE type HD1 .and. segid PROA .and. resid 3 .and. (resname ASPO .or. resname ASH1 .or. resname ASH2) END
+END

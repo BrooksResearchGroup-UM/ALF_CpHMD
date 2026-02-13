@@ -1,0 +1,113 @@
+!---------------------------------------------------------------
+! Set up l-dynamics by setting BLOCK parameters
+!---------------------------------------------------------------
+
+BLOCK 4 NREP @nrep
+
+!---------------------------------------------------------------
+! CALL selection for PROA 3 GLU | SITE 1
+!---------------------------------------------------------------
+CALL    2 SELEct segid PROA .and. resid    3 .and. resname GLUO end
+CALL    3 SELEct segid PROA .and. resid    3 .and. resname GLH1 end
+CALL    4 SELEct segid PROA .and. resid    3 .and. resname GLH2 end
+
+!---------------------------------------------------------------
+! l-exclusions
+!---------------------------------------------------------------
+
+adexcl 2 3
+adexcl 2 4
+adexcl 3 4
+
+
+!------------------------------------------
+!QLDM turns on lambda-dynamics option
+!------------------------------------------
+
+qldm theta
+
+!------------------------------------------
+!LANGEVIN turns on the langevin heatbath
+!------------------------------------------
+
+lang temp 298.15
+
+!------------------------------------------
+!Setup initial pH from PHMD
+!------------------------------------------
+
+phmd pH 7
+
+!------------------------------------------
+!Soft Core Potential
+!------------------------------------------
+
+soft on
+
+!------------------------------------------
+! lambda-dynamics energy constraints (from ALF)
+!------------------------------------------
+
+LDIN 1      1      0.0    12.0         0.0     5.0         NONE
+!---------------------------------------------------------------
+! Lambda Initialization for PROA 3 GLU | SITE 1
+!---------------------------------------------------------------
+LDIN 2      0.33   0.0    12.0         0.0     5.0         NONE
+LDIN 3      0.33   0.0    12.0       66.31     5.0    UNEG 3.95
+LDIN 4      0.33   0.0    12.0       66.15     5.0    UNEG 3.95
+
+!------------------------------------------
+! All bond/angle/dihe terms treated at full str (no scaling),
+! prevent unphysical results
+!------------------------------------------
+
+rmla bond thet impr
+!------------------------------------------
+! Selects MSLD, the numbers assign each block to the specified site on the core
+!------------------------------------------
+
+msld 0 1 1 1 -
+fnex 5.5
+
+!------------------------------------------
+! Constructs the interaction matrix and assigns lambda & theta values for each block
+!------------------------------------------
+
+msma
+
+!------------------------------------------
+! PME electrostatics
+!------------------------------------------
+
+pmel ex
+
+!------------------------------------------
+! Enables bias potential on lambda variables
+! INDEX, I,J(Bias between I & J)), CLASS, REF, CFORCE, NPOWER, Identity flag
+! CLASS: Functional Form of bias, REF: Cut off for physical lambda states
+! NPOWER: Power of functional form, CFORCE: kbias on Fvar, residue specific value
+!------------------------------------------
+
+LDBI 15
+!---------------------------------------------------------------
+! Biasing Potential for PROA 3 GLU | SITE 1
+!---------------------------------------------------------------
+LDBV 1      2    3    6      0.0    -140.71     0
+LDBV 2      2    4    6      0.0    -140.27     0
+LDBV 3      3    4    6      0.0    -119.35     0
+
+LDBV 4      2    3    8  0.01635        0.7     0
+LDBV 5      2    4    8  0.01635       0.68     0
+LDBV 6      3    2    8  0.01635       0.36     0
+LDBV 7      3    4    8  0.01635      -2.23     0
+LDBV 8      4    2    8  0.01635       0.33     0
+LDBV 9      4    3    8  0.01635       -2.2     0
+
+LDBV 10     2    3   10     -5.5      -8.07     0
+LDBV 11     2    4   10     -5.5      -8.09     0
+LDBV 12     3    2   10     -5.5     -10.46     0
+LDBV 13     3    4   10     -5.5       0.54     0
+LDBV 14     4    2   10     -5.5     -10.44     0
+LDBV 15     4    3   10     -5.5       0.51     0
+
+END

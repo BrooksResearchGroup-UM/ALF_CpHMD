@@ -1,0 +1,16 @@
+BLOCK
+ scat on
+scat k 300.0
+cats SELE type NH1 .and. segid PROA .and. resid 3 .and. (resname ARGO .or. resname ARU1 .or. resname ARU2) END
+cats SELE type NE .and. segid PROA .and. resid 3 .and. (resname ARGO .or. resname ARU1 .or. resname ARU2) END
+cats SELE type CD .and. segid PROA .and. resid 3 .and. (resname ARGO .or. resname ARU1 .or. resname ARU2) END
+cats SELE type NH2 .and. segid PROA .and. resid 3 .and. (resname ARGO .or. resname ARU1 .or. resname ARU2) END
+cats SELE type CZ .and. segid PROA .and. resid 3 .and. (resname ARGO .or. resname ARU1 .or. resname ARU2) END
+cats SELE type HH21 .and. segid PROA .and. resid 3 .and. (resname ARGO .or. resname ARU1 .or. resname ARU2) END
+cats SELE type HD1 .and. segid PROA .and. resid 3 .and. (resname ARGO .or. resname ARU1 .or. resname ARU2) END
+cats SELE type HH12 .and. segid PROA .and. resid 3 .and. (resname ARGO .or. resname ARU1 .or. resname ARU2) END
+cats SELE type HH11 .and. segid PROA .and. resid 3 .and. (resname ARGO .or. resname ARU1 .or. resname ARU2) END
+cats SELE type HD2 .and. segid PROA .and. resid 3 .and. (resname ARGO .or. resname ARU1 .or. resname ARU2) END
+cats SELE type HE .and. segid PROA .and. resid 3 .and. (resname ARGO .or. resname ARU1 .or. resname ARU2) END
+cats SELE type HH22 .and. segid PROA .and. resid 3 .and. (resname ARGO .or. resname ARU1 .or. resname ARU2) END
+END

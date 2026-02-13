@@ -1,0 +1,29 @@
+# CpHMD Configuration — Glutamic Acid (GLU) in Water
+#
+# Standard ALF workflow (no CpHMD pH coupling).
+# Input: pdb/glu.pdb (pre-built GLU structure)
+# Steps: solvate → patch → alf
+
+solvation:
+  input_file: pdb/glu
+  output_dir: solvated
+  crystal_type: OCTAHEDRAL
+  padding: 10.0
+  salt_concentration: 0.15
+
+patch:
+  input_folder: solvated
+  output_folder: solvated/prep
+  hmr: true
+  selected_residues:
+    - GLU
+
+alf:
+  input_folder: solvated
+  start: 1
+  end: 200
+  auto_phase_switch: true
+  auto_stop: true
+  restrain_hydrogens: true
+  no_pka_bias: true
+  g_imp_bins: [20, 32, 32]

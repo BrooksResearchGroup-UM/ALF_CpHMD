@@ -1,0 +1,34 @@
+# CpHMD Configuration — Serine (SER) in Water
+#
+# Full workflow including build step.
+# No pre-built PDB — the build step creates ALA-ALA-SER-ALA-ALA pentapeptide.
+# Steps: build → solvate → patch → alf
+
+build:
+  residue: SER
+  output_dir: pdb
+  template: "ALA ALA {res} ALA ALA"
+
+solvation:
+  input_file: pdb/ser
+  output_dir: solvated
+  crystal_type: OCTAHEDRAL
+  padding: 10.0
+  salt_concentration: 0.15
+
+patch:
+  input_folder: solvated
+  output_folder: solvated/prep
+  hmr: true
+  selected_residues:
+    - "PROA:3"
+
+alf:
+  input_folder: solvated
+  start: 1
+  end: 200
+  auto_phase_switch: true
+  auto_stop: true
+  restrain_hydrogens: true
+  no_pka_bias: true
+  g_imp_bins: [20, 32, 32]

@@ -1,0 +1,103 @@
+* Titratable patch for Neutral Red
+* Converts protonated form (NR_proto, +1) to deprotonated form (NR_depro, 0)
+* For use with CpHMD/MSLD simulations
+* pKa (free) = 6.8, pKa (RP-bound) = 7.8
+*
+
+read rtf card append
+* Neutral Red titratable residue patch
+*
+36 1
+
+!----------------------------------------------------------------------------
+! NEUTRAL RED (NR) PATCH
+! Converts protonated cationic form to deprotonated neutral form
+! Protonation site: N2 (ring nitrogen)
+! The patch deletes H36 and adjusts charges/types
+! Lambda group includes all atoms surrounded by changing atoms for solid group
+!----------------------------------------------------------------------------
+
+PRES NRDU       -1.00  ! Patch to deprotonate Neutral Red
+! pKa = 6.8 (free), 7.8 (RP-bound)
+!
+! Protonated form (NR_proto):     Deprotonated form (NR_depro):
+!
+!      N1(+)=C5                        N1-C5
+!       /  \                            /  \
+!     CH3  CH3                        CH3  CH3
+!    [conjugated]                   [aromatic]
+!      N2-H36  (+)                      N2:
+!
+! Total charge: +1 -> 0
+
+!--- Atoms with type AND charge changes ---
+ATOM N1    NG301   -0.482   ! was NG2P1  -0.468 (imine -> amine)
+ATOM N2    NG2R60  -0.628   ! was NG2R61 -0.448 (protonation site)
+ATOM C5    CG2R61   0.130   ! was CG2DC1  0.670 (conjugated -> aromatic)
+ATOM C6    CG2R61  -0.123   ! was CG2DC2 -0.481
+ATOM C11   CG2R61  -0.115   ! was CG2DC2 -0.088
+ATOM C12   CG2R61  -0.116   ! was CG2DC2 -0.149
+ATOM C14   CG331   -0.092   ! was CG334   0.188 (N+ methyl -> N methyl)
+ATOM C15   CG331   -0.092   ! was CG334   0.188
+ATOM H1    HGR61    0.116   ! was HGA4    0.160 (vinyl -> aromatic H)
+ATOM H4    HGR61    0.116   ! was HGA4    0.157
+ATOM H5    HGR61    0.116   ! was HGA4    0.135
+
+!--- Atoms with charge changes only ---
+ATOM N3    NG2R60  -0.628   ! was -0.592
+ATOM C1    CG2R61   0.317   ! was  0.122
+ATOM C2    CG2R61   0.298   ! was  0.233
+ATOM C3    CG2R61   0.313   ! was  0.235
+ATOM C4    CG2R61   0.302   ! was  0.303
+ATOM C8    CG2R61  -0.135   ! was -0.137
+ATOM C9    CG2R61   0.099   ! was  0.097
+ATOM C10   CG2R61  -0.122   ! was -0.176
+
+!--- Atoms with NO changes but surrounded by changing atoms (solid lambda group) ---
+ATOM H2    HGR61    0.116   ! no change - bonded to C8 (in patch)
+ATOM H3    HGR61    0.116   ! no change - bonded to C10 (in patch)
+ATOM H9    HGA3     0.090   ! no change - bonded to C14 (in patch)
+ATOM H10   HGA3     0.090   ! no change - bonded to C14 (in patch)
+ATOM H11   HGA3     0.090   ! no change - bonded to C14 (in patch)
+ATOM H12   HGA3     0.090   ! no change - bonded to C15 (in patch)
+ATOM H13   HGA3     0.090   ! no change - bonded to C15 (in patch)
+ATOM H14   HGA3     0.090   ! no change - bonded to C15 (in patch)
+
+!--- Delete the proton ---
+DELETE ATOM H36
+
+!--- Delete the improper (NG301 is sp3, not planar like NG2P1) ---
+DELETE IMPR C5 C6 C12 N1
+
+END
+
+read param card flex append
+* Parameters for Neutral Red titratable patch
+*
+
+!----------------------------------------------------------------------------
+! Parameters for deprotonated form (NG301 dimethylamino, CG331 methyls)
+! These are NOT in nr_protonated.cgenff.prm (which uses NG2P1, CG334)
+!----------------------------------------------------------------------------
+
+BONDS
+CG2R61 NG301   325.00     1.4100 ! DMAN, N,N-dimethylaniline, kevo
+CG331  NG301   315.00     1.4420 ! TMC, yxu
+
+ANGLES
+CG2R61 CG2R61 NG301    42.00    120.00 ! DMAN, N,N-dimethylaniline, kevo
+CG2R61 NG301  CG331    48.00    113.50 ! TMC, trimethylcytosine, yxu; DMAN, kevo
+CG331  NG301  CG331    42.50    116.00 ! TMC, trimethylcytosine, yxu; DMAN, kevo
+NG301  CG331  HGA3     30.50    109.70   50.00   2.14000 ! TMC, from NG311 CG331 HGA3, yxu
+
+DIHEDRALS
+CG2R61 CG2R61 CG2R61 NG301      1.4000  2   180.00 ! DMAN, N,N-dimethylaniline, kevo
+NG301  CG2R61 CG2R61 HGR61      2.4000  2   180.00 ! DMAN, N,N-dimethylaniline, kevo
+CG2R61 CG2R61 NG301  CG331      0.9600  2   180.00 ! DMAN, N,N-dimethylaniline, kevo
+CG2R61 CG2R61 NG301  CG331      0.1050  4     0.00 ! DMAN, N,N-dimethylaniline, kevo
+CG2R61 CG2R61 NG301  CG331      0.0350  6   180.00 ! DMAN, N,N-dimethylaniline, kevo
+HGA3   CG331  NG301  CG2R61     0.4300  3     0.00 ! DMAN, N,N-dimethylaniline, kevo
+HGA3   CG331  NG301  CG331      0.0000  3   180.00 ! TMC, from HGA3 CG331 NG311 CG2N1, yxu
+
+END
+RETURN

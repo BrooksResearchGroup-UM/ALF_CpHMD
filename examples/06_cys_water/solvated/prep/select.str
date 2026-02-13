@@ -1,0 +1,2 @@
+DEFIne s1s1 SELEct segid PROA .and. resid 3 .and. resname CYSO END
+DEFIne s1s2 SELEct segid PROA .and. resid 3 .and. resname CYSD END

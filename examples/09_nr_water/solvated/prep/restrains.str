@@ -1,0 +1,20 @@
+BLOCK
+ scat on
+scat k 300.0
+cats SELE type C3 .and. segid NRED .and. resid 1 .and. (resname NREDO .or. resname NRDU) END
+cats SELE type C15 .and. segid NRED .and. resid 1 .and. (resname NREDO .or. resname NRDU) END
+cats SELE type C11 .and. segid NRED .and. resid 1 .and. (resname NREDO .or. resname NRDU) END
+cats SELE type C14 .and. segid NRED .and. resid 1 .and. (resname NREDO .or. resname NRDU) END
+cats SELE type N1 .and. segid NRED .and. resid 1 .and. (resname NREDO .or. resname NRDU) END
+cats SELE type C12 .and. segid NRED .and. resid 1 .and. (resname NREDO .or. resname NRDU) END
+cats SELE type C6 .and. segid NRED .and. resid 1 .and. (resname NREDO .or. resname NRDU) END
+cats SELE type C8 .and. segid NRED .and. resid 1 .and. (resname NREDO .or. resname NRDU) END
+cats SELE type C5 .and. segid NRED .and. resid 1 .and. (resname NREDO .or. resname NRDU) END
+cats SELE type C4 .and. segid NRED .and. resid 1 .and. (resname NREDO .or. resname NRDU) END
+cats SELE type C10 .and. segid NRED .and. resid 1 .and. (resname NREDO .or. resname NRDU) END
+cats SELE type N3 .and. segid NRED .and. resid 1 .and. (resname NREDO .or. resname NRDU) END
+cats SELE type C9 .and. segid NRED .and. resid 1 .and. (resname NREDO .or. resname NRDU) END
+cats SELE type C1 .and. segid NRED .and. resid 1 .and. (resname NREDO .or. resname NRDU) END
+cats SELE type C2 .and. segid NRED .and. resid 1 .and. (resname NREDO .or. resname NRDU) END
+cats SELE type N2 .and. segid NRED .and. resid 1 .and. (resname NREDO .or. resname NRDU) END
+END
