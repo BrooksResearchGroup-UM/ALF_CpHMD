@@ -50,6 +50,9 @@ target-version = ["py39"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-v --tb=short"
+markers = [
+    "integration: end-to-end tests requiring pyCHARMM and example systems",
+]
 
 [tool.ruff]
 line-length = 100

@@ -88,6 +88,8 @@ def _rmsd_finite(
     Returns:
         (rmsd, coverage_fraction)
     """
+    if a.shape != b.shape:
+        return float("inf"), 0.0
     mask = np.isfinite(a) & np.isfinite(b)
     denom = n_valid if n_valid is not None else len(a)
     coverage = mask.sum() / denom if denom > 0 else 0.0

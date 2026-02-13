@@ -272,3 +272,73 @@ class TestInitVarsIntegration:
         c_prev = np.loadtxt(analysis0 / "c_prev.dat")
         np.testing.assert_allclose(b_prev, 0.0, atol=1e-10)
         np.testing.assert_allclose(c_prev, 0.0, atol=1e-10)
+
+
+class TestGuessInitialBiasesCombined:
+    """Test the combined solvated-vacuum bias estimation (ΔΔE_solvation)."""
+
+    def test_combined_b_is_diff(self):
+        """b_combined = b_vac - b_solv."""
+        from unittest.mock import MagicMock, patch
+
+        from cphmd.core.bias_guesser import C_MIDPOINT_SCALE, guess_initial_biases_combined
+
+        b_solv = np.array([[0.0, -25.0, -10.0]])
+        c_solv = np.array([[0.0, -30.0, -30.0], [-30.0, 0.0, -40.0], [-30.0, -40.0, 0.0]])
+        b_vac = np.array([[0.0, 26.0, 17.0]])
+        c_vac = np.array([[0.0, -1.0, -1.0], [-1.0, 0.0, -2.0], [-1.0, -2.0, 0.0]])
+
+        mock_patch_info = MagicMock()
+
+        with (
+            patch(
+                "cphmd.core.bias_guesser.guess_initial_biases", return_value=(b_solv, c_solv)
+            ),
+            patch(
+                "cphmd.core.bias_guesser.guess_initial_biases_vacuum", return_value=(b_vac, c_vac)
+            ),
+            patch("cphmd.core.charmm_utils.clear_block"),
+        ):
+            b, c = guess_initial_biases_combined(mock_patch_info, [3], fnex=5.5)
+
+        # b = b_vac - b_solv
+        expected_b = b_vac - b_solv
+        np.testing.assert_allclose(b, expected_b)
+
+        # c = C_MIDPOINT_SCALE * (c_vac - c_solv)
+        expected_c = C_MIDPOINT_SCALE * (c_vac - c_solv)
+        np.testing.assert_allclose(c, expected_c)
+
+    def test_combined_c_sign_flip(self):
+        """Vacuum c ≈ 0 → combined c ≈ -C_MIDPOINT_SCALE * c_solv (positive)."""
+        from unittest.mock import MagicMock, patch
+
+        from cphmd.core.bias_guesser import C_MIDPOINT_SCALE, guess_initial_biases_combined
+
+        b_solv = np.array([[0.0, -10.0]])
+        c_solv = np.array([[0.0, -33.0], [-33.0, 0.0]])
+        b_vac = np.array([[0.0, -10.0]])
+        c_vac = np.zeros((2, 2))
+
+        mock_patch_info = MagicMock()
+
+        with (
+            patch(
+                "cphmd.core.bias_guesser.guess_initial_biases", return_value=(b_solv, c_solv)
+            ),
+            patch(
+                "cphmd.core.bias_guesser.guess_initial_biases_vacuum", return_value=(b_vac, c_vac)
+            ),
+            patch("cphmd.core.charmm_utils.clear_block"),
+        ):
+            b, c = guess_initial_biases_combined(mock_patch_info, [2], fnex=5.5)
+
+        # c_vac ≈ 0, so c ≈ -4 * c_solv → positive (matching converged c_prev)
+        np.testing.assert_allclose(c[0, 1], C_MIDPOINT_SCALE * 33.0)
+        np.testing.assert_allclose(c[1, 0], C_MIDPOINT_SCALE * 33.0)
+
+    def test_c_midpoint_scale_value(self):
+        """C_MIDPOINT_SCALE should be 4.0 (λ_i × λ_j ≈ 0.25 at FNEX midpoint)."""
+        from cphmd.core.bias_guesser import C_MIDPOINT_SCALE
+
+        assert C_MIDPOINT_SCALE == 4.0

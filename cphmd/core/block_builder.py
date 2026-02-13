@@ -20,7 +20,6 @@ MSLD Setup Components:
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -336,6 +335,8 @@ def generate_ldbv_statements(
     patch_info: pd.DataFrame,
     variables: dict[str, float],
     fnex: float = 5.5,
+    chi_offset: float | None = None,
+    omega_decay: float | None = None,
 ) -> str:
     """Generate LDBI/LDBV statements for variable lambda potentials.
 
@@ -350,12 +351,14 @@ def generate_ldbv_statements(
         patch_info: DataFrame from patches.dat
         variables: Variables from ALF variable file
         fnex: FNEX softmax constraint parameter (default 5.5)
+        chi_offset: Override s-term sigmoid offset (None = derive from fnex).
+        omega_decay: Override x-term exponential decay (None = derive from fnex).
 
     Returns:
         CHARMM LDBI/LDBV statements
     """
     from .bias_constants import derive_bias_constants
-    constants = derive_bias_constants(fnex)
+    constants = derive_bias_constants(fnex, chi_offset=chi_offset, omega_decay=omega_decay)
     # Build all LDBV statements first to count them
     ldbv_lines = []
     idx = 0
@@ -451,6 +454,8 @@ def build_block_command(
     fnex: float = 5.5,
     fpie_width: float = 1.0,
     fpie_force: float = 100.0,
+    chi_offset: float | None = None,
+    omega_decay: float | None = None,
 ) -> str:
     """Build complete BLOCK command string.
 
@@ -462,6 +467,8 @@ def build_block_command(
         fnex: FNEX parameter value (when constraint_type="fnex")
         fpie_width: FPIE flat-bottom well width (when constraint_type="fpie")
         fpie_force: FPIE flat-bottom force constant (when constraint_type="fpie")
+        chi_offset: Override s-term sigmoid offset (None = derive from fnex).
+        omega_decay: Override x-term exponential decay (None = derive from fnex).
 
     Returns:
         Complete CHARMM BLOCK command
@@ -481,7 +488,8 @@ def build_block_command(
             fpie_width=fpie_width,
             fpie_force=fpie_force,
         ),
-        generate_ldbv_statements(patch_info, variables, fnex=fnex),
+        generate_ldbv_statements(patch_info, variables, fnex=fnex,
+                                 chi_offset=chi_offset, omega_decay=omega_decay),
         "END",
     ]
 
@@ -497,6 +505,8 @@ def write_block_file(
     fnex: float = 5.5,
     fpie_width: float = 1.0,
     fpie_force: float = 100.0,
+    chi_offset: float | None = None,
+    omega_decay: float | None = None,
 ) -> str:
     """Generate and write BLOCK command to file.
 
@@ -509,6 +519,8 @@ def write_block_file(
         fnex: FNEX parameter value (when constraint_type="fnex")
         fpie_width: FPIE flat-bottom well width (when constraint_type="fpie")
         fpie_force: FPIE flat-bottom force constant (when constraint_type="fpie")
+        chi_offset: Override s-term sigmoid offset (None = derive from fnex).
+        omega_decay: Override x-term exponential decay (None = derive from fnex).
 
     Returns:
         The generated BLOCK command string
@@ -521,6 +533,8 @@ def write_block_file(
         fnex=fnex,
         fpie_width=fpie_width,
         fpie_force=fpie_force,
+        chi_offset=chi_offset,
+        omega_decay=omega_decay,
     )
 
     with open(output_path, "w") as f:

@@ -252,6 +252,8 @@ def run_wham(
     log_file: str | Path | None = None,
     fnex: float = 5.5,
     cutlsum: float = 0.8,
+    chi_offset: float | None = None,
+    omega_decay: float | None = None,
 ) -> None:
     """Run WHAM analysis using bundled GPU-accelerated library.
 
@@ -272,6 +274,8 @@ def run_wham(
             If False (default), use zero shifts (legacy ALF behavior).
         nsubs: Array of subsites per site. If None, reads from prep/nsubs file.
         g_imp_path: Path to G_imp directory. If None, uses "G_imp" in analysis_dir.
+        chi_offset: Override s-term sigmoid offset (None = derive from fnex).
+        omega_decay: Override x-term exponential decay (None = derive from fnex).
 
     Raises:
         FileNotFoundError: If analysis directory or WHAM library not found.
@@ -318,7 +322,7 @@ def run_wham(
     g_imp_path_bytes = _to_bytes(g_imp_path)
     log_path = Path(log_file).resolve() if log_file is not None else None
 
-    constants = derive_bias_constants(fnex)
+    constants = derive_bias_constants(fnex, chi_offset=chi_offset, omega_decay=omega_decay)
 
     logger.info(f"Running WHAM with nf={nf}, temp={temp}, use_gshift={use_gshift}, fnex={fnex}")
     if nsubs_arr is not None:
@@ -540,6 +544,8 @@ def run_lmalf(
     g_imp_path: str | Path | None = None,
     log_file: str | Path | None = None,
     fnex: float = 5.5,
+    chi_offset: float | None = None,
+    omega_decay: float | None = None,
 ) -> None:
     """Run LMALF (Likelihood Maximization ALF) analysis.
 
@@ -559,6 +565,8 @@ def run_lmalf(
         tolerance: Convergence tolerance (0 = use default 1.25e-3).
         nsubs: Array of subsites per site. If None, reads from prep/nsubs file.
         g_imp_path: Path to G_imp directory. If None, uses "G_imp" in analysis_dir.
+        chi_offset: Override s-term sigmoid offset (None = derive from fnex).
+        omega_decay: Override x-term exponential decay (None = derive from fnex).
 
     Raises:
         FileNotFoundError: If analysis directory or library not found.
@@ -602,7 +610,7 @@ def run_lmalf(
     g_imp_path_bytes = _to_bytes(g_imp_path)
     log_path = Path(log_file).resolve() if log_file is not None else None
 
-    constants = derive_bias_constants(fnex)
+    constants = derive_bias_constants(fnex, chi_offset=chi_offset, omega_decay=omega_decay)
 
     logger.info(f"Running LMALF with nf={nf}, temp={temp}, ms={ms}, msprof={msprof}, fnex={fnex}")
     if nsubs_arr is not None:
@@ -721,6 +729,8 @@ def run_wham_from_memory(
     log_file: str | Path | None = None,
     fnex: float = 5.5,
     cutlsum: float = 0.8,
+    chi_offset: float | None = None,
+    omega_decay: float | None = None,
 ) -> None:
     """Run WHAM analysis from in-memory numpy arrays (no file I/O for input).
 
@@ -777,7 +787,7 @@ def run_wham_from_memory(
     g_imp_path_bytes = _to_bytes(g_imp_path)
     log_path = Path(log_file).resolve() if log_file is not None else None
 
-    constants = derive_bias_constants(fnex)
+    constants = derive_bias_constants(fnex, chi_offset=chi_offset, omega_decay=omega_decay)
 
     # Prepare output directory
     if output_dir is not None:
@@ -829,6 +839,8 @@ def run_lmalf_from_memory(
     output_dir: str | Path | None = None,
     log_file: str | Path | None = None,
     fnex: float = 5.5,
+    chi_offset: float | None = None,
+    omega_decay: float | None = None,
 ) -> None:
     """Run LMALF analysis from in-memory numpy arrays (no file I/O for input).
 
@@ -853,6 +865,8 @@ def run_lmalf_from_memory(
         output_dir: Directory for OUT.dat output. Defaults to cwd.
         log_file: Optional log file for CUDA stdout/stderr.
         fnex: FNEX parameter for bias constants.
+        chi_offset: Override s-term sigmoid offset (None = derive from fnex).
+        omega_decay: Override x-term exponential decay (None = derive from fnex).
 
     Raises:
         RuntimeError: If CUDA lmalf_from_memory returns non-zero.
@@ -894,7 +908,7 @@ def run_lmalf_from_memory(
     g_imp_path_bytes = _to_bytes(g_imp_path)
     log_path = Path(log_file).resolve() if log_file is not None else None
 
-    constants = derive_bias_constants(fnex)
+    constants = derive_bias_constants(fnex, chi_offset=chi_offset, omega_decay=omega_decay)
 
     # Prepare output directory
     if output_dir is not None:

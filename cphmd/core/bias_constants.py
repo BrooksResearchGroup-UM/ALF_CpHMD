@@ -46,20 +46,31 @@ class BiasConstants(NamedTuple):
     omega_scale: float
 
 
-def derive_bias_constants(fnex: float = DEFAULT_FNEX) -> BiasConstants:
+def derive_bias_constants(
+    fnex: float = DEFAULT_FNEX,
+    *,
+    chi_offset: float | None = None,
+    omega_decay: float | None = None,
+) -> BiasConstants:
     """Derive bias potential constants from a FNEX value.
 
     Args:
         fnex: The FNEX softmax constraint parameter (default 5.5).
+        chi_offset: Override for s-term sigmoid offset. If None, derived
+            as 4*exp(-fnex). Set to 0.017 to match legacy ALF behavior.
+        omega_decay: Override for x-term exponential decay. If None, derived
+            as fnex. Set to 5.56 to match legacy ALF behavior.
 
     Returns:
         BiasConstants with all derived values.
     """
+    actual_omega = omega_decay if omega_decay is not None else fnex
+    actual_chi = chi_offset if chi_offset is not None else 4.0 * np.exp(-fnex)
     return BiasConstants(
         fnex=fnex,
-        omega_decay=fnex,
-        chi_offset=4.0 * np.exp(-fnex),
-        omega_scale=1.0 / fnex,
+        omega_decay=actual_omega,
+        chi_offset=actual_chi,
+        omega_scale=1.0 / actual_omega,
     )
 
 

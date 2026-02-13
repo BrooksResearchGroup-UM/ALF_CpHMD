@@ -131,10 +131,12 @@ def _generate_block_str(
     fnex: float = 5.5,
     lambda_mass: float = 12.0,
     lambda_fbeta: float = 5.0,
+    chi_offset: float | None = None,
+    omega_decay: float | None = None,
 ) -> str:
     """Generate MSLD BLOCK command string."""
     from .bias_constants import derive_bias_constants
-    constants = derive_bias_constants(fnex)
+    constants = derive_bias_constants(fnex, chi_offset=chi_offset, omega_decay=omega_decay)
     lines = []
 
     # Initialize BLOCK components
