@@ -480,16 +480,16 @@ def plot_site_substates(
         print("matplotlib not available, skipping substate plots")
         return
 
-    from cphmd.analysis.plot_style import apply_pub_style, clean_axes, get_state_colors, savefig
+    from cphmd.analysis.plot_style import apply_pub_style, clean_axes, savefig
 
     apply_pub_style()
     output_path.mkdir(parents=True, exist_ok=True)
 
     fig, ax = plt.subplots(figsize=(8, 5))
 
-    n_substates = len(site_result.substates)
-    colors = get_state_colors(n_substates)
-    markers = ['o', 's', '^', 'v', 'D', 'p', 'h', '*']
+    # Match population_convergence.py colors (Set1: red, blue, green, purple, orange, ...)
+    colors = plt.cm.Set1.colors
+    markers = ["o", "s", "D", "^", "v", "<", ">", "p", "h", "*"]
 
     pH_fit = np.linspace(pH_range[0], pH_range[1], 200)
 
@@ -508,7 +508,7 @@ def plot_site_substates(
         color = colors[idx % len(colors)]
         marker = markers[idx % len(markers)]
 
-        # Plot theoretical curve (smooth, dense grid)
+        # Theoretical curve (dashed)
         if substate.select_name in theo_dense:
             ax.plot(
                 pH_fit,
@@ -516,59 +516,38 @@ def plot_site_substates(
                 color=color,
                 linestyle='--',
                 linewidth=1.5,
-                alpha=0.6,
+                alpha=0.5,
             )
 
-        # Plot simulation data (scatter on top)
+        # Simulation data (solid line + small markers)
         if len(substate.populations) > 0:
-            ax.scatter(
-                substate.pH_values,
-                substate.populations,
-                c=[color],
+            # Sort by pH for clean line connections
+            sort_idx = np.argsort(substate.pH_values)
+            ax.plot(
+                substate.pH_values[sort_idx],
+                substate.populations[sort_idx],
+                color=color,
                 marker=marker,
-                s=60,
-                alpha=0.8,
-                label=f"{substate.select_name} ({substate.tag_type})",
+                markersize=4,
+                markeredgecolor="black",
+                markeredgewidth=0.3,
+                linewidth=2,
+                alpha=0.9,
+                label=f"State {idx}",
                 zorder=3,
             )
 
-    # Plot fitted HH curve (total charged-state population)
-    fit = site_result.fit_result
-    if fit.fit_type not in ("insufficient_data", "fit_failed", "single_point"):
-        if fit.fit_type == "three_state":
-            y_fit = three_state_hh(pH_fit, fit.pKa_pos, fit.pKa_neg)
-        elif fit.fit_type == "basic":
-            y_fit = two_state_basic_hh(pH_fit, fit.pKa_eff, fit.hill_coeff)
-        elif fit.fit_type == "acidic":
-            y_fit = two_state_acidic_hh(pH_fit, fit.pKa_eff, fit.hill_coeff)
-        else:
-            y_fit = None
-
-        if y_fit is not None:
-            ax.plot(
-                pH_fit, y_fit, 'k-', linewidth=2, alpha=0.8,
-                label=f"HH fit (pKa={fit.pKa_eff:.2f})", zorder=2,
-            )
-
-    # Plot total charged-state simulation data
-    if len(site_result.total_populations) > 0:
-        ax.scatter(
-            site_result.pH_values,
-            site_result.total_populations,
-            c='black', marker='x', s=80, linewidths=2, alpha=0.7,
-            label="Total charged (sim)", zorder=4,
-        )
-
     site_label = f"{site_result.segid}:{site_result.resname}{site_result.resid}"
+    fit = site_result.fit_result
     ax.set_xlabel('pH')
     ax.set_ylabel('Population')
-    ax.set_title(f'{site_label} Substates \u2014 Run {run_idx}', fontweight='bold')
+    ax.set_title(f'{site_label} \u2014 Run {run_idx}', fontweight='bold')
     ax.set_xlim(pH_range)
     ax.set_ylim(-0.05, 1.05)
     ax.legend(loc='best', ncol=2)
     clean_axes(ax)
 
-    info_text = f"Fit: {fit.fit_type}, pKa = {fit.pKa_eff:.2f}, R\u00b2 = {fit.r_squared:.3f}"
+    info_text = f"pKa = {fit.pKa_eff:.2f}, R\u00b2 = {fit.r_squared:.3f}"
     ax.annotate(
         info_text,
         xy=(0.02, 0.98),
