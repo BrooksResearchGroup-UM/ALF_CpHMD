@@ -1518,6 +1518,15 @@ class ALFSimulation:
                     self.config.temperature,
                 )
 
+                # Collect prior runs' data dirs for multi-run HH accumulation (Phase 2+)
+                prior_data_dirs: list[Path] = []
+                if self.state.phase >= 2:
+                    hh_window = 5 if self.state.phase == 2 else 10
+                    for k in range(max(0, run_idx - hh_window), run_idx):
+                        prior_dir = Path(self.config.input_folder) / f"analysis{k}" / "data"
+                        if prior_dir.exists():
+                            prior_data_dirs.append(prior_dir)
+
                 generate_hh_analysis(
                     run_idx=run_idx,
                     data_dir=Path("data"),
@@ -1527,6 +1536,7 @@ class ALFSimulation:
                     nreps=self.config.nreps,
                     output_dir=Path(self.config.input_folder) / "plots",
                     ncentral=self.state.alf_info.get("ncentral", self.config.nreps // 2),
+                    prior_data_dirs=prior_data_dirs if prior_data_dirs else None,
                 )
 
             # Update variables for next run (skip during confirmation)
