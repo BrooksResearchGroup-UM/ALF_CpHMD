@@ -579,7 +579,10 @@ class ConvergenceTracker:
 
         try:
             from cphmd.analysis.energy_profiles import plot_1d_profiles
-            plot_1d_profiles(analysis_dir=Path.cwd(), nsubs=list(nsubs))
+            plot_1d_profiles(
+                analysis_dir=Path.cwd(), nsubs=list(nsubs),
+                main_plots_dir=plots_dir,
+            )
         except Exception as e:
             print(f"Warning: 1D energy profile plots failed: {e}")
 
@@ -587,6 +590,7 @@ class ConvergenceTracker:
             from cphmd.analysis.wham_profiles import plot_wham_profiles
             plot_wham_profiles(
                 analysis_dir=Path.cwd(), nsubs=list(nsubs), msprof=msprof,
+                main_plots_dir=plots_dir,
             )
         except Exception as e:
             print(f"Warning: WHAM profile plots failed: {e}")

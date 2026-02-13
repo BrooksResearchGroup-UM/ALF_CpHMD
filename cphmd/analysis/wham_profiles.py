@@ -22,12 +22,15 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 
+from cphmd.analysis.plot_style import apply_pub_style, clean_axes, get_state_colors, savefig
+
 
 def plot_wham_profiles(
     analysis_dir: Path,
     nsubs: list[int],
     msprof: int = 0,
     output_dir: Path | None = None,
+    main_plots_dir: Path | None = None,
     fmt: str = "png",
 ) -> list[Path]:
     """Plot WHAM free energy profiles from multisite/G{n}.dat files.
@@ -44,6 +47,8 @@ def plot_wham_profiles(
         nsubs: Number of substates per site.
         msprof: Multisite profile flag (0=no cross-site, 1=yes).
         output_dir: Where to save plots. Defaults to analysis_dir / "plots".
+        main_plots_dir: When set, outputs to organized subdirs under this path
+            (wham_1d/, wham_transitions/, wham_2d/, wham_cross/).
         fmt: Image format (png, pdf, svg).
 
     Returns:
@@ -53,9 +58,17 @@ def plot_wham_profiles(
     if not ms_dir.is_dir():
         return []
 
-    if output_dir is None:
-        output_dir = analysis_dir / "plots"
-    output_dir.mkdir(parents=True, exist_ok=True)
+    # Resolve output directories
+    if main_plots_dir is not None:
+        wham_1d_dir = main_plots_dir / "wham_1d"
+        wham_trans_dir = main_plots_dir / "wham_transitions"
+        wham_2d_dir = main_plots_dir / "wham_2d"
+        wham_cross_dir = main_plots_dir / "wham_cross"
+    else:
+        if output_dir is None:
+            output_dir = analysis_dir / "plots"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        wham_1d_dir = wham_trans_dir = wham_2d_dir = wham_cross_dir = output_dir
 
     itt = analysis_dir.name.replace("analysis", "")
     saved: list[Path] = []
@@ -80,7 +93,7 @@ def plot_wham_profiles(
 
                 if g1_data:
                     p = _plot_1d_substituent(
-                        g1_data, ns, isite, itt, output_dir, fmt,
+                        g1_data, ns, isite, itt, wham_1d_dir, fmt,
                     )
                     if p:
                         saved.append(p)
@@ -96,7 +109,7 @@ def plot_wham_profiles(
 
                 if g12_data:
                     p = _plot_1d_transition(
-                        g12_data, ns, isite, itt, output_dir, fmt,
+                        g12_data, ns, isite, itt, wham_trans_dir, fmt,
                     )
                     if p:
                         saved.append(p)
@@ -113,7 +126,7 @@ def plot_wham_profiles(
 
                     if g2_data:
                         p = _plot_2d_joint(
-                            g2_data, ns, isite, itt, output_dir, fmt,
+                            g2_data, ns, isite, itt, wham_2d_dir, fmt,
                         )
                         if p:
                             saved.append(p)
@@ -131,7 +144,7 @@ def plot_wham_profiles(
                 if g11_data:
                     p = _plot_cross_site(
                         g11_data, nsubs[isite], nsubs[jsite],
-                        isite, jsite, itt, output_dir, fmt,
+                        isite, jsite, itt, wham_cross_dir, fmt,
                     )
                     if p:
                         saved.append(p)
@@ -177,40 +190,37 @@ def _plot_1d_substituent(
     if not g1_data:
         return None
 
+    apply_pub_style()
+
     # Infer grid from first available profile
     first = next(iter(g1_data.values()))
     emid = _make_1d_grid(len(first))
 
     fig, ax = plt.subplots(figsize=(8, 5))
+    colors = get_state_colors(ns)
 
-    cmap = plt.get_cmap("tab10")
     for i in sorted(g1_data):
         g = g1_data[i]
         # Shift so minimum = 0 for readability
         g_shifted = g - np.nanmin(g)
         ax.plot(
             emid, g_shifted,
-            color=cmap(i % 10),
+            color=colors[i % len(colors)],
             linewidth=1.5,
             label=f"State {i}",
         )
 
-    ax.set_xlabel("$\\lambda$", fontsize=12)
-    ax.set_ylabel("Free energy (kcal/mol)", fontsize=12)
+    ax.set_xlabel("$\\lambda$")
+    ax.set_ylabel("Free energy (kcal/mol)")
     ax.set_title(
-        f"Site {site_idx} — WHAM 1D profiles (iter {itt})",
-        fontsize=13, fontweight="bold",
+        f"Site {site_idx + 1} \u2014 WHAM 1D profiles (iter {itt})",
+        fontweight="bold",
     )
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
-    ax.legend(fontsize=9, loc="best")
-    ax.grid(True, linestyle="--", alpha=0.3)
-    plt.tight_layout()
+    clean_axes(ax)
+    ax.legend(loc="best")
 
-    out = output_dir / f"wham_1d_site{site_idx}.{fmt}"
-    fig.savefig(out, dpi=300, bbox_inches="tight")
-    plt.close(fig)
-    return out
+    out = output_dir / f"site{site_idx + 1}_run{itt}.{fmt}"
+    return savefig(fig, out)
 
 
 def _plot_1d_transition(
@@ -225,18 +235,14 @@ def _plot_1d_transition(
     if not g12_data:
         return None
 
+    apply_pub_style()
+
     first = next(iter(g12_data.values()))
     emid = _make_1d_grid(len(first))
 
     n_pairs = len(g12_data)
     fig, ax = plt.subplots(figsize=(8, 5))
-
-    if n_pairs <= 10:
-        cmap = plt.get_cmap("tab10")
-        colors = [cmap(k) for k in range(n_pairs)]
-    else:
-        cmap = plt.get_cmap("turbo")
-        colors = [cmap(k / max(n_pairs - 1, 1)) for k in range(n_pairs)]
+    colors = get_state_colors(n_pairs)
 
     for idx, ((i, j), g) in enumerate(sorted(g12_data.items())):
         ax.plot(
@@ -247,23 +253,18 @@ def _plot_1d_transition(
             label=f"{i}\u2194{j}" if n_pairs <= 15 else None,
         )
 
-    ax.set_xlabel("Transition coordinate $\\lambda_i / (\\lambda_i + \\lambda_j)$", fontsize=11)
-    ax.set_ylabel("Free energy (kcal/mol)", fontsize=12)
+    ax.set_xlabel("Transition coordinate $\\lambda_i / (\\lambda_i + \\lambda_j)$")
+    ax.set_ylabel("Free energy (kcal/mol)")
     ax.set_title(
-        f"Site {site_idx} — WHAM transition profiles (iter {itt})",
-        fontsize=13, fontweight="bold",
+        f"Site {site_idx + 1} \u2014 WHAM transition profiles (iter {itt})",
+        fontweight="bold",
     )
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
+    clean_axes(ax)
     if n_pairs <= 15:
-        ax.legend(fontsize=9, loc="best")
-    ax.grid(True, linestyle="--", alpha=0.3)
-    plt.tight_layout()
+        ax.legend(loc="best")
 
-    out = output_dir / f"wham_transition_site{site_idx}.{fmt}"
-    fig.savefig(out, dpi=300, bbox_inches="tight")
-    plt.close(fig)
-    return out
+    out = output_dir / f"site{site_idx + 1}_run{itt}.{fmt}"
+    return savefig(fig, out)
 
 
 def _plot_2d_joint(
@@ -278,7 +279,8 @@ def _plot_2d_joint(
     if not g2_data:
         return None
 
-    n_pairs = len(g2_data)
+    apply_pub_style()
+
     # Grid layout: (ns-1) x (ns-1) subplots
     ncols = ns - 1
     nrows = ns - 1
@@ -299,15 +301,13 @@ def _plot_2d_joint(
         ax.set_title(f"{i}\u2194{j}", fontsize=10)
 
     fig.suptitle(
-        f"Site {site_idx} — WHAM 2D profiles (iter {itt})",
-        fontsize=13, fontweight="bold",
+        f"Site {site_idx + 1} \u2014 WHAM 2D profiles (iter {itt})",
+        fontweight="bold",
     )
     plt.tight_layout()
 
-    out = output_dir / f"wham_2d_site{site_idx}.{fmt}"
-    fig.savefig(out, dpi=200, bbox_inches="tight")
-    plt.close(fig)
-    return out
+    out = output_dir / f"site{site_idx + 1}_run{itt}.{fmt}"
+    return savefig(fig, out, dpi=200)
 
 
 def _plot_cross_site(
@@ -324,6 +324,8 @@ def _plot_cross_site(
     if not g11_data:
         return None
 
+    apply_pub_style()
+
     fig = plt.figure(figsize=(5 * ns_j, 4 * ns_i))
 
     first = next(iter(g11_data.values()))
@@ -335,18 +337,16 @@ def _plot_cross_site(
         subplot_idx = i * ns_j + j + 1
         ax = fig.add_subplot(ns_i, ns_j, subplot_idx, projection="3d")
         ax.plot_surface(X, Y, g2d, cmap="viridis", alpha=0.8)
-        ax.set_xlabel(f"$\\lambda_{{{i}}}^{{s{site_i}}}$", fontsize=9)
-        ax.set_ylabel(f"$\\lambda_{{{j}}}^{{s{site_j}}}$", fontsize=9)
+        ax.set_xlabel(f"$\\lambda_{{{i}}}^{{s{site_i + 1}}}$", fontsize=9)
+        ax.set_ylabel(f"$\\lambda_{{{j}}}^{{s{site_j + 1}}}$", fontsize=9)
         ax.set_zlabel("G", fontsize=9)
         ax.set_title(f"({i},{j})", fontsize=10)
 
     fig.suptitle(
-        f"Sites {site_i}\u2194{site_j} — WHAM coupling profiles (iter {itt})",
-        fontsize=13, fontweight="bold",
+        f"Sites {site_i + 1}\u2194{site_j + 1} \u2014 WHAM coupling profiles (iter {itt})",
+        fontweight="bold",
     )
     plt.tight_layout()
 
-    out = output_dir / f"wham_cross_s{site_i}_s{site_j}.{fmt}"
-    fig.savefig(out, dpi=200, bbox_inches="tight")
-    plt.close(fig)
-    return out
+    out = output_dir / f"sites{site_i + 1}_{site_j + 1}_run{itt}.{fmt}"
+    return savefig(fig, out, dpi=200)
