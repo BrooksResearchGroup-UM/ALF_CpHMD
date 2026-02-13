@@ -73,6 +73,66 @@ def _simplex_valid_count(data_size: int) -> int:
     return gs * (gs + 1) // 2
 
 
+def _resample_profile(arr: np.ndarray, target_size: int) -> np.ndarray:
+    """Resample a free-energy profile to a different grid resolution.
+
+    Both source and target grids span the same λ-space [0,1]^d.
+    Handles NaN values (outside the simplex constraint) by interpolating
+    data and validity separately and masking accordingly.
+
+    Args:
+        arr: Source profile (1D flat array).
+        target_size: Number of points in the target grid.
+
+    Returns:
+        Resampled profile of length target_size.
+    """
+    src_size = len(arr)
+    gs_src = int(round(src_size**0.5))
+    gs_tgt = int(round(target_size**0.5))
+
+    if gs_src**2 == src_size and gs_tgt**2 == target_size:
+        # 2D grid (3-subsite systems): bilinear interpolation with NaN safety
+        from scipy.ndimage import zoom
+
+        grid = arr.reshape(gs_src, gs_src)
+        valid = np.isfinite(grid).astype(np.float64)
+        data = np.where(valid > 0, grid, 0.0)
+
+        factor = gs_tgt / gs_src
+        zd = zoom(data, factor, order=1)
+        zv = zoom(valid, factor, order=1)
+
+        result = np.full(zd.shape, np.nan)
+        ok = zv > 0.5
+        result[ok] = zd[ok] / zv[ok]
+        return result.ravel()
+
+    # 1D grid (2-subsite systems): linear interpolation
+    x_src = np.linspace(0.0, 1.0, src_size)
+    x_tgt = np.linspace(0.0, 1.0, target_size)
+    finite = np.isfinite(arr)
+    if finite.sum() < 2:
+        return np.full(target_size, np.nan)
+    return np.interp(x_tgt, x_src[finite], arr[finite])
+
+
+def _match_grids(
+    a: np.ndarray, b: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """Resample arrays to common grid when bin sizes differ.
+
+    Both arrays represent free-energy profiles on the same λ-space
+    at different resolutions (e.g. bins=20 vs bins=32 after a phase
+    transition). Interpolates the coarser profile onto the finer grid.
+    """
+    if len(a) > len(b):
+        b = _resample_profile(b, len(a))
+    elif len(b) > len(a):
+        a = _resample_profile(a, len(b))
+    return a, b
+
+
 def _rmsd_finite(
     a: np.ndarray, b: np.ndarray, n_valid: int | None = None
 ) -> tuple[float, float]:
@@ -89,7 +149,8 @@ def _rmsd_finite(
         (rmsd, coverage_fraction)
     """
     if a.shape != b.shape:
-        return float("inf"), 0.0
+        a, b = _match_grids(a, b)
+        n_valid = None  # recompute for the resampled grid
     mask = np.isfinite(a) & np.isfinite(b)
     denom = n_valid if n_valid is not None else len(a)
     coverage = mask.sum() / denom if denom > 0 else 0.0
