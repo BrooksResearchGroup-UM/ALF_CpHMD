@@ -207,7 +207,7 @@ def _plot_1d_substituent(
             emid, g_shifted,
             color=colors[i % len(colors)],
             linewidth=1.5,
-            label=f"State {i}",
+            label=f"State {i + 1}",
         )
 
     ax.set_xlabel("$\\lambda$")

@@ -457,6 +457,52 @@ def compute_theoretical_populations(
     return populations
 
 
+def _fit_substate_curve(
+    ax,
+    pH_values: np.ndarray,
+    populations: np.ndarray,
+    tag_type: str,
+    pH_fit: np.ndarray,
+    color,
+) -> float | None:
+    """Fit a sigmoid to one substate's simulation data and plot it.
+
+    Uses a generalized logistic: pop = L + (U - L) / (1 + 10^(s*(pH - pKa)))
+    where s = +1 for falling (UNEG/acidic), -1 for rising (UPOS/basic).
+    For NONE states, auto-detects direction from data trend.
+
+    Returns:
+        Fitted pKa value, or None if fit failed or data is flat.
+    """
+    from scipy.optimize import curve_fit
+
+    pop_range = np.max(populations) - np.min(populations)
+    if pop_range < 0.05:
+        return None  # Nearly flat — no meaningful curve to fit
+
+    # Determine sigmoid direction from tag type or data trend
+    if tag_type == "UNEG":
+        s = -1  # Falls with pH (protonated state loses population)
+    elif tag_type == "UPOS":
+        s = +1  # Rises with pH (deprotonated state gains population)
+    else:
+        # NONE: detect from trend
+        trend = populations[np.argmax(pH_values)] - populations[np.argmin(pH_values)]
+        s = -1 if trend < 0 else +1
+
+    def sigmoid(pH, pKa, L, U):
+        return L + (U - L) / (1.0 + 10.0 ** (s * (pKa - pH)))
+
+    try:
+        p0 = [np.mean(pH_values), np.min(populations), np.max(populations)]
+        bounds = ([0, -0.1, -0.1], [14, 1.1, 1.1])
+        popt, _ = curve_fit(sigmoid, pH_values, populations, p0=p0, bounds=bounds, maxfev=5000)
+        ax.plot(pH_fit, sigmoid(pH_fit, *popt), color=color, linewidth=1.5, alpha=0.8)
+        return float(popt[0])  # fitted pKa
+    except (RuntimeError, ValueError):
+        return None
+
+
 def plot_site_substates(
     site_result: SiteHHResult,
     pH_range: tuple[float, float],
@@ -519,42 +565,50 @@ def plot_site_substates(
                 alpha=0.5,
             )
 
-        # Simulation data (solid line + small markers)
+        # Build label with pKa annotations
+        theo_pKa = substate.tag_pKa
+        fitted_pKa = None
+
+        # Simulation data (scatter points only)
         if len(substate.populations) > 0:
-            # Sort by pH for clean line connections
-            sort_idx = np.argsort(substate.pH_values)
-            ax.plot(
-                substate.pH_values[sort_idx],
-                substate.populations[sort_idx],
+            # Fit sigmoid through this substate's simulation data (solid line)
+            if len(substate.populations) >= 3:
+                fitted_pKa = _fit_substate_curve(
+                    ax, substate.pH_values, substate.populations,
+                    substate.tag_type, pH_fit, color,
+                )
+
+            # Build legend label: "State 1 (theo=6.60, fit=6.82)" or just "State 1"
+            label = f"State {idx + 1}"
+            pKa_parts = []
+            if theo_pKa is not None:
+                pKa_parts.append(f"theo={theo_pKa:.2f}")
+            if fitted_pKa is not None:
+                pKa_parts.append(f"fit={fitted_pKa:.2f}")
+            if pKa_parts:
+                label += f" ({', '.join(pKa_parts)})"
+
+            ax.scatter(
+                substate.pH_values,
+                substate.populations,
                 color=color,
                 marker=marker,
-                markersize=4,
-                markeredgecolor="black",
-                markeredgewidth=0.3,
-                linewidth=2,
+                s=25,
+                edgecolors="black",
+                linewidths=0.3,
                 alpha=0.9,
-                label=f"State {idx}",
+                label=label,
                 zorder=3,
             )
 
     site_label = f"{site_result.segid}:{site_result.resname}{site_result.resid}"
-    fit = site_result.fit_result
     ax.set_xlabel('pH')
     ax.set_ylabel('Population')
     ax.set_title(f'{site_label} \u2014 Run {run_idx}', fontweight='bold')
     ax.set_xlim(pH_range)
     ax.set_ylim(-0.05, 1.05)
-    ax.legend(loc='best', ncol=2)
+    ax.legend(loc='best', ncol=1, fontsize=8)
     clean_axes(ax)
-
-    info_text = f"pKa = {fit.pKa_eff:.2f}, R\u00b2 = {fit.r_squared:.3f}"
-    ax.annotate(
-        info_text,
-        xy=(0.02, 0.98),
-        xycoords='axes fraction',
-        verticalalignment='top',
-        bbox=dict(boxstyle='round', facecolor='white', alpha=0.8),
-    )
 
     savefig(fig, output_path / f"site{site_result.site_id}_run{run_idx}.png")
 
@@ -667,19 +721,17 @@ def generate_hh_analysis(
     output_dir: Path,
     ncentral: int | None = None,
     lambda_threshold: float = 0.8,
-    prior_data_dirs: list[Path] | None = None,
 ) -> dict[str, SiteHHResult]:
     """Main entry point for HH curve analysis with multi-replica pH.
 
     This function implements the full multi-replica titration curve analysis:
     1. Computes per-replica pH values from the replica exchange scheme
-    2. Loads lambda data per replica (current run + prior runs if provided)
+    2. Loads lambda data per replica for the current run
     3. Calculates populations at each replica's pH
     4. Fits multi-point HH curves for each titratable site
     5. Generates substate plots and CSV data export
 
-    Each prior run contributes additional independent data points at the same
-    set of replica pH values, improving the HH fit quality.
+    Each run is analyzed independently since biases differ between runs.
 
     Args:
         run_idx: Current run number
@@ -691,8 +743,6 @@ def generate_hh_analysis(
         output_dir: Directory for output plots
         ncentral: Central replica index (defaults to nreps // 2)
         lambda_threshold: Threshold for state occupancy (default 0.8)
-        prior_data_dirs: Optional list of data/ directories from prior runs.
-            Each contributes independent data points at the replica pH values.
 
     Returns:
         Dict mapping site IDs to SiteHHResult with full analysis
@@ -743,25 +793,6 @@ def generate_hh_analysis(
         return results
 
     valid_pH_array, state_populations, n_states = current_data
-
-    # Accumulate data from prior runs (each adds independent points at same pH values)
-    if prior_data_dirs:
-        for prior_dir in prior_data_dirs:
-            prior_data = _load_run_populations(
-                prior_dir, pH, delta_pKa, nreps, ncentral, lambda_threshold
-            )
-            if prior_data is None:
-                continue
-            prior_pH, prior_pops, prior_n_states = prior_data
-            if prior_n_states != n_states:
-                continue  # Skip if state count changed
-            # Concatenate: repeated pH values with different populations
-            valid_pH_array = np.concatenate([valid_pH_array, prior_pH])
-            for state_idx in range(n_states):
-                if state_idx in state_populations and state_idx in prior_pops:
-                    state_populations[state_idx] = np.concatenate([
-                        state_populations[state_idx], prior_pops[state_idx]
-                    ])
 
     # Process each titratable site
     if patch_info is None or "site" not in patch_info.columns:

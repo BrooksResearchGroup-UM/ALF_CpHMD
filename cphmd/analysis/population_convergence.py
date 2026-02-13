@@ -208,7 +208,7 @@ def plot_population_convergence(
                 ax, runs, site_pops[:, s], phases,
                 color=color, marker=marker, linewidth=2, markersize=6,
                 markeredgecolor="black", markeredgewidth=0.5,
-                label=f"State {s}",
+                label=f"State {s + 1}",
             )
         else:
             ax.plot(
@@ -220,7 +220,7 @@ def plot_population_convergence(
                 markersize=6,
                 markeredgecolor='black',
                 markeredgewidth=0.5,
-                label=f"State {s}",
+                label=f"State {s + 1}",
             )
 
     # Ideal equal-population line
