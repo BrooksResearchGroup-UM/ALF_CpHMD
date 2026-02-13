@@ -259,13 +259,12 @@ class ConvergenceTracker:
         delta_pKa = get_delta_pKa_for_phase(self.state.phase)
 
         cphmd_kwargs = {}
-        if (self.config.pH is not None and self.config.nreps > 3
+        if (self.config.pH and self.config.nreps > 3
                 and self.state.patch_info is not None):
             from .cphmd_params import compute_all_site_parameters
             cphmd_params = compute_all_site_parameters(
                 self.state.patch_info,
                 self.config.temperature,
-                self.config.pH,
             )
             cphmd_kwargs = {
                 "data_dir": Path("data"),

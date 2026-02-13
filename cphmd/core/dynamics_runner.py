@@ -302,14 +302,13 @@ class DynamicsRunner:
         var_file = self.config.input_folder / f"variables{run_idx}.inp"
         variables = read_variable_file(var_file)
 
-        effective_pH = self.config.pH
+        effective_pH = None
         delta_pKa = get_delta_pKa_for_phase(self.state.phase)
 
-        if self.config.pH is not None:
+        if self.config.pH:
             cphmd_params = compute_all_site_parameters(
                 self.state.patch_info,
                 self.config.temperature,
-                self.config.pH,
             )
             effective_pH = cphmd_params.effective_pH
 
@@ -331,7 +330,7 @@ class DynamicsRunner:
             pH=self.config.pH,
             effective_pH=effective_pH,
             delta_pKa=delta_pKa,
-            use_cphmd=(self.config.pH is not None and delta_pKa != 0 and not self.config.no_pka_bias),
+            use_cphmd=(self.config.pH and delta_pKa != 0 and not self.config.no_pka_bias),
             initial_lambdas=self.state.forced_initial_lambdas,
             lambda_mass=self.config.lambda_mass,
             lambda_fbeta=self.config.lambda_fbeta,

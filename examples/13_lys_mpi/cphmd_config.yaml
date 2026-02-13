@@ -1,0 +1,41 @@
+# CpHMD Configuration — Lysine (LYS) in Water (MPI multi-GPU)
+#
+# Same system as 04_lys_water but launched with mpirun for multi-GPU
+# parallel replica simulation with CpHMD pH coupling enabled.
+# Each MPI rank runs one replica on its own GPU; nreps is auto-detected
+# from the MPI communicator size.
+#
+# For a single LYS site (pKa ~10.5), effective_pH is set to the site's
+# macro-pKa internally. The 5 replicas fan out around it with delta_pKa
+# spacing (1.0/0.5/0.25 depending on phase).
+#
+# Steps: build → solvate → patch → alf (via mpirun)
+
+build:
+  residue: LYS
+  output_dir: pdb
+  template: "ALA ALA {res} ALA ALA"
+
+solvation:
+  input_file: pdb/lys
+  output_dir: solvated
+  crystal_type: OCTAHEDRAL
+  padding: 10.0
+  salt_concentration: 0.15
+
+patch:
+  input_folder: solvated
+  output_folder: solvated/prep
+  hmr: true
+  selected_residues:
+    - "PROA:3"
+
+alf:
+  input_folder: solvated
+  pH: true
+  start: 1
+  end: 200
+  auto_phase_switch: true
+  auto_stop: true
+  restrain_hydrogens: true
+  g_imp_bins: [20, 32, 32]

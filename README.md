@@ -331,6 +331,7 @@ and pre-built `solvated/prep/` files ready to run ALF.
 | `10_protein_lysozyme` | Hen egg-white lysozyme -- multi-site CpHMD at pH 4.0 with coupling |
 | `11_glu_lmalf` | GLU in water -- LMALF analysis method instead of WHAM |
 | `12_glu_hybrid` | GLU in water -- hybrid WHAM/LMALF analysis |
+| `13_lys_mpi` | LYS in water -- MPI multi-GPU parallel replicas (5 GPUs) |
 
 ## How It Works
 

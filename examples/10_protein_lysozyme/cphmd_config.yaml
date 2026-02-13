@@ -16,7 +16,7 @@ patch:
 
 alf:
   input_folder: solvated
-  pH: 4.0
+  pH: true
   temperature: 298.15
   end: 200
   auto_phase_switch: true
