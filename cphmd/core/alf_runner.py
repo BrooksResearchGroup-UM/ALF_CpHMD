@@ -301,6 +301,10 @@ class SimulationState:
     # smoothed RMS bias changes for convergence detection
     ewbs_state: Any = None  # EWBSState instance, lazy-initialized
 
+    # Phase 2→1 regression tracking
+    stuck_phase2_count: int = 0  # consecutive stuck runs in Phase 2
+    phase_regression_count: int = 0  # number of Phase 2→1 regressions performed
+
 
 class ALFSimulation:
     """Main ALF simulation orchestrator.
