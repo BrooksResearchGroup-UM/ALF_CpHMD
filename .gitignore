@@ -60,11 +60,23 @@ examples/_archive/
 *.out
 slurm-*.out
 
-# Analysis outputs (simulation output dirs, not cphmd/analysis/)
-/analysis*/
-prep/
-plots/
+# ALF run artifacts (analysis dirs, run dirs, variables, state files)
+**/analysis[0-9]*/
+**/run[0-9]*/
+**/variables*.inp
+**/nbshift/
+**/plots/
+**/solvated/G_imp
+**/ewbs_state.json
+**/rmsd_state.json
+**/scaling.dat
 *.parquet
+
+# Solvation intermediates (prep/ has final files)
+**/solvated/molecule.*
+**/solvated/solvated.*
+**/solvated/waterbox.*
+**/solvated/box.dat
 
 # Temporary files
 *.tmp
