@@ -248,6 +248,14 @@ int lmalf_from_memory(
     double *lambda_flat, double *ensweight_flat, int n_frames,
     double *x_prev_flat, double *s_prev_flat, int nblocks_sq);
 
+int nonlinear_from_memory(
+    int nf, double temp, int ms, int msprof, int max_iter, double tolerance,
+    int *nsubs, int nsites,
+    double fnex, double chi_offset, double omega_scale,
+    double chi_offset_t, double chi_offset_u, int ntriangle,
+    double *lambda_flat, double *ensweight_flat, int n_frames,
+    double *x_prev_flat, double *s_prev_flat, int nblocks_sq);
+
 #ifdef __cplusplus
 }
 #endif
