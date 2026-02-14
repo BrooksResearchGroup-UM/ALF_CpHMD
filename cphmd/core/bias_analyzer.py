@@ -157,10 +157,8 @@ class BiasAnalyzer:
             "cutt": cutc if not self.config.no_t_bias else 0.0,
             "cutu": cutc if not self.config.no_u_bias else 0.0,
         }
-        if self.config.no_t_bias:
-            cut_params["calc_omega2"] = False
-        if self.config.no_u_bias:
-            cut_params["calc_omega3"] = False
+        cut_params["calc_omega2"] = not self.config.no_t_bias
+        cut_params["calc_omega3"] = not self.config.no_u_bias
         if runs_in_p2 < warmup_runs:
             print(f"  Phase 2 warmup ({runs_in_p2}/{warmup_runs}): "
                   f"cutb={cutb:.3f} cutc={cutc:.3f}")
@@ -186,10 +184,12 @@ class BiasAnalyzer:
                             "cuts": 0.5 * coupling_scale,
                             "cutt": 0.5 * coupling_scale if not self.config.no_t_bias else 0.0,
                             "cutu": 0.5 * coupling_scale if not self.config.no_u_bias else 0.0,
+                            "calc_omega2": not self.config.no_t_bias,
+                            "calc_omega3": not self.config.no_u_bias,
                         }
                     col += n
-            except Exception:
-                pass
+            except (ValueError, OSError) as e:
+                print(f"  Phase 3 recovery: could not read pop_strict.dat: {e}")
 
         cut_params = {
             "cutb": 0.02,
@@ -199,10 +199,8 @@ class BiasAnalyzer:
             "cutt": 0.1 * coupling_scale if not self.config.no_t_bias else 0.0,
             "cutu": 0.1 * coupling_scale if not self.config.no_u_bias else 0.0,
         }
-        if self.config.no_t_bias:
-            cut_params["calc_omega2"] = False
-        if self.config.no_u_bias:
-            cut_params["calc_omega3"] = False
+        cut_params["calc_omega2"] = not self.config.no_t_bias
+        cut_params["calc_omega3"] = not self.config.no_u_bias
         return cut_params
 
     # ------------------------------------------------------------------
@@ -274,7 +272,7 @@ class BiasAnalyzer:
         """Run WHAM analysis using bundled GPU library."""
         nsubs = alf_info["nsubs"]
         nblocks = alf_info["nblocks"]
-        ntriangle = 5 + (0 if self.config.no_t_bias else 2) + (0 if self.config.no_u_bias else 2)
+        ntriangle = self.config.ntriangle
 
         if self._wham_lambda:
             from cphmd.wham import run_wham_from_memory
@@ -320,7 +318,7 @@ class BiasAnalyzer:
                 chi_offset_u=self.config.chi_offset_u,
                 ntriangle=ntriangle,
             )
-        get_free_energy5(alf_info, ms=ms, msprof=msprof, **cut_params)
+        get_free_energy5(alf_info, ms=ms, msprof=msprof, ntriangle=ntriangle, **cut_params)
 
     def _invoke_lmalf(self, nf: int, ms: int, msprof: int,
                       alf_info: dict,
@@ -330,7 +328,7 @@ class BiasAnalyzer:
         from cphmd.wham import run_lmalf_from_memory
 
         nsubs = alf_info["nsubs"]
-        ntriangle = 5 + (0 if self.config.no_t_bias else 2) + (0 if self.config.no_u_bias else 2)
+        ntriangle = self.config.ntriangle
 
         if self._wham_lambda:
             lambda_combined = np.vstack(self._wham_lambda)
@@ -400,7 +398,7 @@ class BiasAnalyzer:
                 self._run_wham(nf, ms, msprof, cut_params, alf_info)
                 return
 
-        ntriangle = 5 + (0 if self.config.no_t_bias else 2) + (0 if self.config.no_u_bias else 2)
+        ntriangle = self.config.ntriangle
         print("[LMALF] Converting OUT.dat to b/c/x/s.dat...")
         lm_keys = {"cutb", "cutc", "cutx", "cuts", "cutt", "cutu",
                    "cutc2", "cutx2", "cuts2"}
@@ -416,7 +414,7 @@ class BiasAnalyzer:
         from cphmd.wham import run_nonlinear_from_memory
 
         nsubs = alf_info["nsubs"]
-        ntriangle = 5 + (0 if self.config.no_t_bias else 2) + (0 if self.config.no_u_bias else 2)
+        ntriangle = self.config.ntriangle
 
         if self._wham_lambda:
             lambda_combined = np.vstack(self._wham_lambda)
@@ -485,7 +483,7 @@ class BiasAnalyzer:
                 self._run_wham(nf, ms, msprof, cut_params, alf_info)
                 return
 
-        ntriangle = 5 + (0 if self.config.no_t_bias else 2) + (0 if self.config.no_u_bias else 2)
+        ntriangle = self.config.ntriangle
         print("[NL] Converting OUT.dat to b/c/x/s.dat...")
         lm_keys = {"cutb", "cutc", "cutx", "cuts", "cutt", "cutu",
                    "cutc2", "cutx2", "cuts2"}
@@ -515,7 +513,7 @@ class BiasAnalyzer:
                 print("[Hybrid] LMALF produced all zeros - keeping WHAM output")
                 return
 
-        ntriangle = 5 + (0 if self.config.no_t_bias else 2) + (0 if self.config.no_u_bias else 2)
+        ntriangle = self.config.ntriangle
         lm_keys = {"cutb", "cutc", "cutx", "cuts", "cutt", "cutu",
                    "cutc2", "cutx2", "cuts2"}
         lm_params = {k: v for k, v in cut_params.items() if k in lm_keys}
@@ -534,7 +532,9 @@ class BiasAnalyzer:
         """
         file_cut_map = {
             'b.dat': 'cutb', 'c.dat': 'cutc',
+            'x.dat': 'cutx', 's.dat': 'cuts',
             'b_sum.dat': 'cutb', 'c_sum.dat': 'cutc',
+            'x_sum.dat': 'cutx', 's_sum.dat': 'cuts',
             't.dat': 'cutt', 'u.dat': 'cutu',
             't_sum.dat': 'cutt', 'u_sum.dat': 'cutu',
         }

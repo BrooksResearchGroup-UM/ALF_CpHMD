@@ -177,6 +177,18 @@ def config_to_alf(
         else:
             cfg["g_imp_bins"] = int(g_imp_bins)
 
+    # Warn if bias_type and individual no_*_bias flags are both specified
+    _bias_flags = {"no_b_bias", "no_c_bias", "no_x_bias", "no_s_bias", "no_t_bias", "no_u_bias"}
+    if "bias_type" in cfg and any(k in cfg for k in _bias_flags):
+        import warnings
+
+        warnings.warn(
+            "Both 'bias_type' and individual no_*_bias flags are set. "
+            "'bias_type' takes precedence; remove the individual flags to silence this warning.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+
     # Deprecated: preset_config is now always auto-derived from elec_type + vdw_type
     if "preset_config" in cfg:
         import warnings

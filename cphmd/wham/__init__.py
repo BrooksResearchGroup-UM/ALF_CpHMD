@@ -1069,7 +1069,7 @@ def run_nonlinear_from_memory(
         omega_decay: Override x-term exponential decay (None = derive from fnex).
         chi_offset_t: t-term sigmoid offset.
         chi_offset_u: u-term Hill sigmoid offset.
-        ntriangle: Pair params per unique pair (5, 7, or 9).
+        ntriangle: Pair params per unique pair (1, 3, 5, 7, or 9).
 
     Raises:
         RuntimeError: If CUDA nonlinear_from_memory returns non-zero.

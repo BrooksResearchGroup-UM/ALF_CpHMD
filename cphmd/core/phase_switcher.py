@@ -251,6 +251,37 @@ def _per_site_ranges(nsubs: list[int]) -> list[tuple[int, int]]:
     return ranges
 
 
+def _count_titratable_per_site(
+    patch_info: "pd.DataFrame | None",
+    nsubs: list[int] | None,
+) -> list[int] | None:
+    """Count titratable substates (UPOS/UNEG) per site.
+
+    NONE substates are reference states with no pH dependence and cannot be
+    visited through pH-driven transitions. For the visited-states gate, only
+    titratable states should count toward the requirement.
+
+    Returns:
+        List of titratable state counts per site, or None if patch_info unavailable.
+    """
+    if patch_info is None or nsubs is None:
+        return None
+    if "site" not in patch_info.columns or "TAG" not in patch_info.columns:
+        return None
+
+    sites = sorted(patch_info["site"].unique())
+    counts = []
+    for site_id in sites:
+        site_rows = patch_info[patch_info["site"] == site_id]
+        n_tit = 0
+        for _, row in site_rows.iterrows():
+            tag = str(row.get("TAG", "NONE")).strip().upper()
+            if tag.startswith("UPOS") or tag.startswith("UNEG"):
+                n_tit += 1
+        counts.append(n_tit)
+    return counts
+
+
 def _organize_by_replica(data_dir: Path) -> dict[int, list[Path]] | None:
     """Discover and organize lambda files by replica index.
 
@@ -409,13 +440,17 @@ def enough_samples(mask: np.ndarray, min_hits: int = 200) -> bool:
     return bool(np.all(hits >= min_hits))
 
 
-def load_lambda_data(data_dir: Path) -> tuple[np.ndarray | None, list[str]]:
-    """Load and combine lambda data from all replica files.
+def load_lambda_data(
+    data_dir: Path,
+    replica_idx: int | None = None,
+) -> tuple[np.ndarray | None, list[str]]:
+    """Load and combine lambda data from replica files.
 
     Supports .parquet (preferred) with .dat fallback for old runs.
 
     Args:
         data_dir: Path to data/ directory containing Lambda.*.*.{parquet,dat} files
+        replica_idx: If given, load only this replica. If None, load all replicas.
 
     Returns:
         Tuple of (combined lambda data array, list of representative files)
@@ -426,12 +461,15 @@ def load_lambda_data(data_dir: Path) -> tuple[np.ndarray | None, list[str]]:
     if replica_files is None:
         return None, []
 
-    # Combine data from all replicas
+    # Combine data from selected replicas
     lambda_data = None
     l_files: list[str] = []
 
-    for replica_idx in sorted(replica_files.keys()):
-        repeat_fpaths = sorted(replica_files[replica_idx])
+    indices = [replica_idx] if replica_idx is not None else sorted(replica_files.keys())
+    for ridx in indices:
+        if ridx not in replica_files:
+            continue
+        repeat_fpaths = sorted(replica_files[ridx])
 
         replica_combined = None
         for fpath in repeat_fpaths:
@@ -1229,17 +1267,27 @@ def check_phase_transition(
         min_vf = config.min_visited_frac_1to2
         visited = col_fracs > min_vf  # bool mask over columns
 
+        # Count titratable states per site (UPOS/UNEG, not NONE).
+        # NONE states are reference states with no pH dependence — they can't
+        # be "visited" through pH-driven transitions (e.g., LYS protonated ref).
+        n_titratable = _count_titratable_per_site(patch_info, nsubs)
+
         # Check that enough states are visited per site
         visited_ok = True
         visited_reason = ""
         if nsubs is not None:
             for si, (start, end) in enumerate(_per_site_ranges(nsubs)):
                 n_visited = int(visited[start:end].sum())
-                required = min(config.min_visited_1to2, nsubs[si])
+                n_tit = n_titratable[si] if n_titratable is not None else nsubs[si]
+                required = min(config.min_visited_1to2, n_tit)
+                if required < 2:
+                    # Site has < 2 titratable states (e.g., LYS with 1 UPOS + 1 NONE)
+                    # — always passes since the single titratable state is trivially visited
+                    continue
                 if n_visited < required:
                     visited_ok = False
                     visited_reason = (
-                        f"site{si}: {n_visited}/{nsubs[si]} states visited "
+                        f"site{si + 1}: {n_visited}/{n_tit} titratable states visited "
                         f"(need {required})")
                     break
         else:
