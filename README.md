@@ -84,6 +84,7 @@ Enable `--auto-phase` to let the simulation decide when to advance:
 ### Convergence Visualization
 Automatically generated plots during simulation:
 - **Population convergence** -- per-site substate populations over ALF iterations
+  (central replica only, at target pH)
 - **RMSD convergence** -- per-site G-file RMSD showing bias landscape stabilization
 - **Pairwise RMSD** -- per lambda-pair RMSD with top-N worst pairs highlighted
 - **b-bias convergence** -- per-site linear bias drift tracking
@@ -263,6 +264,7 @@ cphmd utils lambda-info       Show metadata for a lambda file (.lmd or .parquet)
 | `--hmr/--no-hmr` | on | Hydrogen mass repartitioning (4 fs timestep) |
 | `--restrains` | SCAT | Restraint type: SCAT or NOE |
 | `--elec` | pmeex | Electrostatics: pmeex, pmeon, pmenn, fshift, fswitch |
+| `--bias-type` | None | Bias type shorthand: `bc`, `bcx`, `bcxs`, `bcxst`, `bcxstu` |
 | `--fnex` | 5.5 | FNEX softmax constraint parameter |
 | `--g-imp-bins` | auto | G_imp resolution (single int or per-phase: `20,32,32`) |
 | `-c` / `--config` | None | YAML config file (overrides all other options) |
@@ -342,6 +344,7 @@ and pre-built `solvated/prep/` files ready to run ALF.
 | `11_glu_lmalf` | GLU in water -- LMALF analysis method instead of WHAM |
 | `12_glu_hybrid` | GLU in water -- hybrid WHAM/LMALF analysis |
 | `13_lys_mpi` | LYS in water -- MPI multi-GPU parallel replicas (5 GPUs) |
+| `14_hsp_mpi` | HSP in water -- MPI multi-GPU, 3-state tautomer system |
 
 ## How It Works
 
