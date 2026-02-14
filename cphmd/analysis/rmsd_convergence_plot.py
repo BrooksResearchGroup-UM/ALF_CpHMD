@@ -332,7 +332,7 @@ def plot_pairwise_rmsd_convergence(
                 if np.isfinite(rmsd):
                     pair_rmsd[r_idx, k] = rmsd
                 if r_idx == 0:
-                    pair_labels.append(f"{i}-{j}")
+                    pair_labels.append(f"{i + 1}-{j + 1}")
 
         # Plot individual substate profiles as grey dashed background
         for k in range(ns):
@@ -359,40 +359,53 @@ def plot_pairwise_rmsd_convergence(
         else:
             highlight_set = set()
 
-        # Color + linestyle cycling for many pairs
-        if n_pairs <= 20:
-            tab20 = plt.get_cmap("tab20")
-            colors_20 = [tab20(i) for i in range(20)]
-        else:
-            hsv = plt.get_cmap("hsv")
-            n_colors = 20
-            colors_20 = [hsv(i / n_colors) for i in range(n_colors)]
-        linestyles = ["-", "--", "-.", ":"]
+        # Colors: Set1 for highlighted worst pairs (matches population plots),
+        # grey for background lines
+        set1_colors = plt.cm.Set1.colors
+
+        # Assign Set1 colors to highlighted pairs (ranked by worst RMSD)
+        highlight_color = {}
+        if highlight_set:
+            sorted_worst = sorted(highlight_set,
+                                  key=lambda k: last_vals[k] if np.isfinite(last_vals[k]) else 0,
+                                  reverse=True)
+            for rank, k in enumerate(sorted_worst):
+                highlight_color[k] = set1_colors[rank % len(set1_colors)]
 
         # Plot all pair lines (i < j only — upper triangle)
         for k in range(n_pairs):
             is_worst = k in highlight_set
-            color = colors_20[k % len(colors_20)]
-            ls = linestyles[(k // len(colors_20)) % len(linestyles)]
-            base_alpha = 1.0 if is_worst else 0.35
+
+            if is_worst:
+                color = highlight_color[k]
+                ls = "-"
+                lw = 2.5
+                base_alpha = 1.0
+                label = pair_labels[k]
+            else:
+                color = "grey"
+                ls = "-"
+                lw = 0.6
+                base_alpha = 0.3
+                label = None
 
             if phases is not None:
                 _semilogy_by_phase(
                     ax, runs, pair_rmsd[:, k], phases,
                     base_alpha=base_alpha,
                     color=color,
-                    linestyle=ls if not is_worst else "-",
-                    linewidth=2.5 if is_worst else 0.8,
-                    label=pair_labels[k] if is_worst else None,
+                    linestyle=ls,
+                    linewidth=lw,
+                    label=label,
                 )
             else:
                 ax.semilogy(
                     runs, pair_rmsd[:, k],
                     color=color,
-                    linestyle=ls if not is_worst else "-",
-                    linewidth=2.5 if is_worst else 0.8,
+                    linestyle=ls,
+                    linewidth=lw,
                     alpha=base_alpha,
-                    label=pair_labels[k] if is_worst else None,
+                    label=label,
                 )
 
         site_label = f"Site {s+1} ({ns} substates, {n_pairs} pairs)"
@@ -497,7 +510,7 @@ def plot_b_bias_convergence(
         squeeze=False,
     )
 
-    colors = plt.cm.tab10.colors
+    colors = plt.cm.Set1.colors
 
     for s in range(n_sites):
         ax = axes[s, 0]
