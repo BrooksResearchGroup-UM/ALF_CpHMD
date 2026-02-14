@@ -87,6 +87,11 @@ class ALFConfig:
     nreps: int | None = None  # Defaults to MPI size
     restrains: RestrainType = "SCAT"
     restrain_hydrogens: bool = False
+    # Bias type: clean interface for enabling/disabling parameter types.
+    # Each letter enables that bias type: b(linear), c(coupling), x(skew), s(endpoint),
+    # t(opposite-endpoint), u(endpoint-cubed). None = use individual no_*_bias flags.
+    bias_type: str | None = None  # e.g. "bc", "bcx", "bcxs", "bcxst", "bcxstu"
+
     no_b_bias: bool = False  # Disable linear (phi) bias updates
     no_c_bias: bool = False  # Disable coupling (psi) bias updates
     no_x_bias: bool = False
@@ -218,10 +223,55 @@ class ALFConfig:
         if self.lambda_fbeta is None:
             self.lambda_fbeta = 5.0 if self.hmr else 7.0
 
-        # t/u require x and s to be active (they share the same reaction coordinates)
+        # bias_type enum overrides individual no_*_bias flags
+        if self.bias_type is not None:
+            bt = self.bias_type.lower()
+            valid = {"bc", "bcx", "bcxs", "bcxst", "bcxstu"}
+            if bt not in valid:
+                raise ValueError(
+                    f"Invalid bias_type={bt!r}. Must be one of: {', '.join(sorted(valid))}"
+                )
+            self.no_b_bias = "b" not in bt
+            self.no_c_bias = "c" not in bt
+            self.no_x_bias = "x" not in bt
+            self.no_s_bias = "s" not in bt
+            self.no_t_bias = "t" not in bt
+            self.no_u_bias = "u" not in bt
+
+        # Hierarchy enforcement: ntriangle encoding requires c → x → s → t → u.
+        # Disabling an earlier type forces all later types off.
+        if self.no_x_bias:
+            self.no_s_bias = True
         if self.no_x_bias or self.no_s_bias:
             self.no_t_bias = True
             self.no_u_bias = True
+
+        # Warn when experimental t/u terms are enabled
+        if not self.no_t_bias or not self.no_u_bias:
+            import warnings
+            warnings.warn(
+                "t/u bias terms are experimental and not yet validated. "
+                "Use bias_type='bcxstu' only for testing.",
+                stacklevel=2,
+            )
+
+    @property
+    def ntriangle(self) -> int:
+        """CUDA ntriangle encoding: 1(c) + 2(x) + 2(s) + 2(t) + 2(u).
+
+        Controls which pair-interaction parameter types are computed in WHAM/LMALF/nonlinear
+        CUDA kernels. Higher values include more bias term types.
+
+        Returns:
+            1 (bc), 3 (bcx), 5 (bcxs), 7 (bcxst), or 9 (bcxstu).
+        """
+        return (
+            1
+            + (0 if self.no_x_bias else 2)
+            + (0 if self.no_s_bias else 2)
+            + (0 if self.no_t_bias else 2)
+            + (0 if self.no_u_bias else 2)
+        )
 
     @staticmethod
     def resolve_g_imp_bins(
@@ -1427,6 +1477,10 @@ class ALFSimulation:
                     cut_params["calc_chi"] = False
                 if self.config.no_s_bias:
                     cut_params["calc_omega"] = False
+                if self.config.no_t_bias:
+                    cut_params["calc_omega2"] = False
+                if self.config.no_u_bias:
+                    cut_params["calc_omega3"] = False
 
             # Compute transition counts from Lambda data for regularization
             from cphmd.core.transitions import (
@@ -1450,7 +1504,7 @@ class ALFSimulation:
                       f"(min-pair transitions: {int(connectivity * 50)})")
                 if weak_pairs:
                     for site, si, sj in weak_pairs:
-                        print(f"    Weakest: site {site}, states {si}<->{sj}")
+                        print(f"    Weakest: site {site + 1}, states {si + 1}<->{sj + 1}")
                 trans_weights = transition_matrix_to_coupling_weights(
                     trans_matrices, nsubs, ms=ms
                 )

@@ -281,13 +281,15 @@ def _identify_param_type(idx: int, nsubs: np.ndarray, ntriangle: int = 5) -> str
             return "cutc"
         offset += n2
 
-        if offset <= idx < offset + 2 * n2:
-            return "cutx"
-        offset += 2 * n2
+        if ntriangle >= 3:
+            if offset <= idx < offset + 2 * n2:
+                return "cutx"
+            offset += 2 * n2
 
-        if offset <= idx < offset + 2 * n2:
-            return "cuts"
-        offset += 2 * n2
+        if ntriangle >= 5:
+            if offset <= idx < offset + 2 * n2:
+                return "cuts"
+            offset += 2 * n2
 
         if ntriangle >= 7:
             if offset <= idx < offset + 2 * n2:
@@ -321,6 +323,7 @@ def get_free_energy5(
     calc_omega: bool = True,
     calc_omega2: bool = False,
     calc_omega3: bool = False,
+    ntriangle: int | None = None,
     site_populations: list[np.ndarray] | None = None,
     transition_weights: np.ndarray | None = None,
     connectivity: float | None = None,
@@ -356,6 +359,8 @@ def get_free_energy5(
         calc_omega: Include s (sigmoid) parameters in the matrix solve.
         calc_omega2: Include t parameters in the matrix solve.
         calc_omega3: Include u parameters in the matrix solve.
+        ntriangle: Matrix layout descriptor (must match CUDA WHAM output).
+            If None, derived from calc flags (backward compatibility).
         transition_weights: Per-parameter regularization weights from transition counts.
             Weight > 1.0 means stronger regularization (less trust in poorly-sampled coupling).
         analysis_dir: Path to analysis directory. If None, uses cwd.
@@ -376,6 +381,7 @@ def get_free_energy5(
         calc_phi=calc_phi, calc_psi=calc_psi,
         calc_chi=calc_chi, calc_omega=calc_omega,
         calc_omega2=calc_omega2, calc_omega3=calc_omega3,
+        ntriangle=ntriangle,
         site_populations=site_populations,
         transition_weights=transition_weights,
         connectivity=connectivity,
@@ -403,6 +409,7 @@ def _compute_free_energy(
     calc_omega: bool = True,
     calc_omega2: bool = False,
     calc_omega3: bool = False,
+    ntriangle: int | None = None,
     site_populations: list[np.ndarray] | None = None,
     transition_weights: np.ndarray | None = None,
     connectivity: float | None = None,
@@ -449,13 +456,19 @@ def _compute_free_energy(
     x_prev = np.loadtxt(analysis_dir / "x_prev.dat")
     s_prev = np.loadtxt(analysis_dir / "s_prev.dat")
 
-    # Determine ntriangle from active parameter types
-    # ntriangle = 1(c) + 2(x) + 2(s) [+ 2(t)] [+ 2(u)]
-    ntriangle = 5
-    if cutt > 0 or calc_omega2:
-        ntriangle = 7
-    if cutu > 0 or calc_omega3:
-        ntriangle = 9
+    # ntriangle defines the C.dat/V.dat matrix layout and MUST match CUDA output.
+    # When passed explicitly (from config.ntriangle), use it directly.
+    # The calc_* flags control param_active masking (zeroing), not matrix dimensions.
+    if ntriangle is None:
+        ntriangle = 1
+        if cutx > 0 or calc_chi:
+            ntriangle += 2
+        if cuts > 0 or calc_omega:
+            ntriangle += 2
+        if cutt > 0 or calc_omega2:
+            ntriangle += 2
+        if cutu > 0 or calc_omega3:
+            ntriangle += 2
 
     # Load t/u previous biases (create zeros if files don't exist yet)
     t_prev_path = analysis_dir / "t_prev.dat"
@@ -527,17 +540,19 @@ def _compute_free_energy(
                     param_active[n0 : n0 + n2] = False
                 n0 += n2
 
-                cutlist[n0 : n0 + 2 * n2] = cutx
-                x_indx.extend(range(n0, n0 + 2 * n2))
-                if not calc_chi:
-                    param_active[n0 : n0 + 2 * n2] = False
-                n0 += 2 * n2
+                if ntriangle >= 3:
+                    cutlist[n0 : n0 + 2 * n2] = cutx
+                    x_indx.extend(range(n0, n0 + 2 * n2))
+                    if not calc_chi:
+                        param_active[n0 : n0 + 2 * n2] = False
+                    n0 += 2 * n2
 
-                cutlist[n0 : n0 + 2 * n2] = cuts
-                s_indx.extend(range(n0, n0 + 2 * n2))
-                if not calc_omega:
-                    param_active[n0 : n0 + 2 * n2] = False
-                n0 += 2 * n2
+                if ntriangle >= 5:
+                    cutlist[n0 : n0 + 2 * n2] = cuts
+                    s_indx.extend(range(n0, n0 + 2 * n2))
+                    if not calc_omega:
+                        param_active[n0 : n0 + 2 * n2] = False
+                    n0 += 2 * n2
 
                 if ntriangle >= 7:
                     cutlist[n0 : n0 + 2 * n2] = cutt
@@ -562,32 +577,34 @@ def _compute_free_energy(
                 n0 += n3
 
                 # x cross-terms with regularization
-                ind = n0
-                for i in range(nsubs[isite]):
-                    for j in range(nsubs[jsite]):
-                        reglist[ind] = -x_prev[iblock + i, jblock + j]
-                        ind += 1
-                        reglist[ind] = -x_prev[jblock + j, iblock + i]
-                        ind += 1
-                cutlist[n0 : n0 + 2 * n3] = cutx2
-                x2_indx.extend(range(n0, n0 + 2 * n3))
-                if not calc_chi:
-                    param_active[n0 : n0 + 2 * n3] = False
-                n0 += 2 * n3
+                if ntriangle >= 3:
+                    ind = n0
+                    for i in range(nsubs[isite]):
+                        for j in range(nsubs[jsite]):
+                            reglist[ind] = -x_prev[iblock + i, jblock + j]
+                            ind += 1
+                            reglist[ind] = -x_prev[jblock + j, iblock + i]
+                            ind += 1
+                    cutlist[n0 : n0 + 2 * n3] = cutx2
+                    x2_indx.extend(range(n0, n0 + 2 * n3))
+                    if not calc_chi:
+                        param_active[n0 : n0 + 2 * n3] = False
+                    n0 += 2 * n3
 
                 # s cross-terms with regularization
-                ind = n0
-                for i in range(nsubs[isite]):
-                    for j in range(nsubs[jsite]):
-                        reglist[ind] = -s_prev[iblock + i, jblock + j]
-                        ind += 1
-                        reglist[ind] = -s_prev[jblock + j, iblock + i]
-                        ind += 1
-                cutlist[n0 : n0 + 2 * n3] = cuts2
-                s2_indx.extend(range(n0, n0 + 2 * n3))
-                if not calc_omega:
-                    param_active[n0 : n0 + 2 * n3] = False
-                n0 += 2 * n3
+                if ntriangle >= 5:
+                    ind = n0
+                    for i in range(nsubs[isite]):
+                        for j in range(nsubs[jsite]):
+                            reglist[ind] = -s_prev[iblock + i, jblock + j]
+                            ind += 1
+                            reglist[ind] = -s_prev[jblock + j, iblock + i]
+                            ind += 1
+                    cutlist[n0 : n0 + 2 * n3] = cuts2
+                    s2_indx.extend(range(n0, n0 + 2 * n3))
+                    if not calc_omega:
+                        param_active[n0 : n0 + 2 * n3] = False
+                    n0 += 2 * n3
 
                 # t cross-terms with regularization
                 if ntriangle >= 7:
@@ -818,18 +835,20 @@ def _compute_free_energy(
                         ind += 1
 
                 # Intra-site: x terms
-                for i in range(nsubs[isite]):
-                    for j in range(nsubs[isite]):
-                        if i != j:
-                            x[iblock + i, jblock + j] = coeff[ind]
-                            ind += 1
+                if ntriangle >= 3:
+                    for i in range(nsubs[isite]):
+                        for j in range(nsubs[isite]):
+                            if i != j:
+                                x[iblock + i, jblock + j] = coeff[ind]
+                                ind += 1
 
                 # Intra-site: s terms
-                for i in range(nsubs[isite]):
-                    for j in range(nsubs[isite]):
-                        if i != j:
-                            s[iblock + i, jblock + j] = coeff[ind]
-                            ind += 1
+                if ntriangle >= 5:
+                    for i in range(nsubs[isite]):
+                        for j in range(nsubs[isite]):
+                            if i != j:
+                                s[iblock + i, jblock + j] = coeff[ind]
+                                ind += 1
 
                 # Intra-site: t terms (sign-flipped)
                 if ntriangle >= 7:
@@ -855,20 +874,22 @@ def _compute_free_energy(
                         ind += 1
 
                 # Inter-site: x terms (both directions)
-                for i in range(nsubs[isite]):
-                    for j in range(nsubs[jsite]):
-                        x[iblock + i, jblock + j] = coeff[ind]
-                        ind += 1
-                        x[jblock + j, iblock + i] = coeff[ind]
-                        ind += 1
+                if ntriangle >= 3:
+                    for i in range(nsubs[isite]):
+                        for j in range(nsubs[jsite]):
+                            x[iblock + i, jblock + j] = coeff[ind]
+                            ind += 1
+                            x[jblock + j, iblock + i] = coeff[ind]
+                            ind += 1
 
                 # Inter-site: s terms (both directions)
-                for i in range(nsubs[isite]):
-                    for j in range(nsubs[jsite]):
-                        s[iblock + i, jblock + j] = coeff[ind]
-                        ind += 1
-                        s[jblock + j, iblock + i] = coeff[ind]
-                        ind += 1
+                if ntriangle >= 5:
+                    for i in range(nsubs[isite]):
+                        for j in range(nsubs[jsite]):
+                            s[iblock + i, jblock + j] = coeff[ind]
+                            ind += 1
+                            s[jblock + j, iblock + i] = coeff[ind]
+                            ind += 1
 
                 # Inter-site: t terms (both directions, sign-flipped)
                 if ntriangle >= 7:

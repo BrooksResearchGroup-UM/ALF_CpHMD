@@ -162,10 +162,16 @@ __global__ void nl_energykernel(struct_nl2024 nl, double *x, double *lambda, dou
           {
             q2 = lam[i2];
             E += x[k++] * q1 * q2;                            // c (quadratic)
-            E += x[k++] * nl_rc_exp(q1, q2, nl.omega_scale);  // x_ij
-            E += x[k++] * nl_rc_exp(q2, q1, nl.omega_scale);  // x_ji
-            E += x[k++] * nl_rc_sig(q1, q2, nl.chi_offset);   // s_ij
-            E += x[k++] * nl_rc_sig(q2, q1, nl.chi_offset);   // s_ji
+            if (nl.ntriangle >= 3)
+            {
+              E += x[k++] * nl_rc_exp(q1, q2, nl.omega_scale);  // x_ij
+              E += x[k++] * nl_rc_exp(q2, q1, nl.omega_scale);  // x_ji
+            }
+            if (nl.ntriangle >= 5)
+            {
+              E += x[k++] * nl_rc_sig(q1, q2, nl.chi_offset);   // s_ij
+              E += x[k++] * nl_rc_sig(q2, q1, nl.chi_offset);   // s_ji
+            }
             if (nl.ntriangle >= 7)
             {
               E += x[k++] * nl_rc_omega2(q1, q2, nl.chi_offset_t);  // t_ij
@@ -191,10 +197,16 @@ __global__ void nl_energykernel(struct_nl2024 nl, double *x, double *lambda, dou
             E += x[k++] * q1 * q2;  // c (coupling)
             if (nl.ms == 1)
             {
-              E += x[k++] * nl_rc_exp(q1, q2, nl.omega_scale);
-              E += x[k++] * nl_rc_exp(q2, q1, nl.omega_scale);
-              E += x[k++] * nl_rc_sig(q1, q2, nl.chi_offset);
-              E += x[k++] * nl_rc_sig(q2, q1, nl.chi_offset);
+              if (nl.ntriangle >= 3)
+              {
+                E += x[k++] * nl_rc_exp(q1, q2, nl.omega_scale);
+                E += x[k++] * nl_rc_exp(q2, q1, nl.omega_scale);
+              }
+              if (nl.ntriangle >= 5)
+              {
+                E += x[k++] * nl_rc_sig(q1, q2, nl.chi_offset);
+                E += x[k++] * nl_rc_sig(q2, q1, nl.chi_offset);
+              }
               if (nl.ntriangle >= 7)
               {
                 E += x[k++] * nl_rc_omega2(q1, q2, nl.chi_offset_t);
@@ -255,10 +267,16 @@ __global__ void nl_weightedenergykernel(struct_nl2024 nl, double sign, double *l
           {
             if (b < nl.B) q2 = lam[i2];
             E = w * q1 * q2;                                       nl_reduce(E, Eloc, &dEdx[k]); k++;
-            E = w * nl_rc_exp(q1, q2, nl.omega_scale);             nl_reduce(E, Eloc, &dEdx[k]); k++;
-            E = w * nl_rc_exp(q2, q1, nl.omega_scale);             nl_reduce(E, Eloc, &dEdx[k]); k++;
-            E = w * nl_rc_sig(q1, q2, nl.chi_offset);              nl_reduce(E, Eloc, &dEdx[k]); k++;
-            E = w * nl_rc_sig(q2, q1, nl.chi_offset);              nl_reduce(E, Eloc, &dEdx[k]); k++;
+            if (nl.ntriangle >= 3)
+            {
+              E = w * nl_rc_exp(q1, q2, nl.omega_scale);             nl_reduce(E, Eloc, &dEdx[k]); k++;
+              E = w * nl_rc_exp(q2, q1, nl.omega_scale);             nl_reduce(E, Eloc, &dEdx[k]); k++;
+            }
+            if (nl.ntriangle >= 5)
+            {
+              E = w * nl_rc_sig(q1, q2, nl.chi_offset);              nl_reduce(E, Eloc, &dEdx[k]); k++;
+              E = w * nl_rc_sig(q2, q1, nl.chi_offset);              nl_reduce(E, Eloc, &dEdx[k]); k++;
+            }
             if (nl.ntriangle >= 7)
             {
               E = w * nl_rc_omega2(q1, q2, nl.chi_offset_t);       nl_reduce(E, Eloc, &dEdx[k]); k++;
@@ -283,10 +301,16 @@ __global__ void nl_weightedenergykernel(struct_nl2024 nl, double sign, double *l
             E = w * q1 * q2;                                       nl_reduce(E, Eloc, &dEdx[k]); k++;
             if (nl.ms == 1)
             {
-              E = w * nl_rc_exp(q1, q2, nl.omega_scale);           nl_reduce(E, Eloc, &dEdx[k]); k++;
-              E = w * nl_rc_exp(q2, q1, nl.omega_scale);           nl_reduce(E, Eloc, &dEdx[k]); k++;
-              E = w * nl_rc_sig(q1, q2, nl.chi_offset);            nl_reduce(E, Eloc, &dEdx[k]); k++;
-              E = w * nl_rc_sig(q2, q1, nl.chi_offset);            nl_reduce(E, Eloc, &dEdx[k]); k++;
+              if (nl.ntriangle >= 3)
+              {
+                E = w * nl_rc_exp(q1, q2, nl.omega_scale);           nl_reduce(E, Eloc, &dEdx[k]); k++;
+                E = w * nl_rc_exp(q2, q1, nl.omega_scale);           nl_reduce(E, Eloc, &dEdx[k]); k++;
+              }
+              if (nl.ntriangle >= 5)
+              {
+                E = w * nl_rc_sig(q1, q2, nl.chi_offset);            nl_reduce(E, Eloc, &dEdx[k]); k++;
+                E = w * nl_rc_sig(q2, q1, nl.chi_offset);            nl_reduce(E, Eloc, &dEdx[k]); k++;
+              }
               if (nl.ntriangle >= 7)
               {
                 E = w * nl_rc_omega2(q1, q2, nl.chi_offset_t);     nl_reduce(E, Eloc, &dEdx[k]); k++;
@@ -1117,10 +1141,16 @@ static struct_nl2024 *nl_setup(
           for (j = i + 1; j < nl->nsubs[sj]; j++)
           {
             nl->kx_h[k++] = k0 / 64;  // c
-            nl->kx_h[k++] = k0 / 4;   // x
-            nl->kx_h[k++] = k0 / 4;   // x
-            nl->kx_h[k++] = k0 / 1;   // s
-            nl->kx_h[k++] = k0 / 1;   // s
+            if (ntriangle >= 3)
+            {
+              nl->kx_h[k++] = k0 / 4;   // x
+              nl->kx_h[k++] = k0 / 4;   // x
+            }
+            if (ntriangle >= 5)
+            {
+              nl->kx_h[k++] = k0 / 1;   // s
+              nl->kx_h[k++] = k0 / 1;   // s
+            }
             if (ntriangle >= 7)
             {
               nl->kx_h[k++] = k0 / 1; // t
@@ -1143,18 +1173,24 @@ static struct_nl2024 *nl_setup(
             nl->kx_h[k++] = k0 / 4;       // c
             if (ms == 1)
             {
-              if (xr_x)
-                nl->xr_h[k] = xr_x[(nl->block0[si] + i) * nl->nblocks + nl->block0[sj] + j];
-              nl->kx_h[k++] = k0 / 0.25;   // x
-              if (xr_x)
-                nl->xr_h[k] = xr_x[(nl->block0[sj] + j) * nl->nblocks + nl->block0[si] + i];
-              nl->kx_h[k++] = k0 / 0.25;   // x
-              if (xr_s)
-                nl->xr_h[k] = xr_s[(nl->block0[si] + i) * nl->nblocks + nl->block0[sj] + j];
-              nl->kx_h[k++] = k0 / 0.25;   // s
-              if (xr_s)
-                nl->xr_h[k] = xr_s[(nl->block0[sj] + j) * nl->nblocks + nl->block0[si] + i];
-              nl->kx_h[k++] = k0 / 0.25;   // s
+              if (ntriangle >= 3)
+              {
+                if (xr_x)
+                  nl->xr_h[k] = xr_x[(nl->block0[si] + i) * nl->nblocks + nl->block0[sj] + j];
+                nl->kx_h[k++] = k0 / 0.25;   // x
+                if (xr_x)
+                  nl->xr_h[k] = xr_x[(nl->block0[sj] + j) * nl->nblocks + nl->block0[si] + i];
+                nl->kx_h[k++] = k0 / 0.25;   // x
+              }
+              if (ntriangle >= 5)
+              {
+                if (xr_s)
+                  nl->xr_h[k] = xr_s[(nl->block0[si] + i) * nl->nblocks + nl->block0[sj] + j];
+                nl->kx_h[k++] = k0 / 0.25;   // s
+                if (xr_s)
+                  nl->xr_h[k] = xr_s[(nl->block0[sj] + j) * nl->nblocks + nl->block0[si] + i];
+                nl->kx_h[k++] = k0 / 0.25;   // s
+              }
               if (ntriangle >= 7)
               {
                 nl->kx_h[k++] = k0 / 0.25; // t

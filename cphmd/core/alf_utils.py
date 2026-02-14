@@ -1293,10 +1293,12 @@ def get_free_energy_lm(
                     for j in range(i + 1, nsubs[isite]):
                         cutlist[n0:n0 + 1] = cutc
                         n0 += 1
-                        cutlist[n0:n0 + 2] = cutx
-                        n0 += 2
-                        cutlist[n0:n0 + 2] = cuts
-                        n0 += 2
+                        if ntriangle >= 3:
+                            cutlist[n0:n0 + 2] = cutx
+                            n0 += 2
+                        if ntriangle >= 5:
+                            cutlist[n0:n0 + 2] = cuts
+                            n0 += 2
                         if ntriangle >= 7:
                             cutlist[n0:n0 + 2] = cutt
                             n0 += 2
@@ -1309,10 +1311,12 @@ def get_free_energy_lm(
                         cutlist[n0:n0 + 1] = cutc2
                         n0 += 1
                         if ms == 1:
-                            cutlist[n0:n0 + 2] = cutx2
-                            n0 += 2
-                            cutlist[n0:n0 + 2] = cuts2
-                            n0 += 2
+                            if ntriangle >= 3:
+                                cutlist[n0:n0 + 2] = cutx2
+                                n0 += 2
+                            if ntriangle >= 5:
+                                cutlist[n0:n0 + 2] = cuts2
+                                n0 += 2
                             if ntriangle >= 7:
                                 cutlist[n0:n0 + 2] = cutt
                                 n0 += 2
@@ -1355,14 +1359,16 @@ def get_free_energy_lm(
                     for j in range(i + 1, nsubs[isite]):
                         c[iblock + i, jblock + j] = coeff[ind]
                         ind += 1
-                        x[iblock + i, jblock + j] = coeff[ind]
-                        ind += 1
-                        x[jblock + j, iblock + i] = coeff[ind]
-                        ind += 1
-                        s[iblock + i, jblock + j] = coeff[ind]
-                        ind += 1
-                        s[jblock + j, iblock + i] = coeff[ind]
-                        ind += 1
+                        if ntriangle >= 3:
+                            x[iblock + i, jblock + j] = coeff[ind]
+                            ind += 1
+                            x[jblock + j, iblock + i] = coeff[ind]
+                            ind += 1
+                        if ntriangle >= 5:
+                            s[iblock + i, jblock + j] = coeff[ind]
+                            ind += 1
+                            s[jblock + j, iblock + i] = coeff[ind]
+                            ind += 1
                         if ntriangle >= 7:
                             t[iblock + i, jblock + j] = coeff[ind]
                             ind += 1
@@ -1379,14 +1385,16 @@ def get_free_energy_lm(
                         c[iblock + i, jblock + j] = coeff[ind]
                         ind += 1
                         if ms == 1:
-                            x[iblock + i, jblock + j] = coeff[ind]
-                            ind += 1
-                            x[jblock + j, iblock + i] = coeff[ind]
-                            ind += 1
-                            s[iblock + i, jblock + j] = coeff[ind]
-                            ind += 1
-                            s[jblock + j, iblock + i] = coeff[ind]
-                            ind += 1
+                            if ntriangle >= 3:
+                                x[iblock + i, jblock + j] = coeff[ind]
+                                ind += 1
+                                x[jblock + j, iblock + i] = coeff[ind]
+                                ind += 1
+                            if ntriangle >= 5:
+                                s[iblock + i, jblock + j] = coeff[ind]
+                                ind += 1
+                                s[jblock + j, iblock + i] = coeff[ind]
+                                ind += 1
                             if ntriangle >= 7:
                                 t[iblock + i, jblock + j] = coeff[ind]
                                 ind += 1

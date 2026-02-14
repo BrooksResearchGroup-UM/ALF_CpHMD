@@ -464,6 +464,7 @@ def _fit_substate_curve(
     tag_type: str,
     pH_fit: np.ndarray,
     color,
+    n_same_type: int = 1,
 ) -> float | None:
     """Fit a sigmoid to one substate's simulation data and plot it.
 
@@ -471,6 +472,14 @@ def _fit_substate_curve(
     where s = +1 for rising (UPOS/basic), -1 for falling (UNEG/acidic).
     Lower asymptote is fixed at 0 (physical requirement: every substate
     population must vanish at one pH extreme).
+
+    When a titratable state is the only one of its type (n_same_type=1),
+    its upper asymptote U is fixed at 1.0 — it must saturate because no
+    competing states share the population (e.g., LYS with 1 UPOS + 1 NONE).
+
+    Args:
+        n_same_type: Number of titratable states of the same type (UPOS or UNEG)
+            at this site. When 1, U is fixed at 1.0.
 
     Returns:
         Fitted pKa value, or None if fit failed or data is flat.
@@ -491,14 +500,30 @@ def _fit_substate_curve(
         trend = populations[np.argmax(pH_values)] - populations[np.argmin(pH_values)]
         s = -1 if trend < 0 else +1
 
-    def sigmoid(pH, pKa, U):
-        return U / (1.0 + 10.0 ** (s * (pKa - pH)))
-
     try:
-        p0 = [np.mean(pH_values), np.max(populations)]
-        bounds = ([0, 0.01], [14, 1.1])
-        popt, _ = curve_fit(sigmoid, pH_values, populations, p0=p0, bounds=bounds, maxfev=5000)
-        ax.plot(pH_fit, sigmoid(pH_fit, *popt), color=color, linewidth=1.5, alpha=0.8)
+        if n_same_type == 1:
+            # Single titratable state: fix U=1.0, fit pKa only
+            def sigmoid_fixed(pH, pKa):
+                return 1.0 / (1.0 + 10.0 ** (s * (pKa - pH)))
+
+            p0 = [np.mean(pH_values)]
+            bounds = ([0], [14])
+            popt, _ = curve_fit(sigmoid_fixed, pH_values, populations,
+                                p0=p0, bounds=bounds, maxfev=5000)
+            ax.plot(pH_fit, sigmoid_fixed(pH_fit, *popt), color=color,
+                    linewidth=1.5, alpha=0.8)
+        else:
+            # Multiple competing states: fit both pKa and upper asymptote U
+            def sigmoid(pH, pKa, U):
+                return U / (1.0 + 10.0 ** (s * (pKa - pH)))
+
+            p0 = [np.mean(pH_values), np.max(populations)]
+            bounds = ([0, 0.01], [14, 1.1])
+            popt, _ = curve_fit(sigmoid, pH_values, populations,
+                                p0=p0, bounds=bounds, maxfev=5000)
+            ax.plot(pH_fit, sigmoid(pH_fit, *popt), color=color,
+                    linewidth=1.5, alpha=0.8)
+
         return float(popt[0])  # fitted pKa
     except (RuntimeError, ValueError):
         return None
@@ -551,6 +576,12 @@ def plot_site_substates(
         microstates_for_theo.append((sub.select_name, mtype, sub.tag_pKa))
     theo_dense = compute_theoretical_populations(pH_fit, microstates_for_theo)
 
+    # Count titratable states per type (for upper asymptote constraint in sigmoid fit)
+    _type_counts: dict[str, int] = {}
+    for sub in site_result.substates:
+        if sub.tag_type in ("UPOS", "UNEG"):
+            _type_counts[sub.tag_type] = _type_counts.get(sub.tag_type, 0) + 1
+
     for idx, substate in enumerate(site_result.substates):
         color = colors[idx % len(colors)]
         marker = markers[idx % len(markers)]
@@ -574,9 +605,11 @@ def plot_site_substates(
         if len(substate.populations) > 0:
             # Fit sigmoid through this substate's simulation data (solid line)
             if len(substate.populations) >= 3:
+                n_same = _type_counts.get(substate.tag_type, 1)
                 fitted_pKa = _fit_substate_curve(
                     ax, substate.pH_values, substate.populations,
                     substate.tag_type, pH_fit, color,
+                    n_same_type=n_same,
                 )
 
             # Build legend label: "State 1 (theo=6.60, fit=6.82)" or just "State 1"
@@ -723,8 +756,14 @@ def _load_run_populations(
     for state_idx in range(n_states):
         pops = []
         for data in all_repeat_data:
-            mask = data[:, state_idx] > lambda_threshold
-            pops.append(mask.mean())
+            # Filter: only count frames where at least one state is assigned.
+            # Frames with all lambdas < threshold are transition intermediates
+            # and should not dilute the physical populations.
+            assigned = data.max(axis=1) > lambda_threshold
+            if assigned.sum() > 0:
+                pops.append((data[assigned, state_idx] > lambda_threshold).mean())
+            else:
+                pops.append(0.0)
         state_populations[state_idx] = np.array(pops)
 
     return valid_pH_array, state_populations, n_states

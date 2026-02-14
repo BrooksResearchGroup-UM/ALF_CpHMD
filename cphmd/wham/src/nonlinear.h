@@ -107,7 +107,7 @@ typedef struct struct_nl2024
   double omega_scale;     // x-term reciprocal decay (1/FNEX)
   double chi_offset_t;    // t-term sigmoid offset
   double chi_offset_u;    // u-term Hill sigmoid offset
-  int ntriangle;          // Pair params per unique pair: 5, 7, or 9
+  int ntriangle;          // Pair params per unique pair: 1, 3, 5, 7, or 9
 
   // Paths
   char g_imp_path[256];   // Path to G_imp directory (unused, reserved)

@@ -79,17 +79,29 @@ class ConvergenceTracker:
     def compute_populations(self, nsubs) -> tuple:
         """Load lambda data and compute populations.
 
+        Populations use the central replica only (target pH), while the
+        returned ``lambda_data`` includes all replicas for downstream
+        phase-transition and stop-criteria logic.
+
         Returns:
             (lambda_data, pop_data, pop_strict) — any may be None
         """
         data_dir = Path("data")
-        lambda_data, _ = load_lambda_data(data_dir)
 
+        # All replicas — used downstream for transitions / stop criteria
+        lambda_data, _ = load_lambda_data(data_dir)
         if lambda_data is None:
             return None, None, None
 
+        # Central replica only — populations at the target pH
+        nreps = getattr(self.config, "nreps", 1) or 1
+        ncentral = nreps // 2
+        central_data, _ = load_lambda_data(data_dir, replica_idx=ncentral)
+        if central_data is None:
+            central_data = lambda_data  # single-replica fallback
+
         pop_data = calculate_populations(
-            lambda_data, thresholds=(0.8, 0.985), nsubs=nsubs,
+            central_data, thresholds=(0.8, 0.985), nsubs=nsubs,
         )
         write_populations_file(Path("populations.dat"), pop_data)
 
@@ -153,7 +165,7 @@ class ConvergenceTracker:
                 alpha[worst] = alpha_val
                 biased_alphas[sites[site_idx]] = alpha.tolist()
                 print(f"  Biased Dirichlet site {sites[site_idx]}: "
-                      f"alpha[{worst}]={alpha_val:.0f} (avg pop "
+                      f"alpha[{worst + 1}]={alpha_val:.0f} (avg pop "
                       f"{site_pops[worst]:.1%} over {len(pop_history)} runs)")
 
         if not biased_alphas and trans_matrices is not None:
@@ -167,8 +179,8 @@ class ConvergenceTracker:
                 alpha[sj] = 2.0
                 biased_alphas[sites[site_idx]] = alpha.tolist()
                 print(f"  Transition Dirichlet site {sites[site_idx]}: "
-                      f"alpha[{si}]=alpha[{sj}]=2 "
-                      f"(weak {si}<->{sj} transition)")
+                      f"alpha[{si + 1}]=alpha[{sj + 1}]=2 "
+                      f"(weak {si + 1}<->{sj + 1} transition)")
 
         self.state.forced_initial_lambdas = biased_alphas or None
 
