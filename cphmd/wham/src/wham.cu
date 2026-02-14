@@ -3987,3 +3987,61 @@ extern "C" int lmalf_from_memory(
 
   return 0;
 }
+
+/**
+ * nonlinear_from_memory: L-BFGS bias parameter optimizer — identical to
+ * lmalf_from_memory but skips profile computation (no g_imp_path needed).
+ * Reuses lmalf_setup_from_memory + lmalf_run + lmalf_finish.
+ */
+extern "C" int nonlinear_from_memory(
+    int nf, double temp, int ms, int msprof, int max_iter, double tolerance,
+    int *nsubs, int nsites,
+    double fnex, double chi_offset, double omega_scale,
+    double chi_offset_t, double chi_offset_u, int ntriangle,
+    double *lambda_flat, double *ensweight_flat, int n_frames,
+    double *x_prev_flat, double *s_prev_flat, int nblocks_sq)
+{
+  fprintf(stdout, "nonlinear (via LMALF): L-BFGS bias parameter optimizer\n");
+  fprintf(stdout, "  nf=%d, temp=%.2f, ms=%d, msprof=%d\n", nf, temp, ms, msprof);
+  fprintf(stdout, "  max_iter=%d, tolerance=%g\n", max_iter, tolerance);
+  fprintf(stdout, "  fnex=%.4f, chi_offset=%.6f, omega_scale=%.6f\n", fnex, chi_offset, omega_scale);
+  fprintf(stdout, "  chi_offset_t=%.6f, chi_offset_u=%.6f, ntriangle=%d\n",
+          chi_offset_t, chi_offset_u, ntriangle);
+  fprintf(stdout, "  n_frames=%d, nblocks_sq=%d\n", n_frames, nblocks_sq);
+
+  validate_and_setup_gpu();
+
+  struct_lmalf *lm = lmalf_setup_from_memory(
+      nf, temp, ms, msprof,
+      nsubs, nsites, NULL, fnex, ntriangle,
+      lambda_flat, ensweight_flat, n_frames,
+      x_prev_flat, s_prev_flat, nblocks_sq);
+  if (!lm)
+  {
+    fprintf(stderr, "nonlinear: Failed to setup solver\n");
+    return -1;
+  }
+
+  lm->chi_offset = chi_offset;
+  lm->omega_scale = omega_scale;
+  lm->chi_offset_t = chi_offset_t;
+  lm->chi_offset_u = chi_offset_u;
+
+  if (max_iter > 0)
+    lm->max_iter = max_iter;
+  if (tolerance > 0)
+    lm->criteria = tolerance;
+
+  CUDA_CHECK(cudaDeviceSynchronize());
+
+  lmalf_run(lm);
+
+  CUDA_CHECK(cudaDeviceSynchronize());
+
+  lmalf_finish(lm);
+
+  CUDA_CHECK(cudaDeviceSynchronize());
+  CUDA_CHECK(cudaDeviceReset());
+
+  return 0;
+}

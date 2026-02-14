@@ -168,6 +168,31 @@ def _get_wham_lib() -> ctypes.CDLL:
     ]
     lib.lmalf_from_memory.restype = ctypes.c_int
 
+    # Configure nonlinear_from_memory() function signature (L-BFGS without profiles)
+    lib.nonlinear_from_memory.argtypes = [
+        ctypes.c_int,                         # nf
+        ctypes.c_double,                      # temp
+        ctypes.c_int,                         # ms
+        ctypes.c_int,                         # msprof
+        ctypes.c_int,                         # max_iter
+        ctypes.c_double,                      # tolerance
+        ctypes.POINTER(ctypes.c_int),         # nsubs
+        ctypes.c_int,                         # nsites
+        ctypes.c_double,                      # fnex
+        ctypes.c_double,                      # chi_offset
+        ctypes.c_double,                      # omega_scale
+        ctypes.c_double,                      # chi_offset_t
+        ctypes.c_double,                      # chi_offset_u
+        ctypes.c_int,                         # ntriangle
+        ctypes.POINTER(ctypes.c_double),      # lambda_flat
+        ctypes.POINTER(ctypes.c_double),      # ensweight_flat
+        ctypes.c_int,                         # n_frames
+        ctypes.POINTER(ctypes.c_double),      # x_prev_flat
+        ctypes.POINTER(ctypes.c_double),      # s_prev_flat
+        ctypes.c_int,                         # nblocks_sq
+    ]
+    lib.nonlinear_from_memory.restype = ctypes.c_int
+
     _wham_lib_cache = lib
     return lib
 
@@ -969,59 +994,8 @@ def run_lmalf_from_memory(
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# nonlinear solver (separate shared library)
+# nonlinear solver (now merged into libwham.so)
 # ═══════════════════════════════════════════════════════════════════════════
-
-_NL_LIB_PATH = Path(__file__).parent / "libnonlinear.so"
-_nl_lib_cache: ctypes.CDLL | None = None
-
-
-def _get_nl_lib() -> ctypes.CDLL:
-    """Load and cache the nonlinear shared library."""
-    global _nl_lib_cache
-    if _nl_lib_cache is not None:
-        return _nl_lib_cache
-
-    if not _NL_LIB_PATH.exists():
-        raise FileNotFoundError(
-            f"nonlinear library not found at {_NL_LIB_PATH}. "
-            "Please compile: cd cphmd/wham/src && make"
-        )
-
-    try:
-        lib = ctypes.CDLL(str(_NL_LIB_PATH))
-    except OSError as e:
-        raise RuntimeError(
-            f"Failed to load nonlinear library: {e}. "
-            "Ensure CUDA is available and library is compiled correctly."
-        ) from e
-
-    lib.nonlinear_from_memory.argtypes = [
-        ctypes.c_int,                         # nf
-        ctypes.c_double,                      # temp
-        ctypes.c_int,                         # ms
-        ctypes.c_int,                         # msprof
-        ctypes.c_int,                         # max_iter
-        ctypes.c_double,                      # tolerance
-        ctypes.POINTER(ctypes.c_int),         # nsubs
-        ctypes.c_int,                         # nsites
-        ctypes.c_double,                      # fnex
-        ctypes.c_double,                      # chi_offset
-        ctypes.c_double,                      # omega_scale
-        ctypes.c_double,                      # chi_offset_t
-        ctypes.c_double,                      # chi_offset_u
-        ctypes.c_int,                         # ntriangle
-        ctypes.POINTER(ctypes.c_double),      # lambda_flat
-        ctypes.POINTER(ctypes.c_double),      # ensweight_flat
-        ctypes.c_int,                         # n_frames
-        ctypes.POINTER(ctypes.c_double),      # x_prev_flat
-        ctypes.POINTER(ctypes.c_double),      # s_prev_flat
-        ctypes.c_int,                         # nblocks_sq
-    ]
-    lib.nonlinear_from_memory.restype = ctypes.c_int
-
-    _nl_lib_cache = lib
-    return lib
 
 
 def run_nonlinear_from_memory(
@@ -1100,7 +1074,7 @@ def run_nonlinear_from_memory(
         s_flat = None  # noqa: F841
         s_ptr = ctypes.POINTER(ctypes.c_double)()
 
-    lib = _get_nl_lib()
+    lib = _get_wham_lib()
 
     nsubs_arr, nsubs_ptr, nsites = _prepare_nsubs(nsubs)
     log_path = Path(log_file).resolve() if log_file is not None else None

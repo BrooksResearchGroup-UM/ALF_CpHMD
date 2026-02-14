@@ -157,7 +157,7 @@ pip install -e ".[dev]"
 
 ### CUDA Libraries
 
-Pre-compiled `libwham.so` and `libnonlinear.so` are included. To recompile after
+Pre-compiled `libwham.so` is included (WHAM, LMALF, and nonlinear solvers). To recompile after
 editing CUDA sources:
 
 ```bash
@@ -312,7 +312,7 @@ cphmd/
 │   └── defaults/                     # Default YAML configs (alf, patch, solvation)
 ├── wham/                         # GPU WHAM/LMALF/Nonlinear engine
 │   ├── __init__.py                   # Python ctypes bindings + in-memory data packing
-│   └── src/                          # CUDA C source (wham.cu, nonlinear.cu, Makefile)
+│   └── src/                          # CUDA C source (wham.cu, Makefile)
 ├── presets/                      # Converged single-site bias presets
 │   └── biases.py                     # ASP/GLU/HSP/LYS/TYR across 10 electrostatic configs
 ├── utils/                        # Utilities
