@@ -1001,16 +1001,16 @@ __global__ void bin1(struct_data data, int i1)
       // Ensure bin index is within valid range
       if (iB1 >= 0 && iB1 < data.B[1].N)
       {
-        data.D_d[t * data.Ndim + 1 + data.NL + data.Nsim] = iB1;
+        data.D_d[t * data.Ndim + data.Ndim - 2] = iB1;
       }
       else
       {
-        data.D_d[t * data.Ndim + 1 + data.NL + data.Nsim] = -1; // Invalid bin
+        data.D_d[t * data.Ndim + data.Ndim - 2] = -1; // Invalid bin
       }
     }
     else
     {
-      data.D_d[t * data.Ndim + 1 + data.NL + data.Nsim] = -1; // Invalid input
+      data.D_d[t * data.Ndim + data.Ndim - 2] = -1; // Invalid input
     }
   }
 }
@@ -1033,21 +1033,21 @@ __global__ void bin12(struct_data data, int i1, int i2)
         // Validate bin index
         if (iB12 >= 0 && iB12 < data.B[1].N)
         {
-          data.D_d[t * data.Ndim + 1 + data.NL + data.Nsim] = iB12;
+          data.D_d[t * data.Ndim + data.Ndim - 2] = iB12;
         }
         else
         {
-          data.D_d[t * data.Ndim + 1 + data.NL + data.Nsim] = -1;
+          data.D_d[t * data.Ndim + data.Ndim - 2] = -1;
         }
       }
       else
       {
-        data.D_d[t * data.Ndim + 1 + data.NL + data.Nsim] = -1;
+        data.D_d[t * data.Ndim + data.Ndim - 2] = -1;
       }
     }
     else
     {
-      data.D_d[t * data.Ndim + 1 + data.NL + data.Nsim] = -1; // Invalid inputs
+      data.D_d[t * data.Ndim + data.Ndim - 2] = -1; // Invalid inputs
     }
   }
 }
@@ -1072,21 +1072,21 @@ __global__ void bin2(struct_data data, int i1, int i2)
         // Additional check for combined bin index
         if (combined_bin >= 0 && combined_bin < data.B2d[1].N * data.B2d[2].N)
         {
-          data.D_d[t * data.Ndim + 1 + data.NL + data.Nsim] = combined_bin;
+          data.D_d[t * data.Ndim + data.Ndim - 2] = combined_bin;
         }
         else
         {
-          data.D_d[t * data.Ndim + 1 + data.NL + data.Nsim] = -1;
+          data.D_d[t * data.Ndim + data.Ndim - 2] = -1;
         }
       }
       else
       {
-        data.D_d[t * data.Ndim + 1 + data.NL + data.Nsim] = -1;
+        data.D_d[t * data.Ndim + data.Ndim - 2] = -1;
       }
     }
     else
     {
-      data.D_d[t * data.Ndim + 1 + data.NL + data.Nsim] = -1; // Invalid inputs
+      data.D_d[t * data.Ndim + data.Ndim - 2] = -1; // Invalid inputs
     }
   }
 }
@@ -1134,7 +1134,7 @@ __global__ void reactioncoord_phi(struct_data data, int i1)
   if (t < data.ND)
   {
     double q1 = data.D_d[t * data.Ndim + 1 + i1];
-    data.D_d[t * data.Ndim + 1 + data.NL + data.Nsim + 1] = q1;
+    data.D_d[t * data.Ndim + data.Ndim - 1] = q1;
   }
 }
 
@@ -1145,7 +1145,7 @@ __global__ void reactioncoord_psi(struct_data data, int i1, int i2)
   {
     double q1 = data.D_d[t * data.Ndim + 1 + i1];
     double q2 = data.D_d[t * data.Ndim + 1 + i2];
-    data.D_d[t * data.Ndim + 1 + data.NL + data.Nsim + 1] = q1 * q2;
+    data.D_d[t * data.Ndim + data.Ndim - 1] = q1 * q2;
   }
 }
 
@@ -1156,7 +1156,7 @@ __global__ void reactioncoord_omega(struct_data data, int i1, int i2)
   {
     double q1 = data.D_d[t * data.Ndim + 1 + i1];
     double q2 = data.D_d[t * data.Ndim + 1 + i2];
-    data.D_d[t * data.Ndim + 1 + data.NL + data.Nsim + 1] = q2 * (1 - 1 / (q1 / data.chi_offset + 1));
+    data.D_d[t * data.Ndim + data.Ndim - 1] = q2 * (1 - 1 / (q1 / data.chi_offset + 1));
   }
 }
 
@@ -1167,7 +1167,7 @@ __global__ void reactioncoord_chi(struct_data data, int i1, int i2)
   {
     double q1 = data.D_d[t * data.Ndim + 1 + i1];
     double q2 = data.D_d[t * data.Ndim + 1 + i2];
-    data.D_d[t * data.Ndim + 1 + data.NL + data.Nsim + 1] = q2 * (1 - exp(-q1 / data.omega_scale));
+    data.D_d[t * data.Ndim + data.Ndim - 1] = q2 * (1 - exp(-q1 / data.omega_scale));
   }
 }
 
@@ -1180,7 +1180,7 @@ __global__ void reactioncoord_omega2(struct_data data, int i1, int i2)
   {
     double q1 = data.D_d[t * data.Ndim + 1 + i1];
     double q2 = data.D_d[t * data.Ndim + 1 + i2];
-    data.D_d[t * data.Ndim + 1 + data.NL + data.Nsim + 1] = -q2 * (1.0 - 1.0 / (q1 / (-(1.0 + data.chi_offset_t)) + 1.0));
+    data.D_d[t * data.Ndim + data.Ndim - 1] = -q2 * (1.0 - 1.0 / (q1 / (-(1.0 + data.chi_offset_t)) + 1.0));
   }
 }
 
@@ -1193,7 +1193,7 @@ __global__ void reactioncoord_omega3(struct_data data, int i1, int i2)
   {
     double q1 = data.D_d[t * data.Ndim + 1 + i1];
     double q2 = data.D_d[t * data.Ndim + 1 + i2];
-    data.D_d[t * data.Ndim + 1 + data.NL + data.Nsim + 1] = q2 * q2 * (1.0 - 1.0 / (q1 / data.chi_offset_u + 1.0));
+    data.D_d[t * data.Ndim + data.Ndim - 1] = q2 * q2 * (1.0 - 1.0 / (q1 / data.chi_offset_u + 1.0));
   }
 }
 
@@ -1248,7 +1248,7 @@ __global__ void get_lnZ(struct_data data, double beta,
       continue;
 
     double E = data.D_d[i * data.Ndim + 0];
-    int iB = (int)data.D_d[i * data.Ndim + 1 + data.NL + data.Nsim];
+    int iB = (int)data.D_d[i * data.Ndim + data.Ndim - 2];
 
     // Enhanced bounds and validity checking using dynamic dimension
     if (iB >= 0 && iB < g_1d_bins && isfinite(E))
@@ -1307,8 +1307,8 @@ __global__ void get_dlnZ(struct_data data, int j1, double beta,
       continue;
 
     double E = data.D_d[i * data.Ndim + 0];
-    int iB = (int)data.D_d[i * data.Ndim + 1 + data.NL + data.Nsim];
-    double q = data.D_d[i * data.Ndim + 1 + data.NL + data.Nsim + 1];
+    int iB = (int)data.D_d[i * data.Ndim + data.Ndim - 2];
+    double q = data.D_d[i * data.Ndim + data.Ndim - 1];
 
     // Enhanced validation with better precision handling using dynamic dimension
     if (iB >= 0 && iB < g_1d_bins && isfinite(E) && isfinite(q) && q > 1e-15) // More precise q threshold
@@ -1679,10 +1679,183 @@ void validate_gpu_results(struct_data *data, int B_N, int jN)
   }
 }
 
+/**
+ * compute_profiles_range: run profile computation for a subset of profiles.
+ *
+ * Computes WHAM profiles for profile indices [profile_start, profile_end)
+ * and accumulates their contributions into caller-provided C and V arrays.
+ *
+ * The caller must:
+ *   - Pre-zero C[dim*dim] and V[dim] before calling
+ *   - Ensure f-values are set on GPU (f_d) before calling
+ *
+ * This function runs sumdenom (denominators from f-values), then loops
+ * over the assigned profiles, calling bin_all/get_lnZ/get_dlnZ/get_CC
+ * for each and accumulating into C/V.
+ *
+ * @param data           Fully initialized struct_data (with GPU state)
+ * @param beta           Inverse temperature
+ * @param profile_start  First profile index (inclusive)
+ * @param profile_end    Last profile index (exclusive)
+ * @param C              Output: [dim*dim] Hessian contributions (pre-zeroed)
+ * @param V              Output: [dim] gradient contributions (pre-zeroed)
+ * @param write_g_files  1 = write multisite/G{i+1}.dat diagnostics, 0 = skip
+ * @param skip_sumdenom  1 = skip sumdenom (lnDenom already on GPU), 0 = compute
+ */
+static void compute_profiles_range(
+    struct_data *data, double beta,
+    int profile_start, int profile_end,
+    double *C, double *V, int write_g_files,
+    int skip_sumdenom)
+{
+  int B_N = (data->B2d[1].N * data->B2d[2].N > data->B[1].N)
+                ? data->B2d[1].N * data->B2d[2].N
+                : data->B[1].N;
+  int iN = data->iN, jN = data->jN, i, j1, j2, k;
+  double wnorm, weight;
+  int ptype;
+  char fnm[MAXLENGTH];
+  FILE *fp;
+
+  // Compute denominators using converged f-values (all frames)
+  if (!skip_sumdenom) {
+    sumdenom<<<(data->ND + BLOCK - 1) / BLOCK, BLOCK>>>(data[0]);
+    CUDA_CHECK(cudaDeviceSynchronize());
+  }
+
+  for (i = profile_start; i < profile_end; i++)
+  {
+    wnorm = bin_all(data, &ptype, i);
+    resetlogdata<<<(B_N + BLOCK - 1) / BLOCK, BLOCK>>>(data->lnZ_d, B_N);
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    get_lnZ<<<(data->ND + (100 * SBLOCK) - 1) / (100 * SBLOCK), 100, B_N * sizeof(double)>>>(data[0], data->beta_t,
+                                                                       data->gshift_d, data->current_block_idx);
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    CUDA_CHECK(cudaMemcpy(data->lnZ_h, data->lnZ_d, B_N * sizeof(double), cudaMemcpyDeviceToHost));
+
+    // Variance of lnZ for diagnostics
+    double lnZ_mean = 0, lnZ_var = 0;
+    int count = 0;
+    for (k = 0; k < B_N; k++)
+    {
+      if (isfinite(data->lnZ_h[k]))
+      {
+        lnZ_mean += data->lnZ_h[k];
+        count++;
+      }
+    }
+    if (count > 0)
+    {
+      lnZ_mean /= count;
+    }
+    else
+    {
+      fprintf(stderr, "ERROR: No finite lnZ values found for profile %d\n", i);
+    }
+    for (k = 0; k < B_N; k++)
+    {
+      if (isfinite(data->lnZ_h[k]))
+      {
+        double diff = data->lnZ_h[k] - lnZ_mean;
+        lnZ_var += diff * diff;
+      }
+    }
+    if (count > 0)
+      lnZ_var /= count;
+    fprintf(stderr, "Profile %d, lnZ variance: %g\n", i, lnZ_var);
+
+    if (write_g_files)
+    {
+      sprintf(fnm, "multisite/G%d.dat", i + 1);
+      fp = fopen(fnm, "w");
+      for (k = 0; k < B_N; k++)
+      {
+        fprintf(fp, "%.12g\n", (-data->lnZ_h[k] - data->Gimp_h[k]) / data->beta_t);
+      }
+      fclose(fp);
+    }
+
+    for (k = 0; k < B_N; k++)
+    {
+      weight = wnorm;
+      if ((ptype == 0 || ptype == 3) && k == B_N - 1)
+        weight *= 100.0;
+      if (isfinite(data->lnZ_h[k]))
+      {
+        double dG = (-data->lnZ_h[k] - data->Gimp_h[k]) / data->beta_t;
+        if (isfinite(dG))
+        {
+          V[jN + i] += weight * dG;
+          C[(jN + i) * (jN + iN) + jN + i] += weight;
+        }
+      }
+    }
+
+    for (j1 = 0; j1 < jN; j1++)
+    {
+      reactioncoord_all(data, j1);
+      resetlogdata<<<(B_N + BLOCK - 1) / BLOCK, BLOCK>>>(&(data->dlnZ_dN[B_N * j1]), B_N);
+      CUDA_CHECK(cudaGetLastError());
+      CUDA_CHECK(cudaDeviceSynchronize());
+
+      get_dlnZ<<<(data->ND + (100 * SBLOCK) - 1) / (100 * SBLOCK), 100, B_N * sizeof(double)>>>(data[0], j1, data->beta_t,
+                                                                          data->gshift_d, data->current_block_idx);
+      CUDA_CHECK(cudaGetLastError());
+      CUDA_CHECK(cudaDeviceSynchronize());
+
+      CUDA_CHECK(cudaMemcpy(data->dlnZ_hN[j1], &(data->dlnZ_dN[B_N * j1]), B_N * sizeof(double), cudaMemcpyDeviceToHost));
+    }
+
+    get_CC<<<make_uint3(jN, jN, 1), 100>>>(data[0], i, data->beta_t, wnorm, ptype,
+                                           data->gshift_d, data->current_block_idx);
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    CUDA_CHECK(cudaMemcpy(data->CC_h, data->CC_d, jN * jN * sizeof(double), cudaMemcpyDeviceToHost));
+
+    validate_gpu_results(data, B_N, jN);
+    validate_matrix_results(data->CC_h, jN, jN, "CC matrix");
+
+    for (j1 = 0; j1 < jN; j1++)
+    {
+      for (k = 0; k < B_N; k++)
+      {
+        weight = wnorm;
+        if ((ptype == 0 || ptype == 3) && k == B_N - 1)
+          weight *= 100.0;
+        if (isfinite(data->lnZ_h[k]))
+        {
+          double dG = (-data->lnZ_h[k] - data->Gimp_h[k]) / data->beta_t;
+          double exp_arg = data->dlnZ_hN[j1][k] - data->lnZ_h[k];
+
+          if (isfinite(dG) && isfinite(exp_arg))
+          {
+            double exp_val = exp(exp_arg);
+
+            if (isfinite(exp_val) && exp_val >= 0)
+            {
+              V[j1] += weight * exp_val * dG;
+              C[j1 * (jN + iN) + jN + i] += weight * exp_val;
+              C[(jN + i) * (jN + iN) + j1] += weight * exp_val;
+            }
+          }
+        }
+      }
+      for (j2 = 0; j2 < jN; j2++)
+      {
+        C[j1 * (jN + iN) + j2] += data->CC_h[j1 * jN + j2];
+      }
+    }
+  }
+}
+
 void getfofq(struct_data *data, double beta)
 {
-  int B_N = (data->B2d[1].N * data->B2d[2].N > data->B[1].N) ? data->B2d[1].N * data->B2d[2].N : data->B[1].N;
-  int iN = data->iN, jN = data->jN, i, j1, j2, k;
+  int jN = data->jN, iN = data->iN, j1, j2;
   int dim = jN + iN;
   double *C = (double *)malloc(dim * dim * sizeof(double));
   double *V = (double *)malloc(dim * sizeof(double));
@@ -1693,204 +1866,62 @@ void getfofq(struct_data *data, double beta)
     free(C); free(V);
     return;
   }
-  double wnorm, weight;
-  int ptype;
-  char fnm[MAXLENGTH];
-  FILE *fpC, *fpV, *fp;
+  FILE *fpC, *fpV;
 
-  // Iterative refinement (1 iteration)
-  double lambda_reg = 1e-9; // Very small regularization for high-precision lambda data
-  for (int iter = 0; iter < 1; iter++)
+  // Zero C and V
+  for (j1 = 0; j1 < dim; j1++)
   {
-    // Initialize C and V inside the loop
-    for (j1 = 0; j1 < jN + iN; j1++)
-    {
-      for (j2 = 0; j2 < jN + iN; j2++)
-        C[j1 * (jN + iN) + j2] = 0.0;
-      V[j1] = 0.0;
-    }
-
-    sumdenom<<<(data->ND + BLOCK - 1) / BLOCK, BLOCK>>>(data[0]);
-    CUDA_CHECK(cudaDeviceSynchronize());
-
-    for (i = 0; i < iN; i++)
-    {
-      wnorm = bin_all(data, &ptype, i);
-      resetlogdata<<<(B_N + BLOCK - 1) / BLOCK, BLOCK>>>(data->lnZ_d, B_N);
-      CUDA_CHECK(cudaGetLastError());
-      CUDA_CHECK(cudaDeviceSynchronize());
-
-      get_lnZ<<<(data->ND + (100 * SBLOCK) - 1) / (100 * SBLOCK), 100, B_N * sizeof(double)>>>(data[0], data->beta_t,
-                                                                         data->gshift_d, data->current_block_idx);
-      CUDA_CHECK(cudaGetLastError());
-      CUDA_CHECK(cudaDeviceSynchronize());
-
-      CUDA_CHECK(cudaMemcpy(data->lnZ_h, data->lnZ_d, B_N * sizeof(double), cudaMemcpyDeviceToHost));
-
-      // Variance of lnZ for diagnostics
-      double lnZ_mean = 0, lnZ_var = 0;
-      int count = 0;
-      for (k = 0; k < B_N; k++)
-      {
-        if (isfinite(data->lnZ_h[k]))
-        {
-          lnZ_mean += data->lnZ_h[k];
-          count++;
-        }
-      }
-      if (count > 0)
-      {
-        lnZ_mean /= count;
-      }
-      else
-      {
-        // Don't use fallback - report the issue and let it propagate
-        fprintf(stderr, "ERROR: No finite lnZ values found for profile %d\n", i);
-        // Keep the invalid values for debugging
-      }
-      for (k = 0; k < B_N; k++)
-      {
-        if (isfinite(data->lnZ_h[k]))
-        {
-          double diff = data->lnZ_h[k] - lnZ_mean;
-          lnZ_var += diff * diff;
-        }
-      }
-      if (count > 0)
-        lnZ_var /= count;
-      fprintf(stderr, "Profile %d, lnZ variance: %g\n", i, lnZ_var);
-
-      sprintf(fnm, "multisite/G%d.dat", i + 1);
-      fp = fopen(fnm, "w");
-      for (k = 0; k < B_N; k++)
-      {
-        fprintf(fp, "%.12g\n", (-data->lnZ_h[k] - data->Gimp_h[k]) / data->beta_t); // Higher precision output
-      }
-      fclose(fp);
-
-      for (k = 0; k < B_N; k++)
-      {
-        weight = wnorm;
-        if ((ptype == 0 || ptype == 3) && k == B_N - 1)
-          weight *= 100.0;
-        if (isfinite(data->lnZ_h[k]))
-        {
-          double dG = (-data->lnZ_h[k] - data->Gimp_h[k]) / data->beta_t;
-          // Don't clamp values - let extreme values be visible
-          if (isfinite(dG))
-          {
-            V[jN + i] += weight * dG;
-            C[(jN + i) * (jN + iN) + jN + i] += weight;
-          }
-        }
-      }
-
-      for (j1 = 0; j1 < jN; j1++)
-      {
-        reactioncoord_all(data, j1);
-        resetlogdata<<<(B_N + BLOCK - 1) / BLOCK, BLOCK>>>(&(data->dlnZ_dN[B_N * j1]), B_N);
-        CUDA_CHECK(cudaGetLastError());
-        CUDA_CHECK(cudaDeviceSynchronize());
-
-        get_dlnZ<<<(data->ND + (100 * SBLOCK) - 1) / (100 * SBLOCK), 100, B_N * sizeof(double)>>>(data[0], j1, data->beta_t,
-                                                                            data->gshift_d, data->current_block_idx);
-        CUDA_CHECK(cudaGetLastError());
-        CUDA_CHECK(cudaDeviceSynchronize());
-
-        CUDA_CHECK(cudaMemcpy(data->dlnZ_hN[j1], &(data->dlnZ_dN[B_N * j1]), B_N * sizeof(double), cudaMemcpyDeviceToHost));
-      }
-
-      get_CC<<<make_uint3(jN, jN, 1), 100>>>(data[0], i, data->beta_t, wnorm, ptype,
-                                             data->gshift_d, data->current_block_idx);
-      CUDA_CHECK(cudaGetLastError());
-      CUDA_CHECK(cudaDeviceSynchronize());
-
-      CUDA_CHECK(cudaMemcpy(data->CC_h, data->CC_d, jN * jN * sizeof(double), cudaMemcpyDeviceToHost));
-
-      // Validate GPU results before using them
-      validate_gpu_results(data, B_N, jN);
-      validate_matrix_results(data->CC_h, jN, jN, "CC matrix");
-
-      for (j1 = 0; j1 < jN; j1++)
-      {
-        for (k = 0; k < B_N; k++)
-        {
-          weight = wnorm;
-          if ((ptype == 0 || ptype == 3) && k == B_N - 1)
-            weight *= 100.0;
-          if (isfinite(data->lnZ_h[k]))
-          {
-            double dG = (-data->lnZ_h[k] - data->Gimp_h[k]) / data->beta_t;
-            double exp_arg = data->dlnZ_hN[j1][k] - data->lnZ_h[k];
-
-            // Check for finite intermediate results without clamping
-            if (isfinite(dG) && isfinite(exp_arg))
-            {
-              double exp_val = exp(exp_arg);
-
-              // Validate final results
-              if (isfinite(exp_val) && exp_val >= 0)
-              {
-                V[j1] += weight * exp_val * dG;
-                C[j1 * (jN + iN) + jN + i] += weight * exp_val;
-                C[(jN + i) * (jN + iN) + j1] += weight * exp_val;
-              }
-            }
-          }
-        }
-        for (j2 = 0; j2 < jN; j2++)
-        {
-          // Let NaN propagate — Python solver detects it and fails the
-          // iteration cleanly rather than using a silently corrupted Hessian.
-          C[j1 * (jN + iN) + j2] += data->CC_h[j1 * jN + j2];
-        }
-      }
-    }
+    for (j2 = 0; j2 < dim; j2++)
+      C[j1 * dim + j2] = 0.0;
+    V[j1] = 0.0;
   }
 
-  // Add regularization and handle empty rows/cols with higher precision
+  // Compute all profiles [0, iN)
+  compute_profiles_range(data, beta, 0, iN, C, V, 1, 0);
+
+  // Add regularization and handle empty rows/cols
+  double lambda_reg = 1e-9;
   double big_lambda = 1.0;
-  for (j1 = 0; j1 < jN + iN; j1++)
+  for (j1 = 0; j1 < dim; j1++)
   {
     double row_weight = 0.0;
-    for (j2 = 0; j2 < jN + iN; j2++)
+    for (j2 = 0; j2 < dim; j2++)
     {
-      row_weight += fabs(C[j1 * (jN + iN) + j2]);
+      row_weight += fabs(C[j1 * dim + j2]);
     }
-    // Use more precise threshold for empty row detection
     if (row_weight < 1e-12)
     {
-      C[j1 * (jN + iN) + j1] += big_lambda;
+      C[j1 * dim + j1] += big_lambda;
       V[j1] = 0.0;
     }
-    C[j1 * (jN + iN) + j1] += lambda_reg;
+    C[j1 * dim + j1] += lambda_reg;
   }
 
   // Condition number estimation (simplified, using trace and norm)
   double trace = 0, norm = 0;
-  for (j1 = 0; j1 < jN + iN; j1++)
+  for (j1 = 0; j1 < dim; j1++)
   {
-    trace += C[j1 * (jN + iN) + j1];
-    for (j2 = 0; j2 < jN + iN; j2++)
+    trace += C[j1 * dim + j1];
+    for (j2 = 0; j2 < dim; j2++)
     {
-      norm += C[j1 * (jN + iN) + j2] * C[j1 * (jN + iN) + j2];
+      norm += C[j1 * dim + j2] * C[j1 * dim + j2];
     }
   }
   norm = sqrt(norm);
   fprintf(stderr, "C matrix condition number estimate: %g\n", norm / trace);
 
   // Final validation of C and V matrices
-  validate_matrix_results(C, jN + iN, jN + iN, "Final C matrix");
-  validate_matrix_results(V, jN + iN, 1, "Final V vector");
+  validate_matrix_results(C, dim, dim, "Final C matrix");
+  validate_matrix_results(V, dim, 1, "Final V vector");
 
   fpC = fopen("multisite/C.dat", "w");
   fpV = fopen("multisite/V.dat", "w");
-  for (j1 = 0; j1 < jN + iN; j1++)
+  for (j1 = 0; j1 < dim; j1++)
   {
-    for (j2 = 0; j2 < jN + iN; j2++)
-      fprintf(fpC, " %.12g", C[j1 * (jN + iN) + j2]); // Higher precision for matrix output
+    for (j2 = 0; j2 < dim; j2++)
+      fprintf(fpC, " %.12g", C[j1 * dim + j2]);
     fprintf(fpC, "\n");
-    fprintf(fpV, " %.12g\n", V[j1]); // Higher precision for vector output
+    fprintf(fpV, " %.12g\n", V[j1]);
   }
   fclose(fpC);
   fclose(fpV);
@@ -1932,7 +1963,8 @@ static struct_data *readdata_from_memory(
     int *nsubs_in, int nsites_in, const char *g_imp_path,
     int ntriangle_in,
     double *D_flat, int *sim_indices, int *frame_counts,
-    int total_frames, double *gshift_flat)
+    int total_frames, double *gshift_flat,
+    int ndim_override)
 {
   int i, s1, s2, j, jN, iN;
   struct_data *data = (struct_data *)malloc(sizeof(struct_data));
@@ -1974,7 +2006,7 @@ static struct_data *readdata_from_memory(
   data->msprof = msprof;
   data->NL = data->Nblocks;
   data->NF = data->Nsim;
-  data->Ndim = data->Nsim + data->NL + 1 + 2;
+  data->Ndim = (ndim_override > 0) ? ndim_override : (data->Nsim + data->NL + 1 + 2);
 
   // --- temperature (all sims share the same T) ---
   data->T_h = (double *)malloc(data->NF * sizeof(double));
@@ -2160,7 +2192,7 @@ extern "C" int wham_from_memory(
   struct_data *data = readdata_from_memory(
       nf, temp, nts0, nts1, use_gshift,
       nsubs, nsites, g_imp_path, ntriangle,
-      D_flat, sim_indices, frame_counts, total_frames, gshift_flat);
+      D_flat, sim_indices, frame_counts, total_frames, gshift_flat, 0);
   if (data)
   {
     data->chi_offset = chi_offset;
@@ -2187,6 +2219,245 @@ extern "C" int wham_from_memory(
   getfofq(data, data->beta_t);
 
   CUDA_CHECK(cudaDeviceSynchronize());
+  gimp_cache_free(data->gimp_cache);
+  free(data->gimp_cache);
+  free(data->profiles);
+  free(data->params);
+  CUDA_CHECK(cudaDeviceReset());
+
+  return 0;
+}
+
+/**
+ * wham_iterate_from_memory: Phase A of distributed WHAM.
+ *
+ * Runs readdata + iteratedata (f-value convergence) only.
+ * Returns converged f-values via f_out for broadcasting to other ranks.
+ * Does NOT run getfofq — that happens in wham_profiles_from_memory.
+ *
+ * @param f_out   Output: converged f-values [NF]. Caller must pre-allocate.
+ * @param nf_out  Output: number of f-values written (== nf == NF).
+ */
+extern "C" int wham_iterate_from_memory(
+    int nf, double temp, int nts0, int nts1, int use_gshift,
+    int *nsubs, int nsites, const char *g_imp_path,
+    double chi_offset, double omega_scale, double cutlsum,
+    double chi_offset_t, double chi_offset_u, int ntriangle,
+    double *D_flat, int *sim_indices, int *frame_counts,
+    int total_frames, double *gshift_flat,
+    double *f_out, int *nf_out)
+{
+  validate_and_setup_gpu();
+
+  struct_data *data = readdata_from_memory(
+      nf, temp, nts0, nts1, use_gshift,
+      nsubs, nsites, g_imp_path, ntriangle,
+      D_flat, sim_indices, frame_counts, total_frames, gshift_flat, 0);
+  if (data)
+  {
+    data->chi_offset = chi_offset;
+    data->omega_scale = omega_scale;
+    data->cutlsum = cutlsum;
+    data->chi_offset_t = chi_offset_t;
+    data->chi_offset_u = chi_offset_u;
+  }
+  if (!data)
+  {
+    fprintf(stderr, "Error: Failed to create data for iterate\n");
+    return -1;
+  }
+
+  build_profile_descs(data);
+  build_param_descs(data);
+
+  CUDA_CHECK(cudaDeviceSynchronize());
+
+  iteratedata(data);
+
+  CUDA_CHECK(cudaDeviceSynchronize());
+
+  // Copy converged f-values to caller
+  memcpy(f_out, data->f_h, data->NF * sizeof(double));
+  *nf_out = data->NF;
+
+  gimp_cache_free(data->gimp_cache);
+  free(data->gimp_cache);
+  free(data->profiles);
+  free(data->params);
+  CUDA_CHECK(cudaDeviceReset());
+
+  return 0;
+}
+
+/**
+ * wham_profiles_from_memory: Phase B of distributed WHAM.
+ *
+ * Runs profile computation for a subset of profiles [profile_start, profile_end).
+ * Uses pre-converged f-values (from wham_iterate_from_memory on rank 0).
+ * Returns raw (unregularized) C/V contributions — caller must MPI_Reduce and finalize.
+ *
+ * @param f_in           Pre-converged f-values [f_size] from rank 0
+ * @param f_size         Number of f-values (must match NF)
+ * @param profile_start  First profile index (inclusive)
+ * @param profile_end    Last profile index (exclusive)
+ * @param C_out          Output: raw C matrix [dim*dim]. Caller must pre-allocate.
+ * @param V_out          Output: raw V vector [dim]. Caller must pre-allocate.
+ * @param dim_out        Output: dimension of C/V (jN + iN)
+ */
+extern "C" int wham_profiles_from_memory(
+    int nf, double temp, int nts0, int nts1, int use_gshift,
+    int *nsubs, int nsites, const char *g_imp_path,
+    double chi_offset, double omega_scale, double cutlsum,
+    double chi_offset_t, double chi_offset_u, int ntriangle,
+    double *D_flat, int *sim_indices, int *frame_counts,
+    int total_frames, double *gshift_flat,
+    double *f_in, int f_size,
+    int profile_start, int profile_end,
+    double *C_out, double *V_out, int *dim_out)
+{
+  validate_and_setup_gpu();
+
+  struct_data *data = readdata_from_memory(
+      nf, temp, nts0, nts1, use_gshift,
+      nsubs, nsites, g_imp_path, ntriangle,
+      D_flat, sim_indices, frame_counts, total_frames, gshift_flat, 0);
+  if (data)
+  {
+    data->chi_offset = chi_offset;
+    data->omega_scale = omega_scale;
+    data->cutlsum = cutlsum;
+    data->chi_offset_t = chi_offset_t;
+    data->chi_offset_u = chi_offset_u;
+  }
+  if (!data)
+  {
+    fprintf(stderr, "Error: Failed to create data for profiles\n");
+    return -1;
+  }
+
+  // Validate f_size matches NF
+  if (f_size != data->NF)
+  {
+    fprintf(stderr, "Error: f_size=%d but NF=%d\n", f_size, data->NF);
+    CUDA_CHECK(cudaDeviceReset());
+    return -2;
+  }
+
+  build_profile_descs(data);
+  build_param_descs(data);
+
+  // Clamp profile range to valid bounds
+  if (profile_start < 0) profile_start = 0;
+  if (profile_end > data->iN) profile_end = data->iN;
+
+  int dim = data->jN + data->iN;
+  *dim_out = dim;
+
+  // Upload pre-converged f-values to GPU
+  memcpy(data->f_h, f_in, data->NF * sizeof(double));
+  CUDA_CHECK(cudaMemcpy(data->f_d, data->f_h, data->NF * sizeof(double), cudaMemcpyHostToDevice));
+
+  CUDA_CHECK(cudaDeviceSynchronize());
+
+  // Zero output arrays
+  memset(C_out, 0, (size_t)dim * dim * sizeof(double));
+  memset(V_out, 0, dim * sizeof(double));
+
+  // Compute profiles for assigned range — each rank writes its own G files
+  compute_profiles_range(data, data->beta_t, profile_start, profile_end, C_out, V_out, 1, 0);
+
+  CUDA_CHECK(cudaDeviceSynchronize());
+
+  gimp_cache_free(data->gimp_cache);
+  free(data->gimp_cache);
+  free(data->profiles);
+  free(data->params);
+  CUDA_CHECK(cudaDeviceReset());
+
+  return 0;
+}
+
+/**
+ * wham_profiles_slim_from_memory: Phase B with slim D layout.
+ *
+ * Like wham_profiles_from_memory, but accepts a slim D_flat that omits
+ * cross-energy columns.  The caller pre-computes lnDenom (WHAM reweighting
+ * denominators) on rank 0 and broadcasts it alongside the slim D.
+ *
+ * Slim D layout per frame: [E_self | lambda[0..NL-1] | bin1D | bin2D]
+ *   ndim = NL + 3  (vs full ndim = NL + nf + 3)
+ *
+ * @param ndim           Stride per frame in D_flat (NL + 3 for slim)
+ * @param lnDenom_in     Pre-computed log-denominators [total_frames]
+ */
+extern "C" int wham_profiles_slim_from_memory(
+    int nf, double temp, int nts0, int nts1, int use_gshift,
+    int *nsubs, int nsites, const char *g_imp_path,
+    double chi_offset, double omega_scale, double cutlsum,
+    double chi_offset_t, double chi_offset_u, int ntriangle,
+    double *D_flat, int ndim,
+    int *sim_indices, int *frame_counts,
+    int total_frames, double *gshift_flat,
+    double *f_in, int f_size,
+    double *lnDenom_in,
+    int profile_start, int profile_end,
+    double *C_out, double *V_out, int *dim_out)
+{
+  validate_and_setup_gpu();
+
+  struct_data *data = readdata_from_memory(
+      nf, temp, nts0, nts1, use_gshift,
+      nsubs, nsites, g_imp_path, ntriangle,
+      D_flat, sim_indices, frame_counts, total_frames, gshift_flat, ndim);
+  if (data)
+  {
+    data->chi_offset = chi_offset;
+    data->omega_scale = omega_scale;
+    data->cutlsum = cutlsum;
+    data->chi_offset_t = chi_offset_t;
+    data->chi_offset_u = chi_offset_u;
+  }
+  if (!data)
+  {
+    fprintf(stderr, "Error: Failed to create data for slim profiles\n");
+    return -1;
+  }
+
+  if (f_size != data->NF)
+  {
+    fprintf(stderr, "Error: f_size=%d but NF=%d\n", f_size, data->NF);
+    CUDA_CHECK(cudaDeviceReset());
+    return -2;
+  }
+
+  build_profile_descs(data);
+  build_param_descs(data);
+
+  if (profile_start < 0) profile_start = 0;
+  if (profile_end > data->iN) profile_end = data->iN;
+
+  int dim = data->jN + data->iN;
+  *dim_out = dim;
+
+  // Upload pre-converged f-values to GPU
+  memcpy(data->f_h, f_in, data->NF * sizeof(double));
+  CUDA_CHECK(cudaMemcpy(data->f_d, data->f_h, data->NF * sizeof(double), cudaMemcpyHostToDevice));
+
+  // Upload pre-computed lnDenom (skip sumdenom which needs cross-energies)
+  memcpy(data->lnDenom_h, lnDenom_in, (size_t)total_frames * sizeof(double));
+  CUDA_CHECK(cudaMemcpy(data->lnDenom_d, data->lnDenom_h,
+                         (size_t)total_frames * sizeof(double), cudaMemcpyHostToDevice));
+
+  CUDA_CHECK(cudaDeviceSynchronize());
+
+  memset(C_out, 0, (size_t)dim * dim * sizeof(double));
+  memset(V_out, 0, dim * sizeof(double));
+
+  // skip_sumdenom=1: lnDenom already on GPU
+  compute_profiles_range(data, data->beta_t, profile_start, profile_end, C_out, V_out, 1, 1);
+
+  CUDA_CHECK(cudaDeviceSynchronize());
+
   gimp_cache_free(data->gimp_cache);
   free(data->gimp_cache);
   free(data->profiles);
@@ -4041,6 +4312,114 @@ extern "C" int nonlinear_from_memory(
   lmalf_finish(lm);
 
   CUDA_CHECK(cudaDeviceSynchronize());
+  CUDA_CHECK(cudaDeviceReset());
+
+  return 0;
+}
+
+// ─────────────────────────────────────────────────────────────
+// WHAM weight pre-computation: compute per-frame reweighting
+// weights from converged f-values and cross-energies.
+//
+// w(t) = 1 / Σ_j n_j · exp(f_j - β·E_j(t))
+//
+// Uses log-space accumulation (logadd) to avoid overflow/underflow.
+// ─────────────────────────────────────────────────────────────
+
+__global__ void compute_wham_weights(
+    double *D_d, double *f_d, int *n_d, double *lnw_d, double *weights_d,
+    int NF, int NL, int Ndim, int ND, double *beta_d)
+{
+  int t = blockIdx.x * blockDim.x + threadIdx.x;
+  if (t >= ND) return;
+
+  // Accumulate in log-space: lnDenom = log(Σ_j n_j · exp(lnw_j + f_j - β_j · E_j(t)))
+  double lnDenom = -INFINITY;
+  for (int j = 0; j < NF; j++)
+  {
+    double Ej = D_d[(size_t)t * Ndim + NL + 1 + j];
+    double lnwn = lnw_d[j] + log((double)n_d[j]);
+    lnDenom = logadd(lnDenom, lnwn + f_d[j] - beta_d[j] * Ej);
+  }
+  weights_d[t] = exp(-lnDenom);
+}
+
+/**
+ * wham_compute_weights_from_memory: converge f-values, then compute per-frame weights.
+ *
+ * This function runs WHAM f-value convergence (readdata + iteratedata) and then
+ * launches a kernel to compute the WHAM reweighting weight for each frame:
+ *   w(t) = 1 / Σ_j n_j · exp(f_j - β·E_j(t))
+ *
+ * @param weights_out  Output: host array of ND doubles (per-frame weights)
+ * @param f_out        Output: host array of NF doubles (converged f-values)
+ * @param nf_out       Output: actual NF written
+ * @return 0 on success, negative on error
+ */
+extern "C" int wham_compute_weights_from_memory(
+    int nf, double temp, int nts0, int nts1, int use_gshift,
+    int *nsubs, int nsites, const char *g_imp_path,
+    double chi_offset, double omega_scale, double cutlsum,
+    double chi_offset_t, double chi_offset_u, int ntriangle,
+    double *D_flat, int *sim_indices, int *frame_counts,
+    int total_frames, double *gshift_flat,
+    double *weights_out,
+    double *f_out,
+    int *nf_out)
+{
+  validate_and_setup_gpu();
+
+  struct_data *data = readdata_from_memory(
+      nf, temp, nts0, nts1, use_gshift,
+      nsubs, nsites, g_imp_path, ntriangle,
+      D_flat, sim_indices, frame_counts, total_frames, gshift_flat, 0);
+  if (data)
+  {
+    data->chi_offset = chi_offset;
+    data->omega_scale = omega_scale;
+    data->cutlsum = cutlsum;
+    data->chi_offset_t = chi_offset_t;
+    data->chi_offset_u = chi_offset_u;
+  }
+  if (!data)
+  {
+    fprintf(stderr, "Error: Failed to create data for weight computation\n");
+    return -1;
+  }
+
+  build_profile_descs(data);
+  build_param_descs(data);
+
+  CUDA_CHECK(cudaDeviceSynchronize());
+
+  // Converge f-values
+  iteratedata(data);
+
+  CUDA_CHECK(cudaDeviceSynchronize());
+
+  // Allocate device weights array
+  double *weights_d;
+  CUDA_CHECK(cudaMalloc(&weights_d, data->ND * sizeof(double)));
+
+  // Compute per-frame WHAM weights using converged f-values
+  int grid = (data->ND + BLOCK - 1) / BLOCK;
+  compute_wham_weights<<<grid, BLOCK>>>(
+      data->D_d, data->f_d, data->n_d, data->lnw_d, weights_d,
+      data->NF, data->NL, data->Ndim, data->ND, data->beta_d);
+  CUDA_CHECK(cudaGetLastError());
+  CUDA_CHECK(cudaDeviceSynchronize());
+
+  // Copy results to host
+  CUDA_CHECK(cudaMemcpy(weights_out, weights_d, data->ND * sizeof(double), cudaMemcpyDeviceToHost));
+  memcpy(f_out, data->f_h, data->NF * sizeof(double));
+  *nf_out = data->NF;
+
+  // Cleanup
+  cudaFree(weights_d);
+  gimp_cache_free(data->gimp_cache);
+  free(data->gimp_cache);
+  free(data->profiles);
+  free(data->params);
   CUDA_CHECK(cudaDeviceReset());
 
   return 0;

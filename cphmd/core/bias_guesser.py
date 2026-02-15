@@ -121,6 +121,42 @@ def generate_lambda_configs(
     return configs
 
 
+def _synthetic_patch_info(nsubs: list[int]) -> pd.DataFrame:
+    """Build a minimal patch_info DataFrame from nsubs alone.
+
+    Used for legacy prep format where no patches.dat exists.
+    The SELECT column uses the standard s{site}s{sub} naming,
+    and site/sub columns are pre-populated.
+    """
+    rows = []
+    for site_idx, n in enumerate(nsubs):
+        for sub_idx in range(n):
+            rows.append({
+                "SELECT": f"s{site_idx + 1}s{sub_idx + 1}",
+                "site": site_idx + 1,
+                "sub": sub_idx + 1,
+            })
+    return pd.DataFrame(rows)
+
+
+def _generate_legacy_call_statements(nsubs: list[int]) -> str:
+    """Generate CALL statements using legacy siteX_subY named selections.
+
+    Legacy (msld-py-prep) setup scripts define atom selections named
+    ``site1_sub1``, ``site2_sub3``, etc. After ``setup_legacy()`` runs,
+    these selections are in CHARMM memory and can be referenced directly.
+    """
+    lines = []
+    block_idx = 2  # block 1 = environment
+    for site_idx, n in enumerate(nsubs):
+        for sub_idx in range(n):
+            lines.append(
+                f"CALL {block_idx} sele site{site_idx + 1}_sub{sub_idx + 1} end"
+            )
+            block_idx += 1
+    return "\n".join(lines) + "\n\n"
+
+
 def _generate_zero_ldbv(patch_info: pd.DataFrame, fnex: float = 5.5) -> str:
     """Generate LDBI/LDBV statements with zero coefficients.
 
@@ -182,10 +218,11 @@ def _generate_zero_ldbv(patch_info: pd.DataFrame, fnex: float = 5.5) -> str:
 
 
 def _build_energy_block_command(
-    patch_info: pd.DataFrame,
+    patch_info: pd.DataFrame | None,
     site_lambdas: dict[int, np.ndarray],
     nsubs: list[int],
     fnex: float = 5.5,
+    legacy: bool = False,
 ) -> str:
     """Build a BLOCK command for single-point energy evaluation.
 
@@ -197,11 +234,13 @@ def _build_energy_block_command(
     BLADE must be OFF before calling this (caller's responsibility).
 
     Args:
-        patch_info: DataFrame from patches.dat.
+        patch_info: DataFrame from patches.dat, or None for legacy mode.
         site_lambdas: {site_index: lambda array for that site's substates}
             Sites not in dict use equipartition (1/N).
         nsubs: Number of substates per site.
         fnex: FNEX constraint parameter.
+        legacy: If True, use siteX_subY named selections for CALL
+            statements (legacy msld-py-prep format).
 
     Returns:
         CHARMM BLOCK command string.
@@ -212,6 +251,10 @@ def _build_energy_block_command(
         generate_exclusions,
         generate_rmla_msld,
     )
+
+    # For legacy mode, build synthetic patch_info from nsubs
+    if legacy or patch_info is None:
+        patch_info = _synthetic_patch_info(nsubs)
 
     # Ensure site/sub columns exist (derived from SELECT, e.g. "s1s2" → site=1, sub=2)
     if "site" not in patch_info.columns:
@@ -244,9 +287,15 @@ def _build_energy_block_command(
     # MSLD setup (no actual dynamics — just for energy evaluation)
     dynamics_setup = "QLDM THETA\nLANG TEMP 298.15\nSOFT ON\n\n"
 
+    # CALL statements: legacy uses siteX_subY selections, default uses patches.dat
+    call_str = (
+        _generate_legacy_call_statements(nsubs) if legacy
+        else generate_call_statements(patch_info)
+    )
+
     parts = [
         generate_block_header(n_blocks),
-        generate_call_statements(patch_info),
+        call_str,
         generate_exclusions(patch_info),
         dynamics_setup,
         ldin_str,
@@ -266,9 +315,10 @@ def _evaluate_energy() -> float:
 
 
 def guess_initial_biases(
-    patch_info: pd.DataFrame,
+    patch_info: pd.DataFrame | None,
     nsubs: list[int],
     fnex: float = 5.5,
+    legacy: bool = False,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Estimate initial b and c biases from single-point energy evaluations.
 
@@ -283,9 +333,10 @@ def guess_initial_biases(
     Other sites are held at equipartition during evaluation.
 
     Args:
-        patch_info: DataFrame from patches.dat.
+        patch_info: DataFrame from patches.dat, or None for legacy mode.
         nsubs: Number of substates per site.
         fnex: FNEX constraint value.
+        legacy: If True, use legacy siteX_subY named selections.
 
     Returns:
         (b, c) where b has shape (1, nblocks) and c has shape (nblocks, nblocks).
@@ -314,6 +365,7 @@ def guess_initial_biases(
                 {site_idx: lam},
                 nsubs,
                 fnex=fnex,
+                legacy=legacy,
             )
             execute_block_command(block_cmd)
             site_e[sub_idx] = _evaluate_energy()
@@ -330,6 +382,7 @@ def guess_initial_biases(
                 {site_idx: lam},
                 nsubs,
                 fnex=fnex,
+                legacy=legacy,
             )
             execute_block_command(block_cmd)
             e_mid = _evaluate_energy()
@@ -366,8 +419,12 @@ def _setup_vacuum_nonbonded():
     # warnings as the FFT grid is invalidated.
     settings.set_bomb_level(-6)
 
-    # Delete water and ion atoms
-    lingo.charmm_script("delete atom sele segid SOLV .or. segid IONS end")
+    # Delete water and ion atoms. Use resname TIP3 (universal) with
+    # segid fallback to cover both default format (segid SOLV/IONS)
+    # and legacy format (msld-py-prep with different segment names).
+    lingo.charmm_script(
+        "delete atom sele resn TIP3 .or. segid SOLV .or. segid IONS end"
+    )
 
     # Clear crystal (removes PBC and PME)
     lingo.charmm_script("CRYSTAL FREE")
@@ -385,9 +442,10 @@ def _setup_vacuum_nonbonded():
 
 
 def guess_initial_biases_vacuum(
-    patch_info: pd.DataFrame,
+    patch_info: pd.DataFrame | None,
     nsubs: list[int],
     fnex: float = 5.5,
+    legacy: bool = False,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Estimate initial biases in vacuum (no solvent).
 
@@ -399,9 +457,10 @@ def guess_initial_biases_vacuum(
     The caller must reload PSF/CRD afterward if further simulation is needed.
 
     Args:
-        patch_info: DataFrame from patches.dat.
+        patch_info: DataFrame from patches.dat, or None for legacy mode.
         nsubs: Number of substates per site.
         fnex: FNEX constraint value.
+        legacy: If True, use legacy siteX_subY named selections.
 
     Returns:
         (b, c) where b has shape (1, nblocks) and c has shape (nblocks, nblocks).
@@ -415,7 +474,7 @@ def guess_initial_biases_vacuum(
     # colfft warnings from the invalidated FFT grid.
     settings.set_bomb_level(-6)
     try:
-        result = guess_initial_biases(patch_info, nsubs, fnex=fnex)
+        result = guess_initial_biases(patch_info, nsubs, fnex=fnex, legacy=legacy)
     finally:
         settings.set_bomb_level(0)
 
@@ -429,9 +488,10 @@ C_MIDPOINT_SCALE = 4.0
 
 
 def guess_initial_biases_combined(
-    patch_info: pd.DataFrame,
+    patch_info: pd.DataFrame | None,
     nsubs: list[int],
     fnex: float = 5.5,
+    legacy: bool = False,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Estimate initial biases from solvated−vacuum energy difference.
 
@@ -446,9 +506,10 @@ def guess_initial_biases_combined(
     (deletes solvent atoms). Must be called before dynamics.
 
     Args:
-        patch_info: DataFrame from patches.dat.
+        patch_info: DataFrame from patches.dat, or None for legacy mode.
         nsubs: Number of substates per site.
         fnex: FNEX constraint value.
+        legacy: If True, use legacy siteX_subY named selections.
 
     Returns:
         (b, c) where b has shape (1, nblocks) and c has shape (nblocks, nblocks).
@@ -456,11 +517,11 @@ def guess_initial_biases_combined(
     from .charmm_utils import clear_block
 
     # Solvated evaluation first (non-destructive)
-    b_solv, c_solv = guess_initial_biases(patch_info, nsubs, fnex=fnex)
+    b_solv, c_solv = guess_initial_biases(patch_info, nsubs, fnex=fnex, legacy=legacy)
     clear_block()
 
     # Vacuum evaluation (destructive — deletes solvent)
-    b_vac, c_vac = guess_initial_biases_vacuum(patch_info, nsubs, fnex=fnex)
+    b_vac, c_vac = guess_initial_biases_vacuum(patch_info, nsubs, fnex=fnex, legacy=legacy)
     clear_block()
 
     # ΔΔE_solvation: isolates differential solvation contribution

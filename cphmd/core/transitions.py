@@ -339,6 +339,7 @@ def transition_matrix_to_coupling_weights(
 def compute_connectivity_metric(
     trans_matrices: list[np.ndarray],
     expected_per_pair: int = 50,
+    visited_per_site: list[np.ndarray] | None = None,
 ) -> tuple[float, list[tuple[int, int, int]]]:
     """Compute a connectivity quality metric from transition matrices.
 
@@ -346,9 +347,15 @@ def compute_connectivity_metric(
     normalized by the expected count. A value of 1.0 means all pairs have
     at least the expected number of transitions.
 
+    When ``visited_per_site`` is provided, only pairs where BOTH states
+    are visited are considered.  This prevents kinetically inaccessible
+    states (e.g., ASP state 1, HSP→HSD) from blocking the metric.
+
     Args:
         trans_matrices: Per-site transition count matrices.
         expected_per_pair: Expected transitions per pair for quality=1.0.
+        visited_per_site: Optional list of boolean arrays (one per site).
+            True = state is visited (population > threshold).
 
     Returns:
         Tuple of:
@@ -361,8 +368,19 @@ def compute_connectivity_metric(
     for site_idx, T in enumerate(trans_matrices):
         n = T.shape[0]
         T_sym = T + T.T
+
+        # Determine which states to consider
+        if visited_per_site is not None and site_idx < len(visited_per_site):
+            visited = visited_per_site[site_idx]
+        else:
+            visited = np.ones(n, dtype=bool)
+
         for i in range(n):
+            if not visited[i]:
+                continue
             for j in range(i + 1, n):
+                if not visited[j]:
+                    continue
                 count = T_sym[i, j]
                 if count < min_count:
                     min_count = count

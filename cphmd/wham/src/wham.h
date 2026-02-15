@@ -240,6 +240,42 @@ int wham_from_memory(
     double *D_flat, int *sim_indices, int *frame_counts,
     int total_frames, double *gshift_flat);
 
+// Distributed WHAM: Phase A — f-value convergence only (rank 0)
+int wham_iterate_from_memory(
+    int nf, double temp, int nts0, int nts1, int use_gshift,
+    int *nsubs, int nsites, const char *g_imp_path,
+    double chi_offset, double omega_scale, double cutlsum,
+    double chi_offset_t, double chi_offset_u, int ntriangle,
+    double *D_flat, int *sim_indices, int *frame_counts,
+    int total_frames, double *gshift_flat,
+    double *f_out, int *nf_out);
+
+// Distributed WHAM: Phase B — profile computation for a subset (all ranks)
+int wham_profiles_from_memory(
+    int nf, double temp, int nts0, int nts1, int use_gshift,
+    int *nsubs, int nsites, const char *g_imp_path,
+    double chi_offset, double omega_scale, double cutlsum,
+    double chi_offset_t, double chi_offset_u, int ntriangle,
+    double *D_flat, int *sim_indices, int *frame_counts,
+    int total_frames, double *gshift_flat,
+    double *f_in, int f_size,
+    int profile_start, int profile_end,
+    double *C_out, double *V_out, int *dim_out);
+
+// Distributed WHAM: Phase B with slim D (no cross-energies, pre-computed lnDenom)
+int wham_profiles_slim_from_memory(
+    int nf, double temp, int nts0, int nts1, int use_gshift,
+    int *nsubs, int nsites, const char *g_imp_path,
+    double chi_offset, double omega_scale, double cutlsum,
+    double chi_offset_t, double chi_offset_u, int ntriangle,
+    double *D_flat, int ndim,
+    int *sim_indices, int *frame_counts,
+    int total_frames, double *gshift_flat,
+    double *f_in, int f_size,
+    double *lnDenom_in,
+    int profile_start, int profile_end,
+    double *C_out, double *V_out, int *dim_out);
+
 int lmalf_from_memory(
     int nf, double temp, int ms, int msprof, int max_iter, double tolerance,
     int *nsubs, int nsites, const char *g_imp_path,
@@ -247,6 +283,17 @@ int lmalf_from_memory(
     double chi_offset_t, double chi_offset_u, int ntriangle,
     double *lambda_flat, double *ensweight_flat, int n_frames,
     double *x_prev_flat, double *s_prev_flat, int nblocks_sq);
+
+int wham_compute_weights_from_memory(
+    int nf, double temp, int nts0, int nts1, int use_gshift,
+    int *nsubs, int nsites, const char *g_imp_path,
+    double chi_offset, double omega_scale, double cutlsum,
+    double chi_offset_t, double chi_offset_u, int ntriangle,
+    double *D_flat, int *sim_indices, int *frame_counts,
+    int total_frames, double *gshift_flat,
+    double *weights_out,
+    double *f_out,
+    int *nf_out);
 
 int nonlinear_from_memory(
     int nf, double temp, int ms, int msprof, int max_iter, double tolerance,

@@ -169,6 +169,7 @@ def plot_population_convergence(
     site_label: str,
     output_path: Path,
     phases: np.ndarray | None = None,
+    expected_site_pops: np.ndarray | None = None,
 ) -> None:
     """Create a single convergence plot for one site and threshold.
 
@@ -180,6 +181,9 @@ def plot_population_convergence(
         output_path: Full path for the output PNG file.
         phases: Optional 1-D array of phase values (1/2/3) per run.
             Controls line transparency — phase 1 is faint, phase 3 is opaque.
+        expected_site_pops: Optional per-state expected populations for this site.
+            Shape: (n_substates,). When provided, draws per-state colored
+            dashed target lines instead of a single "Ideal = 1/N" line.
     """
     try:
         import matplotlib
@@ -223,16 +227,28 @@ def plot_population_convergence(
                 label=f"State {s + 1}",
             )
 
-    # Ideal equal-population line
-    ideal = 1.0 / n_substates
-    ax.axhline(ideal, color="black", linestyle="--", linewidth=1.5, alpha=0.6,
-               label=f"Ideal (1/{n_substates})")
-
-    # Final frac_diff annotation
+    # Target lines and deviation annotation
     final_pops = site_pops[-1]
-    frac_diff = (final_pops.max() - final_pops.min()) * 100
+    if expected_site_pops is not None:
+        # Per-state colored dashed target lines (pH-aware HH targets)
+        for s in range(n_substates):
+            color = colors[s % len(colors)]
+            ax.axhline(
+                expected_site_pops[s], color=color, linestyle="--",
+                linewidth=1.5, alpha=0.4,
+            )
+        frac_dev = float(np.max(np.abs(final_pops - expected_site_pops))) * 100
+        label_text = f"Final dev = {frac_dev:.1f}%"
+    else:
+        # Single "Ideal = 1/N" line (ALF mode)
+        ideal = 1.0 / n_substates
+        ax.axhline(ideal, color="black", linestyle="--", linewidth=1.5, alpha=0.6,
+                   label=f"Ideal (1/{n_substates})")
+        frac_dev = (final_pops.max() - final_pops.min()) * 100
+        label_text = f"Final diff = {frac_dev:.1f}%"
+
     ax.annotate(
-        f"Final diff = {frac_diff:.1f}%",
+        label_text,
         xy=(0.97, 0.97),
         xycoords="axes fraction",
         fontsize=11,
@@ -272,6 +288,7 @@ def generate_population_plots(
     max_run: int,
     output_dir: Path,
     nsubs: list[int] | np.ndarray | None = None,
+    expected_pops=None,
 ) -> None:
     """Generate population convergence plots, one per site per threshold.
 
@@ -281,6 +298,8 @@ def generate_population_plots(
         output_dir: Directory for output PNG files (created if needed).
         nsubs: Number of substates per site, e.g. [2, 2].
             If None, treats all states as a single site.
+        expected_pops: Optional ExpectedPopulations from HH model. When
+            provided, per-state HH target lines replace the uniform 1/N line.
     """
     run_data = read_populations_from_runs(input_folder, max_run)
     if not run_data:
@@ -306,6 +325,14 @@ def generate_population_plots(
     n_sites = len(nsubs)
     multi_site = n_sites > 1
 
+    # Slice expected_pops per site if available
+    exp_per_site: list[np.ndarray | None] = [None] * n_sites
+    if expected_pops is not None:
+        offset = 0
+        for si, ns in enumerate(nsubs):
+            exp_per_site[si] = expected_pops.per_state[offset : offset + ns]
+            offset += ns
+
     for thresh_key, thresh_label, site_pops_list in [
         ("relaxed", "λ > 0.8", relaxed_per_site),
         ("strict", "λ > 0.985", strict_per_site),
@@ -325,6 +352,7 @@ def generate_population_plots(
                 site_label=site_label,
                 output_path=output_dir / fname,
                 phases=phases,
+                expected_site_pops=exp_per_site[site_idx],
             )
 
     print(f"Population convergence plots saved to {output_dir}")

@@ -37,6 +37,37 @@ class ConvergenceTracker:
     def __init__(self, config, state):
         self.config = config
         self.state = state
+        self._expected_pops = None  # cached ExpectedPopulations for this run
+
+    # ------------------------------------------------------------------
+    # Expected populations (pH-aware targets)
+    # ------------------------------------------------------------------
+
+    def _get_expected_pops(self, nsubs):
+        """Compute and cache HH-predicted expected populations.
+
+        Returns ExpectedPopulations when pH mode is active with patch_info,
+        or None for ALF mode (uniform targets, backward compatible).
+        """
+        if self._expected_pops is not None:
+            return self._expected_pops
+
+        if (self.config.pH and self.state.patch_info is not None
+                and hasattr(self.config, "nreps") and self.config.nreps
+                and nsubs is not None):
+            from cphmd.core.cphmd_params import compute_all_site_parameters
+            from cphmd.core.expected_populations import compute_expected_populations
+
+            cphmd_params = compute_all_site_parameters(
+                self.state.patch_info,
+                self.config.temperature,
+            )
+            self._expected_pops = compute_expected_populations(
+                self.state.patch_info,
+                cphmd_params.effective_pH,
+                list(nsubs),
+            )
+        return self._expected_pops
 
     # ------------------------------------------------------------------
     # EWBS
@@ -108,20 +139,35 @@ class ConvergenceTracker:
         pop_strict = pop_data.get("pop_strict_norm", []) if pop_data else []
 
         if len(pop_strict) > 0:
+            exp = self._get_expected_pops(nsubs)
             if nsubs is not None and len(nsubs) > 1:
                 print("Populations (λ>0.985):")
                 site_diffs = []
                 for si, (start, end) in enumerate(_per_site_ranges(nsubs)):
                     s = pop_strict[start:end]
-                    site_diffs.append((max(s) - min(s)) * 100)
-                    site_str = ", ".join(f"{p:.1%}" for p in s)
-                    print(f"  Site {si+1} ({nsubs[si]} subs): [{site_str}] "
-                          f"diff={site_diffs[-1]:.1f}%")
-                print(f"  Worst-site diff={max(site_diffs):.1f}%")
+                    if exp is not None:
+                        e = exp.per_state[start:end]
+                        site_dev = max(abs(a - b) for a, b in zip(s, e)) * 100
+                        site_diffs.append(site_dev)
+                        site_str = ", ".join(f"{p:.1%}" for p in s)
+                        exp_str = ", ".join(f"{p:.1%}" for p in e)
+                        print(f"  Site {si+1} ({nsubs[si]} subs): [{site_str}] "
+                              f"vs HH [{exp_str}] dev={site_diffs[-1]:.1f}%")
+                    else:
+                        site_diffs.append((max(s) - min(s)) * 100)
+                        site_str = ", ".join(f"{p:.1%}" for p in s)
+                        print(f"  Site {si+1} ({nsubs[si]} subs): [{site_str}] "
+                              f"diff={site_diffs[-1]:.1f}%")
+                print(f"  Worst-site {'dev' if exp else 'diff'}={max(site_diffs):.1f}%")
             else:
                 pop_str = ", ".join(f"{p:.1%}" for p in pop_strict)
-                frac_diff = (max(pop_strict) - min(pop_strict)) * 100
-                print(f"Populations (λ>0.985): [{pop_str}] diff={frac_diff:.1f}%")
+                if exp is not None:
+                    exp_str = ", ".join(f"{p:.1%}" for p in exp.per_state)
+                    dev = max(abs(a - b) for a, b in zip(pop_strict, exp.per_state)) * 100
+                    print(f"Populations (λ>0.985): [{pop_str}] vs HH [{exp_str}] dev={dev:.1f}%")
+                else:
+                    frac_diff = (max(pop_strict) - min(pop_strict)) * 100
+                    print(f"Populations (λ>0.985): [{pop_str}] diff={frac_diff:.1f}%")
 
         return lambda_data, pop_data, pop_strict
 
@@ -270,7 +316,10 @@ class ConvergenceTracker:
         from .cphmd_params import get_delta_pKa_for_phase
         delta_pKa = get_delta_pKa_for_phase(self.state.phase)
 
+        # Pass patch_info for pKa convergence check (requires pH + multi-replica).
         cphmd_kwargs = {}
+        if self.state.patch_info is not None:
+            cphmd_kwargs["patch_info"] = self.state.patch_info
         if (self.config.pH and self.config.nreps > 3
                 and self.state.patch_info is not None):
             from .cphmd_params import compute_all_site_parameters
@@ -278,13 +327,12 @@ class ConvergenceTracker:
                 self.state.patch_info,
                 self.config.temperature,
             )
-            cphmd_kwargs = {
+            cphmd_kwargs.update({
                 "data_dir": Path("data"),
-                "patch_info": self.state.patch_info,
                 "effective_pH": cphmd_params.effective_pH,
                 "delta_pKa": delta_pKa,
                 "nreps": self.config.nreps,
-            }
+            })
 
         # Accumulate lambda data for Phase 1→2 check
         lambda_data_for_check = lambda_data
@@ -337,16 +385,25 @@ class ConvergenceTracker:
                 and self.state.phase2_start_run is not None):
             p2_run_count = run_idx - self.state.phase2_start_run
 
-        new_phase, reason = check_phase_transition(
-            self.state.phase,
-            lambda_data_for_check,
-            config=self.config.phase_transition,
-            **cphmd_kwargs,
-            nsubs=nsubs,
-            connectivity=cut_params.get("connectivity"),
-            phase2_run_count=p2_run_count,
-            ewbs_state=self.state.ewbs_state,
-        )
+        # Minimum Phase 1 duration: don't even check Phase 1→2 criteria
+        # until we've run enough with large cutoffs to build reasonable biases.
+        min_p1 = self.config.phase_transition.min_phase1_runs
+        exp = self._get_expected_pops(nsubs)
+        if self.state.phase == 1 and run_idx < min_p1:
+            new_phase = 1
+            reason = f"Staying in phase 1: run {run_idx}<{min_p1} (minimum Phase 1 duration)"
+        else:
+            new_phase, reason = check_phase_transition(
+                self.state.phase,
+                lambda_data_for_check,
+                config=self.config.phase_transition,
+                **cphmd_kwargs,
+                nsubs=nsubs,
+                connectivity=cut_params.get("connectivity"),
+                phase2_run_count=p2_run_count,
+                ewbs_state=self.state.ewbs_state,
+                expected_pops=exp,
+            )
 
         if new_phase != self.state.phase:
             print(f"PHASE TRANSITION: {self.state.phase} → {new_phase}")
@@ -362,7 +419,9 @@ class ConvergenceTracker:
         # Phase 2→1 regression: detect stuck Phase 2
         if self.state.phase == 2:
             connectivity = cut_params.get("connectivity", 1.0)
-            pop_diff = compute_worst_site_pop_diff(lambda_data, nsubs)
+            pop_diff = compute_worst_site_pop_diff(
+                lambda_data, nsubs, expected_pops=exp,
+            )
             pt_cfg = self.config.phase_transition
             is_stuck = (
                 connectivity == 0.0
@@ -465,10 +524,12 @@ class ConvergenceTracker:
         if len(bias_rows) >= 2:
             bias_history = np.array(bias_rows)
 
+        exp = self._get_expected_pops(nsubs)
         should_stop, stop_reason, stop_result = check_phase3_stop(
             lambda_data, stop_config,
             bias_history=bias_history, nsubs=nsubs,
             ewbs_state=self.state.ewbs_state,
+            expected_pops=exp,
         )
 
         if confirmation:
@@ -544,11 +605,13 @@ class ConvergenceTracker:
         plots_dir = input_folder / "plots"
 
         from cphmd.analysis.population_convergence import generate_population_plots
+        exp = self._get_expected_pops(nsubs)
         generate_population_plots(
             input_folder=Path(".."),
             max_run=run_idx,
             output_dir=plots_dir,
             nsubs=nsubs,
+            expected_pops=exp,
         )
 
         try:

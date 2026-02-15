@@ -704,15 +704,31 @@ def _load_run_populations(
     nreps: int,
     ncentral: int,
     lambda_threshold: float,
+    nsubs: list[int] | None = None,
 ) -> tuple[np.ndarray, dict[int, np.ndarray], int] | None:
     """Load one run's lambda data and compute per-state populations.
 
     Each repeat file within a replica becomes a separate data point at
     that replica's pH, so the scatter plot shows run-to-run spread.
 
+    Populations are computed per-site:
+    - For each site, only frames where at least one substate in that site
+      exceeds the threshold are counted (physical-state filter).
+    - P_k = hits_k / Σ hits_j for j in same site (per-site normalization).
+
+    Args:
+        data_dir: Directory containing Lambda files.
+        pH: Central replica pH.
+        delta_pKa: pH step between replicas.
+        nreps: Number of replicas.
+        ncentral: Index of the central replica.
+        lambda_threshold: Threshold for state assignment.
+        nsubs: Substates per site (e.g. [3, 2]). If None, treats all
+            states as a single site.
+
     Returns:
         (valid_pH_array, state_populations, n_states) or None if insufficient data.
-        state_populations maps state_idx to array of populations (one per repeat).
+        state_populations maps global state_idx to array of populations (one per repeat).
     """
     from cphmd.core.phase_switcher import _organize_by_replica
     from cphmd.utils.lambda_io import read_lambda_values
@@ -752,19 +768,37 @@ def _load_run_populations(
 
     valid_pH_array = np.array(all_pH)
 
+    # Build site ranges for per-site filtering/normalization
+    if nsubs is None:
+        nsubs = [n_states]
+    site_ranges: list[tuple[int, int]] = []
+    offset = 0
+    for n in nsubs:
+        site_ranges.append((offset, offset + n))
+        offset += n
+
+    # Compute per-state populations with per-site normalization
     state_populations: dict[int, np.ndarray] = {}
-    for state_idx in range(n_states):
-        pops = []
-        for data in all_repeat_data:
-            # Filter: only count frames where at least one state is assigned.
-            # Frames with all lambdas < threshold are transition intermediates
-            # and should not dilute the physical populations.
-            assigned = data.max(axis=1) > lambda_threshold
-            if assigned.sum() > 0:
-                pops.append((data[assigned, state_idx] > lambda_threshold).mean())
-            else:
-                pops.append(0.0)
-        state_populations[state_idx] = np.array(pops)
+    for global_idx in range(n_states):
+        state_populations[global_idx] = np.zeros(len(all_repeat_data))
+
+    for repeat_idx, data in enumerate(all_repeat_data):
+        for start, end in site_ranges:
+            site_lambdas = data[:, start:end]  # (frames, n_substates)
+            # Physical-state filter: only frames where at least one
+            # substate in THIS site exceeds the threshold
+            has_state = site_lambdas.max(axis=1) > lambda_threshold
+            n_physical = has_state.sum()
+            if n_physical == 0:
+                continue
+            # Per-state hit counts within physical frames
+            site_hits = (site_lambdas[has_state] > lambda_threshold).sum(axis=0)
+            total_hits = site_hits.sum()
+            if total_hits == 0:
+                continue
+            # Normalize: P_k = hits_k / Σ hits_j
+            for j in range(end - start):
+                state_populations[start + j][repeat_idx] = site_hits[j] / total_hits
 
     return valid_pH_array, state_populations, n_states
 
@@ -778,7 +812,8 @@ def generate_hh_analysis(
     nreps: int,
     output_dir: Path,
     ncentral: int | None = None,
-    lambda_threshold: float = 0.985,
+    lambda_threshold: float = 0.8,
+    nsubs: list[int] | None = None,
 ) -> dict[str, SiteHHResult]:
     """Main entry point for HH curve analysis with multi-replica pH.
 
@@ -800,7 +835,9 @@ def generate_hh_analysis(
         nreps: Number of replicas
         output_dir: Directory for output plots
         ncentral: Central replica index (defaults to nreps // 2)
-        lambda_threshold: Threshold for state occupancy (default 0.985)
+        lambda_threshold: Threshold for state occupancy (default 0.8)
+        nsubs: Substates per site (e.g. [3, 2]). Derived from
+            patch_info if not provided.
 
     Returns:
         Dict mapping site IDs to SiteHHResult with full analysis
@@ -808,13 +845,21 @@ def generate_hh_analysis(
     if ncentral is None:
         ncentral = nreps // 2
 
+    # Derive nsubs from patch_info if not provided
+    if nsubs is None and patch_info is not None and "site" in patch_info.columns:
+        nsubs = [
+            len(patch_info[patch_info["site"] == sid])
+            for sid in patch_info["site"].unique()
+        ]
+
     results: dict[str, SiteHHResult] = {}
     legacy_results: dict[str, HHFitResult] = {}
     populations_data: dict[str, tuple[np.ndarray, np.ndarray]] = {}
 
-    # Load current run's data
+    # Load current run's data with per-site normalization
     current_data = _load_run_populations(
-        data_dir, pH, delta_pKa, nreps, ncentral, lambda_threshold
+        data_dir, pH, delta_pKa, nreps, ncentral, lambda_threshold,
+        nsubs=nsubs,
     )
 
     if current_data is None:
@@ -856,6 +901,10 @@ def generate_hh_analysis(
     if patch_info is None or "site" not in patch_info.columns:
         return {}
 
+    # Track global state offset per site so that local idx maps correctly
+    # to global state_populations keys
+    global_offset = 0
+
     for site_id in patch_info["site"].unique():
         site_patches = patch_info[patch_info["site"] == site_id]
         if len(site_patches) == 0:
@@ -870,10 +919,11 @@ def generate_hh_analysis(
         # Build substates list and gather microstates for theoretical model
         substates: list[SubstatePopulation] = []
         microstates: list[tuple[str, MicrostateType, float | None]] = []
-        charged_state_indices: list[int] = []
+        charged_state_indices: list[int] = []  # global indices
 
-        for idx, (_, row) in enumerate(site_patches.iterrows()):
-            select_name = str(row.get("SELECT", f"s{site_id}s{idx}"))
+        for local_idx, (_, row) in enumerate(site_patches.iterrows()):
+            global_idx = global_offset + local_idx
+            select_name = str(row.get("SELECT", f"s{site_id}s{local_idx}"))
             tag = str(row.get("TAG", "NONE")).strip().upper()
             parts = tag.split()
 
@@ -889,24 +939,28 @@ def generate_hh_analysis(
             mtype: MicrostateType = "NONE"
             if tag_type == "UPOS":
                 mtype = "UPOS"
-                charged_state_indices.append(idx)
+                charged_state_indices.append(global_idx)
             elif tag_type == "UNEG":
                 mtype = "UNEG"
-                charged_state_indices.append(idx)
+                charged_state_indices.append(global_idx)
 
             microstates.append((select_name, mtype, tag_pKa))
 
-            # Get simulation populations for this state
-            state_pops = state_populations.get(idx, np.zeros(len(valid_pH_array)))
+            # Get simulation populations for this state (global index!)
+            state_pops = state_populations.get(
+                global_idx, np.zeros(len(valid_pH_array))
+            )
 
             substates.append(SubstatePopulation(
-                state_idx=idx,
+                state_idx=global_idx,
                 select_name=select_name,
                 tag_type=tag_type,
                 tag_pKa=tag_pKa,
                 pH_values=valid_pH_array.copy(),
                 populations=state_pops,
             ))
+
+        global_offset += len(site_patches)
 
         # Compute theoretical populations
         if microstates:
@@ -915,10 +969,12 @@ def generate_hh_analysis(
                 if substate.select_name in theo_pops:
                     substate.theoretical = theo_pops[substate.select_name]
 
-        # Compute total charged-state population for fitting
+        # Compute total charged-state population for fitting (global indices)
         total_charged_pop = np.zeros(len(valid_pH_array))
-        for idx in charged_state_indices:
-            total_charged_pop += state_populations.get(idx, np.zeros(len(valid_pH_array)))
+        for gidx in charged_state_indices:
+            total_charged_pop += state_populations.get(
+                gidx, np.zeros(len(valid_pH_array))
+            )
 
         # Determine fit type from site composition
         has_upos = any(m[1] == "UPOS" for m in microstates)

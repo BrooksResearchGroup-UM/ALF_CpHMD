@@ -5,6 +5,7 @@ cutoff computation, and output validation.
 """
 
 import contextlib
+import logging
 import shutil
 from pathlib import Path
 from typing import Literal
@@ -12,6 +13,8 @@ from typing import Literal
 import numpy as np
 
 from cphmd.core.free_energy import get_free_energy5
+
+logger = logging.getLogger(__name__)
 
 # Type aliases
 AnalysisMethod = Literal["wham", "lmalf", "hybrid", "nonlinear"]
@@ -34,6 +37,22 @@ class BiasAnalyzer:
         self._wham_lambda = None
         self._wham_energy = None
         self._wham_gshift = None
+        # Fused packed data (set by prepare_data, preferred over lambda/energy)
+        self._packed_D = None
+        self._packed_sim_indices = None
+        self._packed_frame_counts = None
+        self._packed_total_frames = 0
+        self._packed_nf = 0
+        # MPI state (set by caller for distributed analysis)
+        self._comm = None
+        self._rank = 0
+        self._nranks = 1
+
+    def set_mpi(self, comm, rank: int, nranks: int) -> None:
+        """Set MPI communicator for distributed WHAM analysis."""
+        self._comm = comm
+        self._rank = rank
+        self._nranks = nranks
 
     # ------------------------------------------------------------------
     # Data preparation
@@ -45,9 +64,11 @@ class BiasAnalyzer:
         run_idx: int,
         phase: PhaseType,
     ) -> int:
-        """Compute WHAM inputs in memory from lambda/energy data.
+        """Compute WHAM inputs as pre-packed D_h data (fused path).
 
-        Sets self._wham_lambda, self._wham_energy, self._wham_gshift.
+        Uses compute_packed_wham_data[_distributed] to build the flat D_h
+        array directly, avoiding the intermediate energy_matrix that doubles
+        peak memory. Also keeps self._wham_lambda for the LMALF path.
 
         Args:
             alf_info: ALF info dict
@@ -57,20 +78,54 @@ class BiasAnalyzer:
         Returns:
             nf: Number of frames for WHAM
         """
-        if phase == 1:
-            im5 = max(run_idx - 15, 1)
-            skipE = 10
+        if phase == 1 or phase == 2:
+            im5 = max(run_idx - 5, 1)
+            skipE = 1
         else:
             im5 = max(run_idx - 5, 1)
-            skipE = 100
+            skipE = 2
 
-        from cphmd.core.alf_utils import compute_wham_inputs
-        (
-            self._wham_lambda,
-            self._wham_energy,
-            self._wham_gshift,
-            nf,
-        ) = compute_wham_inputs(alf_info, im5, run_idx, skipE=skipE)
+        if self._nranks > 1 and self._comm is not None:
+            from cphmd.core.alf_utils import compute_packed_wham_data_distributed
+            (
+                self._packed_D,
+                self._packed_sim_indices,
+                self._packed_frame_counts,
+                self._wham_gshift,
+                nf,
+                self._packed_total_frames,
+            ) = compute_packed_wham_data_distributed(
+                alf_info, im5, run_idx, skipE=skipE,
+                comm=self._comm, rank=self._rank, nranks=self._nranks,
+            )
+        else:
+            from cphmd.core.alf_utils import compute_packed_wham_data
+            (
+                self._packed_D,
+                self._packed_sim_indices,
+                self._packed_frame_counts,
+                self._wham_gshift,
+                nf,
+                self._packed_total_frames,
+            ) = compute_packed_wham_data(alf_info, im5, run_idx, skipE=skipE)
+
+        self._packed_nf = nf
+        self._wham_energy = None  # No longer stored
+
+        # Extract lambda arrays from packed D for LMALF path (np.vstack at line ~448)
+        if nf > 0 and self._packed_D.size > 0:
+            NL = alf_info["nblocks"]
+            ndim = NL + nf + 3
+            D_2d = self._packed_D.reshape(-1, ndim)
+            self._wham_lambda = []
+            offset = 0
+            for i in range(nf):
+                n_i = self._packed_frame_counts[i]
+                self._wham_lambda.append(D_2d[offset:offset + n_i, 1:1 + NL].copy())
+                offset += n_i
+        else:
+            self._wham_lambda = None
+
         return nf
 
     # ------------------------------------------------------------------
@@ -220,50 +275,116 @@ class BiasAnalyzer:
     ) -> tuple[bool, str]:
         """Run analysis with retry on failure or invalid output.
 
+        MPI-aware: all ranks participate in WHAM calls (MPI collectives
+        require all ranks). File I/O and stdout redirect are rank-0 only.
+        Retry/validation decisions are synchronized across ranks.
+
         Returns:
             Tuple of (success: bool, summary_message: str)
         """
         analysis_dir = Path.cwd()
         method = self.config.analysis_method
         log_file = analysis_dir / "analysis.log"
+        is_distributed = self._nranks > 1 and self._comm is not None
+        is_rank0 = self._rank == 0
 
-        with open(log_file, "a") as log_f:
-            for attempt in range(max_attempts):
-                try:
-                    log_f.write(f"{method.upper()} attempt {attempt + 1}/{max_attempts}...\n")
-                    log_f.flush()
+        for attempt in range(max_attempts):
+            # --- Log attempt (rank 0 only) ---
+            if is_rank0:
+                with open(log_file, "a") as log_f:
+                    log_f.write(
+                        f"{method.upper()} attempt {attempt + 1}/{max_attempts}...\n"
+                    )
 
-                    with contextlib.redirect_stdout(log_f):
-                        if method == "hybrid":
-                            self._run_hybrid(nf, ms, msprof, cut_params, alf_info, phase)
-                        elif method == "lmalf":
-                            self._run_lmalf(nf, ms, msprof, cut_params, alf_info)
-                        elif method == "nonlinear":
-                            self._run_nonlinear(nf, ms, msprof, cut_params, alf_info)
-                        else:
-                            self._run_wham(nf, ms, msprof, cut_params, alf_info)
+            # --- Execute analysis ---
+            error = None
+            try:
+                if is_distributed:
+                    # Distributed: ALL ranks must enter _run_wham together
+                    # (MPI collectives inside require all ranks to participate).
+                    # Log redirect must not prevent entry — open log defensively.
+                    _log_f = None
+                    _redirect_ctx = None
+                    if is_rank0:
+                        try:
+                            _log_f = open(log_file, "a")
+                            _redirect_ctx = contextlib.redirect_stdout(_log_f)
+                            _redirect_ctx.__enter__()
+                        except OSError:
+                            _log_f = None
+                            _redirect_ctx = None
+                    try:
+                        self._run_wham(nf, ms, msprof, cut_params, alf_info)
+                    finally:
+                        if _redirect_ctx is not None:
+                            _redirect_ctx.__exit__(None, None, None)
+                        if _log_f is not None:
+                            _log_f.close()
+                else:
+                    # Single-rank: existing behavior
+                    with open(log_file, "a") as log_f:
+                        with contextlib.redirect_stdout(log_f):
+                            if method == "hybrid":
+                                self._run_hybrid(
+                                    nf, ms, msprof, cut_params, alf_info, phase
+                                )
+                            elif method == "lmalf":
+                                self._run_lmalf(nf, ms, msprof, cut_params, alf_info)
+                            elif method == "nonlinear":
+                                self._run_nonlinear(
+                                    nf, ms, msprof, cut_params, alf_info
+                                )
+                            else:
+                                self._run_wham(nf, ms, msprof, cut_params, alf_info)
+            except Exception as e:
+                error = str(e)
 
-                    if self.is_output_invalid(analysis_dir, cut_params):
-                        msg = f"{method.upper()} output invalid on attempt {attempt + 1}"
-                        log_f.write(f"{msg}\n")
-                        log_f.flush()
-                        self.cleanup_invalid(analysis_dir)
-                        continue
+            # --- Sync error status across ranks ---
+            # Exceptions from run_wham_distributed are synchronized
+            # (all ranks raise together due to internal bcast/allreduce)
+            if is_distributed:
+                errors = self._comm.allgather(error)
+                any_error = any(e is not None for e in errors)
+            else:
+                any_error = error is not None
 
-                    msg = f"{method.upper()} succeeded on attempt {attempt + 1}"
-                    log_f.write(f"{msg}\n")
-                    return True, msg
-
-                except Exception as e:
-                    msg = f"{method.upper()} attempt {attempt + 1} failed: {e}"
-                    log_f.write(f"{msg}\n")
-                    log_f.flush()
+            if any_error:
+                if is_rank0:
+                    err_detail = errors if is_distributed else error
+                    msg = f"{method.upper()} attempt {attempt + 1} failed"
+                    with open(log_file, "a") as log_f:
+                        log_f.write(f"{msg}: {err_detail}\n")
                     self.cleanup_invalid(analysis_dir)
+                if is_distributed:
+                    self._comm.Barrier()
+                if attempt == max_attempts - 1:
+                    return False, f"{method.upper()} failed after {max_attempts} attempts"
+                continue
 
-                    if attempt == max_attempts - 1:
-                        msg = f"{method.upper()} failed after {max_attempts} attempts"
+            # --- Validate output (rank 0 decides, broadcasts result) ---
+            if is_rank0:
+                valid = not self.is_output_invalid(analysis_dir, cut_params)
+            else:
+                valid = True
+
+            if is_distributed:
+                valid = self._comm.bcast(valid, root=0)
+
+            if valid:
+                msg = f"{method.upper()} succeeded on attempt {attempt + 1}"
+                if is_rank0:
+                    with open(log_file, "a") as log_f:
                         log_f.write(f"{msg}\n")
-                        return False, msg
+                return True, msg
+
+            # --- Invalid output: retry ---
+            if is_rank0:
+                msg = f"{method.upper()} output invalid on attempt {attempt + 1}"
+                with open(log_file, "a") as log_f:
+                    log_f.write(f"{msg}\n")
+                self.cleanup_invalid(analysis_dir)
+            if is_distributed:
+                self._comm.Barrier()
 
         return False, f"{method.upper()} failed after {max_attempts} attempts"
 
@@ -274,30 +395,76 @@ class BiasAnalyzer:
         nblocks = alf_info["nblocks"]
         ntriangle = self.config.ntriangle
 
-        if self._wham_lambda:
+        wham_kwargs = {
+            "nblocks": nblocks,
+            "nf": nf,
+            "temp": self.config.temperature,
+            "nts0": ms,
+            "nts1": msprof,
+            "use_gshift": self.config.use_gshift,
+            "nsubs": nsubs,
+            "g_imp_path": "../G_imp",
+            "output_dir": Path.cwd(),
+            "log_file": "analysis.log",
+            "fnex": self.config.fnex,
+            "cutlsum": self.config.cutlsum,
+            "chi_offset": self.config.chi_offset,
+            "omega_decay": self.config.omega_decay,
+            "chi_offset_t": self.config.chi_offset_t,
+            "chi_offset_u": self.config.chi_offset_u,
+            "ntriangle": ntriangle,
+        }
+
+        if self._nranks > 1 and self._comm is not None and self._packed_D is not None:
+            # Distributed WHAM from pre-packed data (no pickle, no energy_matrix)
+            from cphmd.wham import run_wham_distributed_from_packed
+            run_wham_distributed_from_packed(
+                D_flat=self._packed_D,
+                sim_indices=self._packed_sim_indices,
+                frame_counts=self._packed_frame_counts,
+                total_frames=self._packed_total_frames,
+                gshift_data=self._wham_gshift,
+                comm=self._comm,
+                rank=self._rank,
+                nranks=self._nranks,
+                **wham_kwargs,
+            )
+            # SVD solve is rank-0 only; broadcast success/failure so all
+            # ranks raise together instead of deadlocking at a Barrier.
+            svd_error = None
+            if self._rank == 0:
+                try:
+                    get_free_energy5(
+                        alf_info, ms=ms, msprof=msprof,
+                        ntriangle=ntriangle, **cut_params,
+                    )
+                except Exception as exc:
+                    svd_error = str(exc)
+                    logger.error(f"get_free_energy5 failed: {svd_error}")
+            svd_error = self._comm.bcast(svd_error, root=0)
+            if svd_error is not None:
+                raise RuntimeError(f"get_free_energy5 failed on rank 0: {svd_error}")
+        elif self._packed_D is not None and self._packed_D.size > 0:
+            from cphmd.wham import run_wham_from_packed
+            run_wham_from_packed(
+                D_flat=self._packed_D,
+                sim_indices=self._packed_sim_indices,
+                frame_counts=self._packed_frame_counts,
+                total_frames=self._packed_total_frames,
+                gshift_data=self._wham_gshift,
+                **wham_kwargs,
+            )
+            get_free_energy5(alf_info, ms=ms, msprof=msprof, ntriangle=ntriangle, **cut_params)
+        elif self._wham_lambda:
+            # Fallback: old energy_matrix path (backward compat)
             from cphmd.wham import run_wham_from_memory
             run_wham_from_memory(
                 lambda_arrays=self._wham_lambda,
                 energy_matrix=self._wham_energy,
-                nblocks=nblocks,
-                nf=nf,
-                temp=self.config.temperature,
-                nts0=ms,
-                nts1=msprof,
-                use_gshift=self.config.use_gshift,
-                nsubs=nsubs,
-                g_imp_path="../G_imp",
                 gshift_data=self._wham_gshift,
-                output_dir=Path.cwd(),
-                log_file="analysis.log",
-                fnex=self.config.fnex,
-                cutlsum=self.config.cutlsum,
-                chi_offset=self.config.chi_offset,
-                omega_decay=self.config.omega_decay,
-                chi_offset_t=self.config.chi_offset_t,
-                chi_offset_u=self.config.chi_offset_u,
-                ntriangle=ntriangle,
+                **wham_kwargs,
             )
+            get_free_energy5(alf_info, ms=ms, msprof=msprof, ntriangle=ntriangle, **cut_params)
         else:
             from cphmd.wham import run_wham
             run_wham(
@@ -318,7 +485,7 @@ class BiasAnalyzer:
                 chi_offset_u=self.config.chi_offset_u,
                 ntriangle=ntriangle,
             )
-        get_free_energy5(alf_info, ms=ms, msprof=msprof, ntriangle=ntriangle, **cut_params)
+            get_free_energy5(alf_info, ms=ms, msprof=msprof, ntriangle=ntriangle, **cut_params)
 
     def _invoke_lmalf(self, nf: int, ms: int, msprof: int,
                       alf_info: dict,

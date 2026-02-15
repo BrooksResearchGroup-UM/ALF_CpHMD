@@ -105,20 +105,13 @@ class TestPhase1To2VisitedStates:
         assert new_phase == 2, f"Expected phase 2 with all states visited: {reason}"
         assert "visited=3/3" in reason
 
-    def test_two_of_three_states_transitions(self, three_state_nsubs):
+    def test_two_of_three_states_stays(self, three_state_nsubs):
         """ASP-like scenario: states 0 and 2 visited, state 1 absent.
 
-        Phase 1 should advance because 2 >= min_visited_1to2 (default 2),
-        and the spread among visited states is good.
+        Should stay in Phase 1: ALL states must be visited before advancing.
+        NONE/UPOS/UNEG are all physical protonation states — TAG only controls
+        which gets the pH shift, not whether the state is accessible.
         """
-        # Generate data where state 1 is never visited
-        data = generate_trapped_lambda(
-            three_state_nsubs, trapped_state=[0], fraction=0.5,
-            n_frames=50000, seed=51,
-        )
-        # trapped_state=[0] with fraction=0.5 means 50% state 0, 25% each
-        # for states 1,2.  We need states 0 and 2 only (state 1 absent).
-        # Build custom data instead:
         rng = np.random.default_rng(51)
         n = 50000
         data = np.zeros((n, 3))
@@ -140,9 +133,69 @@ class TestPhase1To2VisitedStates:
             current_phase=1, lambda_data=data, config=config,
             nsubs=three_state_nsubs,
         )
+        assert new_phase == 1, (
+            f"Should stay phase 1 with 2/3 states: {reason}")
+        assert "states visited" in reason
+
+    def test_two_of_three_with_patch_info_stays(self, three_state_nsubs):
+        """ASP-like with patch_info: state 0 NONE, states 1+2 UNEG.
+
+        2/3 states visited → stays. patch_info doesn't change visited logic;
+        TAG only controls pH shift, all states are equally required.
+        """
+        import pandas as pd
+
+        rng = np.random.default_rng(51)
+        n = 50000
+        data = np.zeros((n, 3))
+        for t in range(n):
+            if t % 2 == 0:
+                data[t, 0] = rng.uniform(0.99, 1.0)
+                data[t, 1] = rng.uniform(0.0, 0.005)
+                data[t, 2] = rng.uniform(0.0, 0.005)
+            else:
+                data[t, 2] = rng.uniform(0.99, 1.0)
+                data[t, 0] = rng.uniform(0.0, 0.005)
+                data[t, 1] = rng.uniform(0.0, 0.005)
+
+        patch_info = pd.DataFrame({
+            "site": ["s1", "s1", "s1"],
+            "TAG": ["NONE", "UNEG 3.67", "UNEG 3.67"],
+            "SELECT": ["s1s1", "s1s2", "s1s3"],
+        })
+        config = PhaseTransitionConfig(
+            spread_1to2=0.5, min_hits_1to2=100,
+        )
+        new_phase, reason = check_phase_transition(
+            current_phase=1, lambda_data=data, config=config,
+            nsubs=three_state_nsubs, patch_info=patch_info,
+        )
+        assert new_phase == 1, (
+            f"Should stay: 2/3 states visited: {reason}")
+        assert "states visited" in reason
+
+    def test_all_three_states_transitions(self, three_state_nsubs):
+        """All 3 states visited with balanced populations → should advance."""
+        rng = np.random.default_rng(51)
+        n = 60000
+        data = np.zeros((n, 3))
+        for t in range(n):
+            s = t % 3
+            data[t, s] = rng.uniform(0.99, 1.0)
+            for j in range(3):
+                if j != s:
+                    data[t, j] = rng.uniform(0.0, 0.005)
+
+        config = PhaseTransitionConfig(
+            spread_1to2=0.5, min_hits_1to2=100,
+        )
+        new_phase, reason = check_phase_transition(
+            current_phase=1, lambda_data=data, config=config,
+            nsubs=three_state_nsubs,
+        )
         assert new_phase == 2, (
-            f"Should advance with 2/3 states visited: {reason}")
-        assert "visited=2/3" in reason
+            f"Should advance with 3/3 states visited: {reason}")
+        assert "visited=3/3" in reason
 
     def test_single_state_trapped_stays(self, three_state_nsubs):
         """Only 1 state visited — should stay in Phase 1."""
@@ -187,9 +240,9 @@ class TestPhase1To2VisitedStates:
             f"Should stay phase 1 with imbalanced visited states: {reason}")
         assert "spread" in reason
 
-    def test_multisite_partial_visits(self):
+    def test_multisite_partial_visits_stays(self):
         """Multi-site system: site 0 (2-state) fully visited,
-        site 1 (3-state) has 2/3 visited — should advance."""
+        site 1 (3-state) has 2/3 visited — should stay (need all)."""
         nsubs = [2, 3]
         rng = np.random.default_rng(54)
         n = 50000
@@ -215,8 +268,39 @@ class TestPhase1To2VisitedStates:
             current_phase=1, lambda_data=data, config=config,
             nsubs=nsubs,
         )
+        assert new_phase == 1, (
+            f"Multi-site with partial visits should stay: {reason}")
+        assert "states visited" in reason
+
+    def test_multisite_all_visited_advances(self):
+        """Multi-site system: all states visited on both sites → advances."""
+        nsubs = [2, 3]
+        rng = np.random.default_rng(54)
+        n = 60000
+        nblocks = sum(nsubs)
+        data = np.zeros((n, nblocks))
+
+        for t in range(n):
+            # Site 0: balanced 2-state
+            s0 = t % 2
+            data[t, s0] = rng.uniform(0.99, 1.0)
+            data[t, 1 - s0] = rng.uniform(0.0, 0.005)
+            # Site 1: all 3 states visited
+            s1 = t % 3
+            data[t, 2 + s1] = rng.uniform(0.99, 1.0)
+            for j in range(3):
+                if j != s1:
+                    data[t, 2 + j] = rng.uniform(0.0, 0.005)
+
+        config = PhaseTransitionConfig(
+            spread_1to2=0.5, min_hits_1to2=100,
+        )
+        new_phase, reason = check_phase_transition(
+            current_phase=1, lambda_data=data, config=config,
+            nsubs=nsubs,
+        )
         assert new_phase == 2, (
-            f"Multi-site with partial visits should advance: {reason}")
+            f"Multi-site with all visits should advance: {reason}")
 
     def test_concatenated_trapped_runs_pass_phase_check(self, three_state_nsubs):
         """Concatenated trapped runs: each run in one state, but all states
@@ -253,6 +337,104 @@ class TestPhase1To2VisitedStates:
         assert new_phase == 2, (
             f"Concatenated data with all states should pass phase check: {reason}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Legacy format compatibility (no TAG column, no patch_info)
+# ---------------------------------------------------------------------------
+
+
+class TestLegacyFormatCompatibility:
+    """Phase transition works with legacy patches.dat formats.
+
+    Legacy (msld-py-prep) systems may have:
+    - No patches.dat at all (patch_info=None)
+    - patches.dat without TAG column (4 columns: PATCHRES, SEGID, RESID, PATCH)
+
+    Behavior is identical: all states must be visited regardless of format.
+    """
+
+    def test_no_patch_info_requires_all_states(self, three_state_nsubs):
+        """Without patch_info, all 3 states must be visited (no mask)."""
+        rng = np.random.default_rng(70)
+        n = 50000
+        data = np.zeros((n, 3))
+        # Only 2 of 3 states visited
+        for t in range(n):
+            s = 0 if t % 2 == 0 else 2
+            data[t, s] = rng.uniform(0.99, 1.0)
+            for j in range(3):
+                if j != s:
+                    data[t, j] = rng.uniform(0.0, 0.005)
+
+        config = PhaseTransitionConfig(spread_1to2=0.5, min_hits_1to2=100)
+        new_phase, reason = check_phase_transition(
+            current_phase=1, lambda_data=data, config=config,
+            nsubs=three_state_nsubs, patch_info=None,
+        )
+        assert new_phase == 1, f"Should stay: 2/3 states visited, no patch_info: {reason}"
+        assert "states visited" in reason
+
+    def test_no_patch_info_all_visited_advances(self, three_state_nsubs):
+        """Without patch_info, all 3 states visited → should advance."""
+        data = generate_balanced_lambda(three_state_nsubs, n_frames=50000, seed=71)
+        config = PhaseTransitionConfig(spread_1to2=0.5, min_hits_1to2=100)
+        new_phase, reason = check_phase_transition(
+            current_phase=1, lambda_data=data, config=config,
+            nsubs=three_state_nsubs, patch_info=None,
+        )
+        assert new_phase == 2, f"Should advance: all 3 visited, no patch_info: {reason}"
+
+    def test_legacy_patch_info_no_tag_column(self, three_state_nsubs):
+        """Legacy patches.dat without TAG column — mask is None, all states required."""
+        import pandas as pd
+
+        # Legacy 4-column format — no TAG, no site
+        legacy_patch_info = pd.DataFrame({
+            "PATCHRES": ["ASP", "ASP", "ASP"],
+            "SEGID": ["PROA", "PROA", "PROA"],
+            "RESID": [1, 1, 1],
+            "PATCH": ["ASPP1", "ASPP2", "ASPO"],
+        })
+        rng = np.random.default_rng(72)
+        n = 50000
+        data = np.zeros((n, 3))
+        # Only 2 of 3 visited
+        for t in range(n):
+            s = 0 if t % 2 == 0 else 2
+            data[t, s] = rng.uniform(0.99, 1.0)
+            for j in range(3):
+                if j != s:
+                    data[t, j] = rng.uniform(0.0, 0.005)
+
+        config = PhaseTransitionConfig(spread_1to2=0.5, min_hits_1to2=100)
+        new_phase, reason = check_phase_transition(
+            current_phase=1, lambda_data=data, config=config,
+            nsubs=three_state_nsubs, patch_info=legacy_patch_info,
+        )
+        assert new_phase == 1, (
+            f"Legacy (no TAG): 2/3 visited should stay: {reason}")
+        assert "states visited" in reason
+
+    def test_no_nsubs_global_check(self):
+        """Without nsubs (legacy), global visited check applies."""
+        rng = np.random.default_rng(73)
+        n = 50000
+        data = np.zeros((n, 3))
+        # All 3 states visited evenly
+        for t in range(n):
+            s = t % 3
+            data[t, s] = rng.uniform(0.99, 1.0)
+            for j in range(3):
+                if j != s:
+                    data[t, j] = rng.uniform(0.0, 0.005)
+
+        config = PhaseTransitionConfig(spread_1to2=0.5, min_hits_1to2=100)
+        new_phase, reason = check_phase_transition(
+            current_phase=1, lambda_data=data, config=config,
+            nsubs=None, patch_info=None,
+        )
+        assert new_phase == 2, f"Global check, all visited should advance: {reason}"
 
 
 # ---------------------------------------------------------------------------

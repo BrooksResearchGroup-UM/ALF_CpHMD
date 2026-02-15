@@ -932,6 +932,88 @@ def _load_simulation_data(
     return Lambda, b_list, c_list, x_list, s_list, jk_map
 
 
+def _load_bias_params(
+    alf_info: ALFInfo,
+    start_cycle: int,
+    end_cycle: int,
+    skipE: int = 1,
+) -> tuple[
+    list[np.ndarray],
+    list[np.ndarray],
+    list[np.ndarray],
+    list[np.ndarray],
+    list[tuple[int, int, int]],
+    list[Path],
+    int,
+]:
+    """Load bias parameters and record lambda file paths (no lambda data loaded).
+
+    Same directory traversal as _load_simulation_data, but instead of loading
+    lambda trajectories into memory, records their file paths and returns them.
+    This enables streaming: load one lambda file at a time during packing.
+
+    Must be called from inside an analysis directory (e.g., analysis5/).
+
+    Returns:
+        Tuple of (b_list, c_list, x_list, s_list, jk_map, lambda_files, skipE):
+        - b_list: linear bias vectors, one per simulation
+        - c_list: quadratic coupling matrices, one per simulation
+        - x_list: omega coupling matrices, one per simulation
+        - s_list: chi coupling matrices, one per simulation
+        - jk_map: (j, k, analysis_idx) tuples for each simulation
+        - lambda_files: Path objects for each lambda file (same order as bias lists)
+        - skipE: passthrough of the subsample interval
+    """
+    from cphmd.utils.lambda_io import find_lambda_files
+
+    ncentral = alf_info.ncentral
+    NF = end_cycle - start_cycle + 1
+
+    b_list: list[np.ndarray] = []
+    c_list: list[np.ndarray] = []
+    x_list: list[np.ndarray] = []
+    s_list: list[np.ndarray] = []
+    jk_map: list[tuple[int, int, int]] = []
+    lambda_files: list[Path] = []
+
+    for i in range(NF):
+        analysis_dir = Path(f"../analysis{start_cycle + i}")
+        data_dir = analysis_dir / "data"
+
+        if not data_dir.is_dir():
+            print(f"Warning: Directory {data_dir} not found")
+            continue
+
+        b_shift = _load_shift_file(analysis_dir, "b_shift.dat")
+        c_shift = _load_shift_file(analysis_dir, "c_shift.dat")
+        x_shift = _load_shift_file(analysis_dir, "x_shift.dat")
+        s_shift = _load_shift_file(analysis_dir, "s_shift.dat")
+        b_fix_shift = _load_shift_file(analysis_dir, "b_fix_shift.dat", 0.0)
+        c_fix_shift = _load_shift_file(analysis_dir, "c_fix_shift.dat", 0.0)
+        x_fix_shift = _load_shift_file(analysis_dir, "x_fix_shift.dat", 0.0)
+        s_fix_shift = _load_shift_file(analysis_dir, "s_fix_shift.dat", 0.0)
+
+        lambda_fpaths = find_lambda_files(data_dir)
+
+        for fpath in lambda_fpaths:
+            try:
+                j, k = map(int, fpath.name.split(".")[1:3])
+                jk_map.append((j, k, i))
+                lambda_files.append(fpath)
+                b_old = np.loadtxt(analysis_dir / "b_prev.dat")
+                b_list.append(b_old + b_shift * (k - ncentral) + b_fix_shift)
+                c_old = np.loadtxt(analysis_dir / "c_prev.dat")
+                c_list.append(c_old + c_shift * (k - ncentral) + c_fix_shift)
+                x_old = np.loadtxt(analysis_dir / "x_prev.dat")
+                x_list.append(x_old + x_shift * (k - ncentral) + x_fix_shift)
+                s_old = np.loadtxt(analysis_dir / "s_prev.dat")
+                s_list.append(s_old + s_shift * (k - ncentral) + s_fix_shift)
+            except (OSError, ValueError) as e:
+                logger.warning("Error loading file %s: %s", fpath, e)
+
+    return b_list, c_list, x_list, s_list, jk_map, lambda_files, skipE
+
+
 def _compute_cross_energy_matrix(
     Lambda: list[np.ndarray],
     b_list: list[np.ndarray],
@@ -964,6 +1046,41 @@ def _compute_cross_energy_matrix(
     return energy_matrix
 
 
+def _cross_energy_vec(
+    Lj: np.ndarray,
+    bi: np.ndarray,
+    ci: np.ndarray,
+    xi: np.ndarray,
+    si: np.ndarray,
+) -> np.ndarray:
+    """Compute cross-energy of simulation j's lambda under simulation i's biases.
+
+    Same formula as _compute_cross_energy_matrix but returns a flat 1D array
+    of shape (nframes,) instead of (nframes, 1). Used by the fused packing path.
+
+    Args:
+        Lj: Lambda trajectory, shape (nframes, nblocks).
+        bi: Linear bias vector for simulation i.
+        ci: Quadratic coupling matrix for simulation i.
+        xi: Omega coupling matrix for simulation i.
+        si: Chi coupling matrix for simulation i.
+
+    Returns:
+        Energy array of shape (nframes,).
+    """
+    E = np.dot(Lj, -bi).ravel()
+    E += np.sum(np.dot(Lj, -ci) * Lj, axis=1)
+    E += np.sum(
+        np.dot(1 - np.exp(-OMEGA_DECAY * Lj), -xi) * Lj,
+        axis=1,
+    )
+    E += np.sum(
+        np.dot(Lj / (Lj + CHI_OFFSET), -si) * Lj,
+        axis=1,
+    )
+    return E
+
+
 def _compute_gshift_data(
     jk_map: list[tuple[int, int, int]],
     start_cycle: int,
@@ -988,6 +1105,7 @@ def _compute_gshift_data(
             )
             if b_shift_arr.size == 1:
                 b_shift_arr = np.full(nblocks, float(b_shift_arr.flat[0]))
+            if b_fix_shift_arr.size == 1:
                 b_fix_shift_arr = np.full(nblocks, float(b_fix_shift_arr.flat[0]))
             for block_idx in range(nblocks):
                 gshift_data[sim_idx, block_idx] = (
@@ -1119,6 +1237,299 @@ def compute_wham_inputs(
     return Lambda, energy_matrix, gshift_data, nf
 
 
+def compute_wham_inputs_distributed(
+    alf_info: ALFInfo | dict,
+    start_cycle: int,
+    end_cycle: int,
+    skipE: int = 1,
+    comm=None,
+    rank: int = 0,
+    nranks: int = 1,
+) -> tuple[list[np.ndarray], list[list[np.ndarray]], np.ndarray | None, int]:
+    """MPI-parallel WHAM input computation.
+
+    Distributes cross-energy matrix computation across MPI ranks:
+    - All ranks load simulation data (I/O is fast for parquet)
+    - Each rank computes its assigned rows of the energy matrix
+    - Rank 0 gathers all rows into the complete energy matrix
+
+    Falls back to serial compute_wham_inputs() when nranks=1.
+
+    Args:
+        alf_info: ALF simulation information.
+        start_cycle: First ALF cycle to include (inclusive).
+        end_cycle: Final ALF cycle to include (inclusive).
+        skipE: Subsample interval. Default 1 = all frames.
+        comm: MPI communicator (None for serial).
+        rank: This rank's index.
+        nranks: Total number of ranks.
+
+    Returns:
+        On rank 0: same as compute_wham_inputs().
+        On other ranks: ([], [], None, 0) — only rank 0 has the full data.
+    """
+    # Single-rank fallback
+    if nranks <= 1 or comm is None:
+        return compute_wham_inputs(alf_info, start_cycle, end_cycle, skipE)
+
+    alf_info = ensure_alf_info(alf_info)
+
+    # All ranks load the same simulation data (parquet I/O is fast)
+    Lambda, b_list, c_list, x_list, s_list, jk_map = _load_simulation_data(
+        alf_info, start_cycle, end_cycle, skipE,
+    )
+
+    nf = len(Lambda)
+    if nf == 0:
+        if rank == 0:
+            print("Error: No Lambda files found.")
+        return [], [], None, 0
+
+    # Distribute cross-energy matrix rows across ranks
+    my_rows = list(range(rank, nf, nranks))  # interleaved distribution
+
+    # Each rank computes its rows of the energy matrix
+    local_energy: dict[int, list[np.ndarray]] = {}
+    for i in my_rows:
+        bi, ci, xi, si = b_list[i], c_list[i], x_list[i], s_list[i]
+        row = []
+        for j in range(nf):
+            Lj = Lambda[j]
+            Eij = np.reshape(np.dot(Lj, -bi), (-1, 1))
+            Eij += np.sum(np.dot(Lj, -ci) * Lj, axis=1, keepdims=True)
+            Eij += np.sum(
+                np.dot(1 - np.exp(-OMEGA_DECAY * Lj), -xi) * Lj,
+                axis=1, keepdims=True,
+            )
+            Eij += np.sum(
+                np.dot(Lj / (Lj + CHI_OFFSET), -si) * Lj,
+                axis=1, keepdims=True,
+            )
+            row.append(Eij)
+        local_energy[i] = row
+
+    # Gather all rows on rank 0
+    gathered = comm.gather(local_energy, root=0)
+
+    if rank == 0:
+        # Reconstruct full energy matrix from gathered dicts
+        energy_matrix: list[list[np.ndarray]] = [[] for _ in range(nf)]
+        for rank_dict in gathered:
+            for i, row in rank_dict.items():
+                energy_matrix[i] = row
+
+        gshift_data = _compute_gshift_data(
+            jk_map, start_cycle, alf_info.nblocks, alf_info.ncentral,
+        )
+        return Lambda, energy_matrix, gshift_data, nf
+    else:
+        return [], [], None, 0
+
+
+# --------------------------------------------------------------------------
+# Fused packed computation — eliminates intermediate energy_matrix
+# --------------------------------------------------------------------------
+
+
+def compute_packed_wham_data(
+    alf_info: ALFInfo | dict,
+    start_cycle: int,
+    end_cycle: int,
+    skipE: int = 1,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray | None, int, int]:
+    """Compute WHAM inputs as a pre-packed flat D_h array for CUDA.
+
+    Streams lambda files one at a time (j-outer loop) so peak lambda memory
+    is ONE file (~640 KB) instead of ALL files (~96 MB for nf=150).
+    Cross-energies are written directly into the flat D_h layout.
+
+    Must be called from inside an analysis directory (e.g., analysis5/).
+
+    Args:
+        alf_info: ALF simulation information.
+        start_cycle: First ALF cycle to include (inclusive).
+        end_cycle: Final ALF cycle to include (inclusive).
+        skipE: Subsample interval. Default 1 = all frames.
+
+    Returns:
+        Tuple of (D_flat, sim_indices, frame_counts, gshift_data, nf, total_frames):
+        - D_flat: float64 array of shape (total_frames * ndim,) in CUDA D_h layout
+        - sim_indices: int32 array of shape (total_frames,)
+        - frame_counts: int32 array of shape (nf,)
+        - gshift_data: [nf, nblocks] array, or None if no shifts
+        - nf: number of simulations
+        - total_frames: total frames across all simulations
+    """
+    from cphmd.utils.lambda_io import get_lambda_frame_count, read_lambda_values
+
+    alf_info = ensure_alf_info(alf_info)
+
+    b_list, c_list, x_list, s_list, jk_map, lambda_files, skipE = _load_bias_params(
+        alf_info, start_cycle, end_cycle, skipE,
+    )
+
+    nf = len(b_list)
+    if nf == 0:
+        print("Error: No Lambda files found.")
+        empty = np.zeros(0, dtype=np.float64)
+        return empty, np.zeros(0, dtype=np.int32), np.zeros(0, dtype=np.int32), None, 0, 0
+
+    NL = alf_info.nblocks
+    ndim = NL + nf + 3
+
+    frame_counts = np.array(
+        [get_lambda_frame_count(f, skipE) for f in lambda_files], dtype=np.int32
+    )
+    total_frames = int(frame_counts.sum())
+
+    D = np.zeros((total_frames, ndim), dtype=np.float64)
+    sim_indices = np.empty(total_frames, dtype=np.int32)
+
+    # Stream one lambda file at a time (j-outer loop)
+    offset = 0
+    for j in range(nf):
+        Lj = read_lambda_values(lambda_files[j])[(skipE - 1) :: skipE, :]
+        n_j = frame_counts[j]
+
+        # Fill lambda columns and sim index for this simulation
+        D[offset : offset + n_j, 1 : 1 + NL] = Lj[:n_j]
+        sim_indices[offset : offset + n_j] = j
+
+        # Compute cross-energies against ALL bias sets
+        for i in range(nf):
+            D[offset : offset + n_j, NL + 1 + i] = _cross_energy_vec(
+                Lj[:n_j], b_list[i], c_list[i], x_list[i], s_list[i],
+            )
+
+        offset += n_j
+        # Lj goes out of scope — memory freed
+
+    # E_self column = cross-energy under the last simulation's biases
+    D[:, 0] = D[:, NL + 1 + (nf - 1)]
+
+    gshift_data = _compute_gshift_data(
+        jk_map, start_cycle, alf_info.nblocks, alf_info.ncentral,
+    )
+
+    return D.ravel(), sim_indices, frame_counts, gshift_data, nf, total_frames
+
+
+def compute_packed_wham_data_distributed(
+    alf_info: ALFInfo | dict,
+    start_cycle: int,
+    end_cycle: int,
+    skipE: int = 1,
+    comm=None,
+    rank: int = 0,
+    nranks: int = 1,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray | None, int, int]:
+    """MPI-parallel fused packed WHAM data computation with streaming lambda I/O.
+
+    Streams lambda files one at a time (j-outer loop) so peak lambda memory
+    is ONE file instead of ALL files. Each rank computes its assigned
+    cross-energy rows and sends them to rank 0 via buffer-based Send/Recv.
+
+    Falls back to serial compute_packed_wham_data() when nranks <= 1.
+
+    Args:
+        alf_info: ALF simulation information.
+        start_cycle: First ALF cycle to include (inclusive).
+        end_cycle: Final ALF cycle to include (inclusive).
+        skipE: Subsample interval. Default 1 = all frames.
+        comm: MPI communicator (None for serial).
+        rank: This rank's index.
+        nranks: Total number of ranks.
+
+    Returns:
+        On rank 0: same as compute_packed_wham_data().
+        On other ranks: empty arrays with nf=0, total_frames=0.
+    """
+    if nranks <= 1 or comm is None:
+        return compute_packed_wham_data(alf_info, start_cycle, end_cycle, skipE)
+
+    from cphmd.utils.lambda_io import get_lambda_frame_count, read_lambda_values
+
+    alf_info = ensure_alf_info(alf_info)
+
+    # All ranks load bias params (fast — no lambda data)
+    b_list, c_list, x_list, s_list, jk_map, lambda_files, skipE = _load_bias_params(
+        alf_info, start_cycle, end_cycle, skipE,
+    )
+
+    nf = len(b_list)
+    if nf == 0:
+        if rank == 0:
+            print("Error: No Lambda files found.")
+        empty = np.zeros(0, dtype=np.float64)
+        return empty, np.zeros(0, dtype=np.int32), np.zeros(0, dtype=np.int32), None, 0, 0
+
+    NL = alf_info.nblocks
+    ndim = NL + nf + 3
+    frame_counts = np.array(
+        [get_lambda_frame_count(f, skipE) for f in lambda_files], dtype=np.int32
+    )
+    total_frames = int(frame_counts.sum())
+
+    # Distribute cross-energy rows across ranks (interleaved by bias index)
+    my_rows = list(range(rank, nf, nranks))
+
+    # Each rank computes its assigned cross-energy rows by streaming lambda
+    local_rows: dict[int, np.ndarray] = {i: np.empty(total_frames, dtype=np.float64) for i in my_rows}
+
+    offset = 0
+    for j in range(nf):
+        Lj = read_lambda_values(lambda_files[j])[(skipE - 1) :: skipE, :]
+        n_j = frame_counts[j]
+        for i in my_rows:
+            local_rows[i][offset : offset + n_j] = _cross_energy_vec(
+                Lj[:n_j], b_list[i], c_list[i], x_list[i], s_list[i],
+            )
+        offset += n_j
+        # Lj goes out of scope — memory freed
+
+    if rank == 0:
+        # Pre-allocate D on rank 0
+        D = np.zeros((total_frames, ndim), dtype=np.float64)
+        sim_indices = np.empty(total_frames, dtype=np.int32)
+
+        # Fill lambda columns and sim indices by streaming again
+        offset = 0
+        for j in range(nf):
+            Lj = read_lambda_values(lambda_files[j])[(skipE - 1) :: skipE, :]
+            n_j = frame_counts[j]
+            D[offset : offset + n_j, 1 : 1 + NL] = Lj[:n_j]
+            sim_indices[offset : offset + n_j] = j
+            offset += n_j
+
+        # Copy own rows into D
+        for i, row in local_rows.items():
+            D[:, NL + 1 + i] = row
+
+        # Receive rows from other ranks via buffer-based Recv
+        recv_buf = np.empty(total_frames, dtype=np.float64)
+        for src_rank in range(1, nranks):
+            src_rows = list(range(src_rank, nf, nranks))
+            for i in src_rows:
+                comm.Recv(recv_buf, source=src_rank, tag=i)
+                D[:, NL + 1 + i] = recv_buf
+
+        # E_self column
+        D[:, 0] = D[:, NL + 1 + (nf - 1)]
+
+        gshift_data = _compute_gshift_data(
+            jk_map, start_cycle, alf_info.nblocks, alf_info.ncentral,
+        )
+
+        return D.ravel(), sim_indices, frame_counts, gshift_data, nf, total_frames
+    else:
+        # Send own rows to rank 0
+        for i, row in local_rows.items():
+            comm.Send(np.ascontiguousarray(row, dtype=np.float64), dest=0, tag=i)
+
+        empty = np.zeros(0, dtype=np.float64)
+        return empty, np.zeros(0, dtype=np.int32), np.zeros(0, dtype=np.int32), None, 0, 0
+
+
 def compute_bias_energy(
     lambda_vec: np.ndarray,
     b: np.ndarray,
@@ -1174,11 +1585,13 @@ def convert_lambda_binary_to_parquet(
     """Convert binary lambda file(s) to Parquet format.
 
     Args:
-        alf_info: ALF simulation information (unused, for API compatibility).
+        alf_info: ALF simulation information (used for nsubs column naming).
         output_path: Path to output .parquet file.
         input_files: List of input binary lambda file paths.
     """
     from cphmd.utils.lambda_io import read_lambda_binary, write_lambda_parquet
+
+    nsubs = alf_info.get("nsubs") if isinstance(alf_info, dict) else None
 
     all_data = []
     for input_file in input_files:
@@ -1189,7 +1602,7 @@ def convert_lambda_binary_to_parquet(
 
     if all_data:
         combined = np.vstack(all_data)
-        write_lambda_parquet(output_path, combined)
+        write_lambda_parquet(output_path, combined, nsubs=nsubs)
     else:
         print(f"Warning: No valid input files found for {output_path}")
 
