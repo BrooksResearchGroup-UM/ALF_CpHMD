@@ -95,6 +95,7 @@ def _get_wham_lib() -> ctypes.CDLL:
         ctypes.c_double,                # chi_offset_t
         ctypes.c_double,                # chi_offset_u
         ctypes.c_int,                   # ntriangle
+        ctypes.c_double,                # endpoint_weight
     ]
     lib.wham.restype = ctypes.c_int
 
@@ -134,6 +135,7 @@ def _get_wham_lib() -> ctypes.CDLL:
         ctypes.c_double,                      # chi_offset_t
         ctypes.c_double,                      # chi_offset_u
         ctypes.c_int,                         # ntriangle
+        ctypes.c_double,                      # endpoint_weight
         ctypes.POINTER(ctypes.c_double),      # D_flat
         ctypes.POINTER(ctypes.c_int),         # sim_indices
         ctypes.POINTER(ctypes.c_int),         # frame_counts
@@ -158,6 +160,7 @@ def _get_wham_lib() -> ctypes.CDLL:
         ctypes.c_double,                      # chi_offset_t
         ctypes.c_double,                      # chi_offset_u
         ctypes.c_int,                         # ntriangle
+        ctypes.c_double,                      # endpoint_weight
         ctypes.POINTER(ctypes.c_double),      # D_flat
         ctypes.POINTER(ctypes.c_int),         # sim_indices
         ctypes.POINTER(ctypes.c_int),         # frame_counts
@@ -184,6 +187,7 @@ def _get_wham_lib() -> ctypes.CDLL:
         ctypes.c_double,                      # chi_offset_t
         ctypes.c_double,                      # chi_offset_u
         ctypes.c_int,                         # ntriangle
+        ctypes.c_double,                      # endpoint_weight
         ctypes.POINTER(ctypes.c_double),      # D_flat
         ctypes.POINTER(ctypes.c_int),         # sim_indices
         ctypes.POINTER(ctypes.c_int),         # frame_counts
@@ -215,6 +219,7 @@ def _get_wham_lib() -> ctypes.CDLL:
         ctypes.c_double,                      # chi_offset_t
         ctypes.c_double,                      # chi_offset_u
         ctypes.c_int,                         # ntriangle
+        ctypes.c_double,                      # endpoint_weight
         ctypes.POINTER(ctypes.c_double),      # D_flat (slim: no cross-energies)
         ctypes.c_int,                         # ndim (slim stride)
         ctypes.POINTER(ctypes.c_int),         # sim_indices
@@ -299,6 +304,7 @@ def _get_wham_lib() -> ctypes.CDLL:
         ctypes.c_double,                      # chi_offset_t
         ctypes.c_double,                      # chi_offset_u
         ctypes.c_int,                         # ntriangle
+        ctypes.c_double,                      # endpoint_weight
         ctypes.POINTER(ctypes.c_double),      # D_flat
         ctypes.POINTER(ctypes.c_int),         # sim_indices
         ctypes.POINTER(ctypes.c_int),         # frame_counts
@@ -411,6 +417,7 @@ def run_wham(
     chi_offset_t: float = 0.012,
     chi_offset_u: float = 0.012,
     ntriangle: int = 5,
+    endpoint_weight: float = 100.0,
 ) -> None:
     """Run WHAM analysis using bundled GPU-accelerated library.
 
@@ -492,6 +499,7 @@ def run_wham(
                 nsubs_ptr, nsites, g_imp_path_bytes,
                 constants.chi_offset, constants.omega_scale, cutlsum,
                 chi_offset_t, chi_offset_u, ntriangle,
+                endpoint_weight,
             )
         if result != 0:
             raise RuntimeError(f"WHAM returned error code: {result}")
@@ -896,6 +904,7 @@ def run_wham_from_memory(
     chi_offset_t: float = 0.012,
     chi_offset_u: float = 0.012,
     ntriangle: int = 5,
+    endpoint_weight: float = 100.0,
 ) -> None:
     """Run WHAM analysis from in-memory numpy arrays (no file I/O for input).
 
@@ -980,6 +989,7 @@ def run_wham_from_memory(
                 nsubs_ptr, nsites, g_imp_path_bytes,
                 constants.chi_offset, constants.omega_scale, cutlsum,
                 chi_offset_t, chi_offset_u, ntriangle,
+                endpoint_weight,
                 D_ptr, si_ptr, fc_ptr,
                 total_frames, gs_ptr,
             )
@@ -1012,6 +1022,7 @@ def run_wham_from_packed(
     chi_offset_t: float = 0.012,
     chi_offset_u: float = 0.012,
     ntriangle: int = 5,
+    endpoint_weight: float = 100.0,
 ) -> None:
     """Run WHAM from pre-packed D_h data (no intermediate energy_matrix).
 
@@ -1075,6 +1086,7 @@ def run_wham_from_packed(
                 nsubs_ptr, nsites, g_imp_path_bytes,
                 constants.chi_offset, constants.omega_scale, cutlsum,
                 chi_offset_t, chi_offset_u, ntriangle,
+                endpoint_weight,
                 D_ptr, si_ptr, fc_ptr,
                 total_frames, gs_ptr,
             )
@@ -1107,6 +1119,7 @@ def compute_weights_from_packed(
     chi_offset_t: float = 0.012,
     chi_offset_u: float = 0.012,
     ntriangle: int = 5,
+    endpoint_weight: float = 100.0,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Compute WHAM per-frame weights from pre-packed D_h data (GPU).
 
@@ -1181,6 +1194,7 @@ def compute_weights_from_packed(
                 nsubs_ptr, nsites, g_imp_path_bytes,
                 constants.chi_offset, constants.omega_scale, cutlsum,
                 chi_offset_t, chi_offset_u, ntriangle,
+                endpoint_weight,
                 D_ptr, si_ptr, fc_ptr,
                 total_frames, gs_ptr,
                 w_ptr, f_ptr, ctypes.byref(nf_out),
@@ -1264,6 +1278,7 @@ def run_wham_distributed_from_packed(
     chi_offset_t: float = 0.012,
     chi_offset_u: float = 0.012,
     ntriangle: int = 5,
+    endpoint_weight: float = 100.0,
 ) -> None:
     """Run distributed WHAM from pre-packed D_h data.
 
@@ -1300,6 +1315,7 @@ def run_wham_distributed_from_packed(
                 chi_offset_t=chi_offset_t,
                 chi_offset_u=chi_offset_u,
                 ntriangle=ntriangle,
+                endpoint_weight=endpoint_weight,
             )
         return
 
@@ -1354,6 +1370,7 @@ def run_wham_distributed_from_packed(
                         nsubs_ptr, nsites, g_imp_path_bytes,
                         constants.chi_offset, constants.omega_scale, cutlsum,
                         chi_offset_t, chi_offset_u, ntriangle,
+                        endpoint_weight,
                         D_ptr, si_ptr, fc_ptr,
                         total_frames, gs_ptr,
                         f_ptr, ctypes.byref(nf_out),
@@ -1486,6 +1503,7 @@ def run_wham_distributed_from_packed(
                         nsubs_ptr, nsites, g_imp_path_bytes,
                         constants.chi_offset, constants.omega_scale, cutlsum,
                         chi_offset_t, chi_offset_u, ntriangle,
+                        endpoint_weight,
                         D_ptr, slim_ndim,
                         si_ptr, fc_ptr,
                         total_frames, gs_ptr,
@@ -1617,6 +1635,7 @@ def run_wham_iterate(
     chi_offset_t: float = 0.012,
     chi_offset_u: float = 0.012,
     ntriangle: int = 5,
+    endpoint_weight: float = 100.0,
 ) -> np.ndarray:
     """Run WHAM Phase A: f-value convergence only.
 
@@ -1661,6 +1680,7 @@ def run_wham_iterate(
                 args["nsubs_ptr"], args["nsites"], args["g_imp_path_bytes"],
                 args["constants"].chi_offset, args["constants"].omega_scale, cutlsum,
                 chi_offset_t, chi_offset_u, ntriangle,
+                endpoint_weight,
                 D_ptr, si_ptr, fc_ptr,
                 args["total_frames"], gs_ptr,
                 f_ptr, ctypes.byref(nf_out),
@@ -1697,6 +1717,7 @@ def run_wham_profiles(
     chi_offset_t: float = 0.012,
     chi_offset_u: float = 0.012,
     ntriangle: int = 5,
+    endpoint_weight: float = 100.0,
 ) -> tuple[np.ndarray, np.ndarray, int]:
     """Run WHAM Phase B: compute profiles for a subset.
 
@@ -1759,6 +1780,7 @@ def run_wham_profiles(
                 args["nsubs_ptr"], args["nsites"], args["g_imp_path_bytes"],
                 args["constants"].chi_offset, args["constants"].omega_scale, cutlsum,
                 chi_offset_t, chi_offset_u, ntriangle,
+                endpoint_weight,
                 D_ptr, si_ptr, fc_ptr,
                 args["total_frames"], gs_ptr,
                 f_ptr, len(f_in),
@@ -1853,6 +1875,7 @@ def run_wham_distributed(
     chi_offset_t: float = 0.012,
     chi_offset_u: float = 0.012,
     ntriangle: int = 5,
+    endpoint_weight: float = 100.0,
 ) -> None:
     """Run WHAM with profile computation distributed across MPI ranks.
 
@@ -1899,6 +1922,7 @@ def run_wham_distributed(
                 chi_offset_t=chi_offset_t,
                 chi_offset_u=chi_offset_u,
                 ntriangle=ntriangle,
+                endpoint_weight=endpoint_weight,
             )
         return
 
@@ -1953,6 +1977,7 @@ def run_wham_distributed(
                         packed["constants"].chi_offset,
                         packed["constants"].omega_scale, cutlsum,
                         chi_offset_t, chi_offset_u, ntriangle,
+                        endpoint_weight,
                         D_ptr, si_ptr, fc_ptr,
                         total_frames, gs_ptr,
                         f_ptr, ctypes.byref(nf_out),
@@ -2085,6 +2110,7 @@ def run_wham_distributed(
                         nsubs_ptr, nsites, g_imp_path_bytes,
                         constants.chi_offset, constants.omega_scale, cutlsum,
                         chi_offset_t, chi_offset_u, ntriangle,
+                        endpoint_weight,
                         D_ptr, slim_ndim,
                         si_ptr, fc_ptr,
                         total_frames, gs_ptr,

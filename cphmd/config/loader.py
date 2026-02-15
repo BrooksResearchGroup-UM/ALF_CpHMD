@@ -177,6 +177,14 @@ def config_to_alf(
         else:
             cfg["g_imp_bins"] = int(g_imp_bins)
 
+    # Handle endpoint_weight string parsing (from YAML it could be float or list)
+    ew = cfg.get("endpoint_weight")
+    if isinstance(ew, str):
+        if "," in ew:
+            cfg["endpoint_weight"] = [float(x.strip()) for x in ew.split(",")]
+        else:
+            cfg["endpoint_weight"] = float(ew)
+
     # Warn if bias_type and individual no_*_bias flags are both specified
     _bias_flags = {"no_b_bias", "no_c_bias", "no_x_bias", "no_s_bias", "no_t_bias", "no_u_bias"}
     if "bias_type" in cfg and any(k in cfg for k in _bias_flags):
@@ -188,6 +196,18 @@ def config_to_alf(
             DeprecationWarning,
             stacklevel=2,
         )
+
+    # Handle replica_exchange: nested dict → ReplicaExchangeConfig, bool → enabled flag
+    if "replica_exchange" in cfg:
+        re_cfg = cfg["replica_exchange"]
+        if isinstance(re_cfg, bool):
+            from cphmd.core.replica_exchange import ReplicaExchangeConfig
+
+            cfg["replica_exchange"] = ReplicaExchangeConfig(enabled=re_cfg)
+        elif isinstance(re_cfg, dict):
+            from cphmd.core.replica_exchange import ReplicaExchangeConfig
+
+            cfg["replica_exchange"] = ReplicaExchangeConfig(**re_cfg)
 
     # Deprecated: preset_config is now always auto-derived from elec_type + vdw_type
     if "preset_config" in cfg:
