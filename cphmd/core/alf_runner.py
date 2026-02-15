@@ -133,6 +133,12 @@ class ALFConfig:
     g_imp_bins: int | list[int] | None = None
     cutlsum: float = 0.8  # G12 conditional threshold (λ_i + λ_j > cutlsum)
 
+    # WHAM endpoint bin weight: prevents solver from sacrificing the last histogram bin.
+    # float = same weight for all phases; list[float] = per-phase [phase1, phase2, phase3]
+    # Phase 1 (far from solution): low weight avoids sign-switching.
+    # Phase 3 (near solution): high weight locks endpoint accuracy.
+    endpoint_weight: float | list[float] = 100.0
+
     # gshift correction in WHAM Stage 2 profile extraction
     use_gshift: bool = True  # Apply G_imp entropy shifts (recommended; see docs/WHAM/gshift_theory.md)
 
@@ -164,6 +170,9 @@ class ALFConfig:
 
     # Extra topology/parameter files (absolute paths for custom ligands)
     extra_files: list[str | Path] = field(default_factory=list)
+
+    # Replica exchange (pH-ladder swaps between dynamics segments)
+    replica_exchange: Any = field(default=None)  # ReplicaExchangeConfig or None
 
     # Prep format: "default" (CpHMD), "legacy" (msld-py-prep), or "auto" (detect)
     prep_format: PrepFormat = "auto"
@@ -255,6 +264,17 @@ class ALFConfig:
                 stacklevel=2,
             )
 
+        # Normalize replica_exchange: None → disabled config
+        if self.replica_exchange is None:
+            from cphmd.core.replica_exchange import ReplicaExchangeConfig
+            self.replica_exchange = ReplicaExchangeConfig()
+        elif isinstance(self.replica_exchange, dict):
+            from cphmd.core.replica_exchange import ReplicaExchangeConfig
+            self.replica_exchange = ReplicaExchangeConfig(**self.replica_exchange)
+        elif isinstance(self.replica_exchange, bool):
+            from cphmd.core.replica_exchange import ReplicaExchangeConfig
+            self.replica_exchange = ReplicaExchangeConfig(enabled=self.replica_exchange)
+
     @property
     def ntriangle(self) -> int:
         """CUDA ntriangle encoding: 1(c) + 2(x) + 2(s) + 2(t) + 2(u).
@@ -292,6 +312,23 @@ class ALFConfig:
             return g_imp_bins
         # list[int] — index by phase (1-indexed → 0-indexed)
         return g_imp_bins[phase - 1]
+
+    @staticmethod
+    def resolve_endpoint_weight(
+        endpoint_weight: "float | list[float]", phase: int
+    ) -> float:
+        """Resolve endpoint_weight for a specific phase.
+
+        Args:
+            endpoint_weight: Single float (all phases) or list of 3 floats (per-phase).
+            phase: Phase number (1, 2, or 3).
+
+        Returns:
+            Resolved endpoint weight for this phase.
+        """
+        if isinstance(endpoint_weight, (int, float)):
+            return float(endpoint_weight)
+        return float(endpoint_weight[phase - 1])
 
     @staticmethod
     def _find_legacy_setup_script(prep_dir: Path) -> str:
@@ -366,6 +403,9 @@ class SimulationState:
     stuck_phase2_count: int = 0  # consecutive stuck runs in Phase 2
     phase_regression_count: int = 0  # number of Phase 2→1 regressions performed
 
+    # Replica exchange state (persisted alongside ewbs_state)
+    exchange_state: Any = None  # ExchangeState instance, lazy-initialized
+
 
 class ALFSimulation:
     """Main ALF simulation orchestrator.
@@ -401,6 +441,7 @@ class ALFSimulation:
         self._bias_analyzer = BiasAnalyzer(config)
         self._convergence = ConvergenceTracker(config, self.state)
         self._dynamics = DynamicsRunner(config, self.state)
+        self._exchanger = None  # ReplicaExchanger, created in initialize() if enabled
 
     def _ntersite(self) -> list[int]:
         """Compute [ms, msprof] from coupling config."""
@@ -903,6 +944,20 @@ class ALFSimulation:
 
             self._comm.Barrier()
 
+            # Create replica exchanger if enabled (version check runs here)
+            if self.config.replica_exchange.enabled:
+                from cphmd.core.replica_exchange import ReplicaExchanger
+
+                self._exchanger = ReplicaExchanger(
+                    self.config.replica_exchange,
+                    self._comm,
+                    self.state.rank,
+                    self.state.size,
+                )
+                # Load persisted exchange state
+                exchange_state_path = self.config.input_folder / "exchange_state.json"
+                self._exchanger.load_state(exchange_state_path)
+
             self._initialized = True
         except Exception:
             # Print the error to real stderr so it appears in SLURM output
@@ -1121,7 +1176,11 @@ class ALFSimulation:
                 if run_idx <= 5:
                     self._run_minimization(run_idx, replica_idx)
 
-                self._run_dynamics(run_idx, letter, k, replica_idx)
+                # Dispatch to segmented or regular dynamics
+                if self._exchanger is not None:
+                    self._run_dynamics_with_exchange(run_idx, letter, k, replica_idx)
+                else:
+                    self._run_dynamics(run_idx, letter, k, replica_idx)
 
                 # Return CHARMM output to stdout
                 self._return_output()
@@ -1138,6 +1197,13 @@ class ALFSimulation:
         if self.state.rank == 0:
             print(f"Analysis completed in {elapsed:.1f}s")
             sys.stdout.flush()
+
+        # Save exchange state after analysis
+        if self._exchanger is not None and self.state.rank == 0:
+            exchange_state_path = self.config.input_folder / "exchange_state.json"
+            self._exchanger.save_state(exchange_state_path)
+            run_dir = self.config.input_folder / f"run{run_idx}"
+            self._exchanger.write_exchange_log(run_dir / "exchange_log.txt", run_idx)
 
         self._comm.Barrier()
 
@@ -1225,6 +1291,75 @@ class ALFSimulation:
     def _run_dynamics(self, run_idx: int, letter: str, k: int, replica_idx: int):
         """Execute molecular dynamics with BLADE GPU acceleration."""
         self._dynamics.run_dynamics(run_idx, letter, k, replica_idx)
+
+    def _run_dynamics_with_exchange(
+        self, run_idx: int, letter: str, k: int, replica_idx: int,
+    ):
+        """Run segmented dynamics with replica exchange attempts between segments.
+
+        Splits production dynamics into segments of ``exchange_freq`` steps,
+        with exchange attempts between adjacent pH replicas after each segment.
+        Equilibration (if any) runs as a non-segmented prefix (no exchanges
+        during eq — biases haven't stabilized yet).
+
+        Requires one replica per MPI rank (synchronous mode: nreps == size).
+        """
+        from cphmd.core.cphmd_params import get_delta_pKa_for_phase
+
+        _, nsteps_prod, _, _ = self._dynamics.get_production_steps()
+        n_segments = self._exchanger.compute_n_segments(nsteps_prod)
+        seg_steps = self.config.replica_exchange.exchange_freq
+
+        nblocks = self.state.alf_info["nblocks"]
+        delta_pKa = get_delta_pKa_for_phase(self.state.phase)
+
+        if n_segments == 0:
+            # exchange_freq > nsteps_prod: fall back to regular dynamics
+            self._dynamics.run_dynamics(run_idx, letter, k, replica_idx)
+            return
+
+        # Run equilibration if needed (Phase 2: 10000 steps).
+        # No exchanges during eq — biases aren't stable yet.
+        eq_rst = self._dynamics.run_equilibration(run_idx, k, replica_idx)
+
+        # First segment reads from eq restart (if produced) or starts fresh
+        restart_override = eq_rst
+
+        for seg in range(n_segments):
+            is_first = (seg == 0)
+
+            rst_path, lmd_path = self._dynamics.run_dynamics_segment(
+                run_idx, letter, k, replica_idx,
+                segment_idx=seg,
+                nsteps=seg_steps,
+                restart_from=restart_override,
+                is_first_segment=is_first,
+                blade_ready=(eq_rst is not None),
+            )
+
+            # All ranks synchronize before exchange attempt
+            self._comm.Barrier()
+
+            # Attempt exchange
+            partner_rst = self._exchanger.attempt_exchange(
+                segment_idx=seg,
+                run_idx=run_idx,
+                lmd_path=lmd_path,
+                rst_path=rst_path,
+                nblocks=nblocks,
+                patch_info=self.state.patch_info,
+                delta_pKa=delta_pKa,
+                temperature=self.config.temperature,
+            )
+
+            # Ensure all restart files are accessible before next segment
+            self._comm.Barrier()
+
+            # Next segment reads partner's restart if swapped, else own restart
+            restart_override = partner_rst if partner_rst is not None else rst_path
+
+        # Turn off BLADE after all segments
+        self._dynamics.finish_blade()
 
     def _is_wham_output_invalid(self, analysis_dir: Path, cut_params: dict | None = None) -> bool:
         """Check for invalid WHAM output (all-zero, NaN, or Inf)."""
@@ -1440,14 +1575,26 @@ class ALFSimulation:
                     with contextlib.redirect_stdout(log_f):
                         for j in range(self.config.nreps):
                             for kk in range(repeats):
-                                if self.state.phase in [1, 2]:
-                                    fnmsin = [f"../run{run_idx}/res/{name}_flat.{kk}.{j}.lmd"]
+                                sim_type = "flat" if self.state.phase in [1, 2] else "prod"
+
+                                if self._exchanger is not None:
+                                    # Segmented LMD files from replica exchange
+                                    import glob as glob_mod
+
+                                    seg_pattern = (
+                                        f"../run{run_idx}/res/"
+                                        f"{name}_{sim_type}.{kk}.{j}.seg*.lmd"
+                                    )
+                                    fnmsin = sorted(glob_mod.glob(seg_pattern))
                                 else:
-                                    fnmsin = [f"../run{run_idx}/res/{name}_prod.{kk}.{j}.lmd"]
+                                    fnmsin = [
+                                        f"../run{run_idx}/res/"
+                                        f"{name}_{sim_type}.{kk}.{j}.lmd"
+                                    ]
 
                                 fnmout = f"data/Lambda.{kk}.{j}.parquet"
 
-                                if Path(fnmsin[0]).exists():
+                                if fnmsin and Path(fnmsin[0]).exists():
                                     convert_lambda_binary_to_parquet(
                                         self.state.alf_info, fnmout, fnmsin
                                     )
@@ -1456,6 +1603,18 @@ class ALFSimulation:
                                         p = Path(lmd_path)
                                         if p.exists() and p.suffix == '.lmd':
                                             p.unlink()
+
+                                    # For exchange mode: also clean up intermediate
+                                    # segment restart files (keep only the final one)
+                                    if self._exchanger is not None:
+                                        seg_rst_pattern = (
+                                            f"../run{run_idx}/res/"
+                                            f"{name}_{sim_type}.{kk}.{j}.seg*.rst"
+                                        )
+                                        seg_rsts = sorted(glob_mod.glob(seg_rst_pattern))
+                                        # Keep the last segment's restart, delete the rest
+                                        for rst_p in seg_rsts[:-1]:
+                                            Path(rst_p).unlink(missing_ok=True)
 
             # === Barrier: rank 0 done with file processing ===
             if is_distributed:

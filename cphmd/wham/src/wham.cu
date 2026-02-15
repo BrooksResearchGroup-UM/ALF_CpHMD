@@ -314,6 +314,7 @@ struct_data *readdata(int arg1, double arg2, int arg3, int arg4, int use_gshift,
   gimp_cache_init(data->gimp_cache);
 
   data->ntriangle = ntriangle_in;
+  data->endpoint_weight = 100.0;  // default; overridden by caller after readdata()
   data->Nsim = arg1;
 
   // Store G_imp path (use provided path or default to "G_imp")
@@ -1372,10 +1373,10 @@ __global__ void get_CC(struct_data data, int i, double beta, double wnorm, int p
   for (int k = threadIdx.x; k < g_1d_bins; k += 100)
   {
     double weight = wnorm;
-    // Enhanced weight calculation with validation using dynamic dimension
+    // Phase-dependent endpoint weight: prevents solver from sacrificing last bin
     if ((ptype == 0 || ptype == 3) && k == (g_1d_bins - 1))
     {
-      weight *= 100.0;
+      weight *= data.endpoint_weight;
     }
 
     if (!isfinite(weight) || weight <= 0)
@@ -1783,7 +1784,7 @@ static void compute_profiles_range(
     {
       weight = wnorm;
       if ((ptype == 0 || ptype == 3) && k == B_N - 1)
-        weight *= 100.0;
+        weight *= data->endpoint_weight;
       if (isfinite(data->lnZ_h[k]))
       {
         double dG = (-data->lnZ_h[k] - data->Gimp_h[k]) / data->beta_t;
@@ -1826,7 +1827,7 @@ static void compute_profiles_range(
       {
         weight = wnorm;
         if ((ptype == 0 || ptype == 3) && k == B_N - 1)
-          weight *= 100.0;
+          weight *= data->endpoint_weight;
         if (isfinite(data->lnZ_h[k]))
         {
           double dG = (-data->lnZ_h[k] - data->Gimp_h[k]) / data->beta_t;
@@ -1973,6 +1974,7 @@ static struct_data *readdata_from_memory(
   gimp_cache_init(data->gimp_cache);
 
   data->ntriangle = ntriangle_in;
+  data->endpoint_weight = 100.0;  // default; overridden by caller after readdata_from_memory()
   data->Nsim = nf;
 
   // G_imp path
@@ -2184,6 +2186,7 @@ extern "C" int wham_from_memory(
     int *nsubs, int nsites, const char *g_imp_path,
     double chi_offset, double omega_scale, double cutlsum,
     double chi_offset_t, double chi_offset_u, int ntriangle,
+    double endpoint_weight,
     double *D_flat, int *sim_indices, int *frame_counts,
     int total_frames, double *gshift_flat)
 {
@@ -2200,6 +2203,7 @@ extern "C" int wham_from_memory(
     data->cutlsum = cutlsum;
     data->chi_offset_t = chi_offset_t;
     data->chi_offset_u = chi_offset_u;
+    data->endpoint_weight = endpoint_weight;
   }
   if (!data)
   {
@@ -2243,6 +2247,7 @@ extern "C" int wham_iterate_from_memory(
     int *nsubs, int nsites, const char *g_imp_path,
     double chi_offset, double omega_scale, double cutlsum,
     double chi_offset_t, double chi_offset_u, int ntriangle,
+    double endpoint_weight,
     double *D_flat, int *sim_indices, int *frame_counts,
     int total_frames, double *gshift_flat,
     double *f_out, int *nf_out)
@@ -2260,6 +2265,7 @@ extern "C" int wham_iterate_from_memory(
     data->cutlsum = cutlsum;
     data->chi_offset_t = chi_offset_t;
     data->chi_offset_u = chi_offset_u;
+    data->endpoint_weight = endpoint_weight;
   }
   if (!data)
   {
@@ -2309,6 +2315,7 @@ extern "C" int wham_profiles_from_memory(
     int *nsubs, int nsites, const char *g_imp_path,
     double chi_offset, double omega_scale, double cutlsum,
     double chi_offset_t, double chi_offset_u, int ntriangle,
+    double endpoint_weight,
     double *D_flat, int *sim_indices, int *frame_counts,
     int total_frames, double *gshift_flat,
     double *f_in, int f_size,
@@ -2328,6 +2335,7 @@ extern "C" int wham_profiles_from_memory(
     data->cutlsum = cutlsum;
     data->chi_offset_t = chi_offset_t;
     data->chi_offset_u = chi_offset_u;
+    data->endpoint_weight = endpoint_weight;
   }
   if (!data)
   {
@@ -2395,6 +2403,7 @@ extern "C" int wham_profiles_slim_from_memory(
     int *nsubs, int nsites, const char *g_imp_path,
     double chi_offset, double omega_scale, double cutlsum,
     double chi_offset_t, double chi_offset_u, int ntriangle,
+    double endpoint_weight,
     double *D_flat, int ndim,
     int *sim_indices, int *frame_counts,
     int total_frames, double *gshift_flat,
@@ -2416,6 +2425,7 @@ extern "C" int wham_profiles_slim_from_memory(
     data->cutlsum = cutlsum;
     data->chi_offset_t = chi_offset_t;
     data->chi_offset_u = chi_offset_u;
+    data->endpoint_weight = endpoint_weight;
   }
   if (!data)
   {
@@ -2470,7 +2480,8 @@ extern "C" int wham_profiles_slim_from_memory(
 extern "C" int wham(int arg1, double arg2, int arg3, int arg4, int use_gshift,
                    int *nsubs, int nsites, const char *g_imp_path,
                    double chi_offset, double omega_scale, double cutlsum,
-                   double chi_offset_t, double chi_offset_u, int ntriangle)
+                   double chi_offset_t, double chi_offset_u, int ntriangle,
+                   double endpoint_weight)
 {
   // Initialize and validate GPU
   validate_and_setup_gpu();
@@ -2482,6 +2493,7 @@ extern "C" int wham(int arg1, double arg2, int arg3, int arg4, int use_gshift,
     data->cutlsum = cutlsum;
     data->chi_offset_t = chi_offset_t;
     data->chi_offset_u = chi_offset_u;
+    data->endpoint_weight = endpoint_weight;
   }
   if (!data)
   {
@@ -4361,6 +4373,7 @@ extern "C" int wham_compute_weights_from_memory(
     int *nsubs, int nsites, const char *g_imp_path,
     double chi_offset, double omega_scale, double cutlsum,
     double chi_offset_t, double chi_offset_u, int ntriangle,
+    double endpoint_weight,
     double *D_flat, int *sim_indices, int *frame_counts,
     int total_frames, double *gshift_flat,
     double *weights_out,
@@ -4380,6 +4393,7 @@ extern "C" int wham_compute_weights_from_memory(
     data->cutlsum = cutlsum;
     data->chi_offset_t = chi_offset_t;
     data->chi_offset_u = chi_offset_u;
+    data->endpoint_weight = endpoint_weight;
   }
   if (!data)
   {

@@ -314,7 +314,7 @@ class BiasAnalyzer:
                             _log_f = None
                             _redirect_ctx = None
                     try:
-                        self._run_wham(nf, ms, msprof, cut_params, alf_info)
+                        self._run_wham(nf, ms, msprof, cut_params, alf_info, phase)
                     finally:
                         if _redirect_ctx is not None:
                             _redirect_ctx.__exit__(None, None, None)
@@ -329,13 +329,13 @@ class BiasAnalyzer:
                                     nf, ms, msprof, cut_params, alf_info, phase
                                 )
                             elif method == "lmalf":
-                                self._run_lmalf(nf, ms, msprof, cut_params, alf_info)
+                                self._run_lmalf(nf, ms, msprof, cut_params, alf_info, phase)
                             elif method == "nonlinear":
                                 self._run_nonlinear(
-                                    nf, ms, msprof, cut_params, alf_info
+                                    nf, ms, msprof, cut_params, alf_info, phase
                                 )
                             else:
-                                self._run_wham(nf, ms, msprof, cut_params, alf_info)
+                                self._run_wham(nf, ms, msprof, cut_params, alf_info, phase)
             except Exception as e:
                 error = str(e)
 
@@ -389,11 +389,15 @@ class BiasAnalyzer:
         return False, f"{method.upper()} failed after {max_attempts} attempts"
 
     def _run_wham(self, nf: int, ms: int, msprof: int,
-                  cut_params: dict, alf_info: dict) -> None:
+                  cut_params: dict, alf_info: dict,
+                  phase: "PhaseType" = 3) -> None:
         """Run WHAM analysis using bundled GPU library."""
+        from cphmd.core.alf_runner import ALFConfig
+
         nsubs = alf_info["nsubs"]
         nblocks = alf_info["nblocks"]
         ntriangle = self.config.ntriangle
+        ew = ALFConfig.resolve_endpoint_weight(self.config.endpoint_weight, phase)
 
         wham_kwargs = {
             "nblocks": nblocks,
@@ -413,6 +417,7 @@ class BiasAnalyzer:
             "chi_offset_t": self.config.chi_offset_t,
             "chi_offset_u": self.config.chi_offset_u,
             "ntriangle": ntriangle,
+            "endpoint_weight": ew,
         }
 
         if self._nranks > 1 and self._comm is not None and self._packed_D is not None:
@@ -484,6 +489,7 @@ class BiasAnalyzer:
                 chi_offset_t=self.config.chi_offset_t,
                 chi_offset_u=self.config.chi_offset_u,
                 ntriangle=ntriangle,
+                endpoint_weight=ew,
             )
             get_free_energy5(alf_info, ms=ms, msprof=msprof, ntriangle=ntriangle, **cut_params)
 
@@ -546,7 +552,8 @@ class BiasAnalyzer:
         return True
 
     def _run_lmalf(self, nf: int, ms: int, msprof: int,
-                   cut_params: dict, alf_info: dict) -> None:
+                   cut_params: dict, alf_info: dict,
+                   phase: "PhaseType" = 3) -> None:
         """Run LMALF analysis using bundled GPU library."""
         from cphmd.core.alf_utils import get_free_energy_lm
 
@@ -562,7 +569,7 @@ class BiasAnalyzer:
             out_data = np.loadtxt(out_file)
             if np.all(out_data == 0):
                 print("[LMALF] Warning: LMALF produced all zeros - falling back to WHAM")
-                self._run_wham(nf, ms, msprof, cut_params, alf_info)
+                self._run_wham(nf, ms, msprof, cut_params, alf_info, phase)
                 return
 
         ntriangle = self.config.ntriangle
@@ -631,7 +638,8 @@ class BiasAnalyzer:
         return True
 
     def _run_nonlinear(self, nf: int, ms: int, msprof: int,
-                       cut_params: dict, alf_info: dict) -> None:
+                       cut_params: dict, alf_info: dict,
+                       phase: PhaseType = 3) -> None:
         """Run nonlinear L-BFGS analysis."""
         from cphmd.core.alf_utils import get_free_energy_lm
 
@@ -647,7 +655,7 @@ class BiasAnalyzer:
             out_data = np.loadtxt(out_file)
             if np.all(out_data == 0):
                 print("[NL] Warning: produced all zeros - falling back to WHAM")
-                self._run_wham(nf, ms, msprof, cut_params, alf_info)
+                self._run_wham(nf, ms, msprof, cut_params, alf_info, phase=phase)
                 return
 
         ntriangle = self.config.ntriangle
@@ -661,7 +669,7 @@ class BiasAnalyzer:
     def _run_hybrid(self, nf: int, ms: int, msprof: int,
                     cut_params: dict, alf_info: dict, phase: PhaseType) -> None:
         """Run WHAM followed by short LMALF refinement."""
-        self._run_wham(nf, ms, msprof, cut_params, alf_info)
+        self._run_wham(nf, ms, msprof, cut_params, alf_info, phase=phase)
 
         if phase != 1:
             return
