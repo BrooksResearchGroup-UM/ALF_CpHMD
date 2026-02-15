@@ -78,6 +78,11 @@ from .entropy import (
     get_cache_dir,
     get_cache_path,
 )
+from .expected_populations import (
+    ExpectedPopulations,
+    compute_expected_populations,
+    compute_model_deviation,
+)
 from .free_energy import (
     FreeEnergyResult,
     fallback_bias_update,
@@ -231,6 +236,10 @@ __all__ = [
     "compute_wham_inputs",
     "compute_bias_energy",
     "convert_lambda_binary_to_parquet",
+    # Expected Populations (pH-aware targets)
+    "ExpectedPopulations",
+    "compute_expected_populations",
+    "compute_model_deviation",
     # Free Energy Optimization
     "FreeEnergyResult",
     "get_free_energy5",

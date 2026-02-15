@@ -219,9 +219,9 @@ class ALFConfig:
         # non-HMR(2fs) uses lighter mass (Kramers ∝ 1/M) with scaled friction
         # γ(M) = γ₀·√(M₀/M) for near-critical damping.
         if self.lambda_mass is None:
-            self.lambda_mass = 10.0 if self.hmr else 5.0
+            self.lambda_mass = 12.0 if self.hmr else 5.0
         if self.lambda_fbeta is None:
-            self.lambda_fbeta = 5.0 if self.hmr else 7.0
+            self.lambda_fbeta = 6.0 if self.hmr else 7.0
 
         # bias_type enum overrides individual no_*_bias flags
         if self.bias_type is not None:
@@ -786,6 +786,9 @@ class ALFSimulation:
         linear (b) and barrier (c) biases.  Only runs on rank 0 when
         presets are not in use and ``.biases_guessed`` marker is absent.
 
+        Supports both default format (uses setup_crystal + patches.dat)
+        and legacy format (uses setup_legacy + siteX_subY named selections).
+
         After guessing, clears the CHARMM session so the main loop
         starts with a fresh PSF load.
         """
@@ -794,6 +797,8 @@ class ALFSimulation:
         marker = self.config.input_folder / "analysis0" / ".biases_guessed"
         if marker.exists():
             return
+
+        is_legacy = self.config.prep_format == "legacy"
 
         if self.state.rank == 0:
             import pycharmm.lingo as lingo
@@ -807,15 +812,38 @@ class ALFSimulation:
             print("Guessing initial biases from solvated-vacuum energy difference...")
             sys.stdout.flush()
 
+            # Suppress CHARMM output during bias guessing (many BLOCK/energy
+            # evaluations produce huge output for large systems)
+            lingo.charmm_script("prnlev 0")
+
             # Load PSF, coordinates, crystal, and nonbonded for energy evaluation
-            self._dynamics.setup_crystal(
-                run_idx=self.config.start, letter="", k=0, replica_idx=0
-            )
+            if is_legacy:
+                self._dynamics.setup_legacy(
+                    run_idx=self.config.start, letter="", k=0, replica_idx=0
+                )
+            else:
+                self._dynamics.setup_crystal(
+                    run_idx=self.config.start, letter="", k=0, replica_idx=0
+                )
 
             try:
-                b, c = guess_initial_biases_combined(
-                    self.state.patch_info, nsubs, fnex=self.config.fnex,
-                )
+                if is_legacy:
+                    # Legacy MSLD: estimate c only from solvated energies.
+                    # Vacuum step (delete water + CUTNB=999) crashes CHARMM
+                    # with "MAKINB: Too many bonds" for large block counts.
+                    # Without ΔΔE_solvation, b includes solvent screening
+                    # and can have wrong sign — keep b=0 (default).
+                    from .bias_guesser import guess_initial_biases
+                    _, c = guess_initial_biases(
+                        self.state.patch_info, nsubs, fnex=self.config.fnex,
+                        legacy=True,
+                    )
+                    c *= 5.0
+                    b = np.zeros((1, sum(nsubs)))
+                else:
+                    b, c = guess_initial_biases_combined(
+                        self.state.patch_info, nsubs, fnex=self.config.fnex,
+                    )
             except Exception as e:
                 print(f"  Bias guessing failed: {e}. Using zero biases.")
                 b, c = None, None
@@ -833,6 +861,9 @@ class ALFSimulation:
 
             marker.touch()
 
+            # Restore CHARMM output level
+            lingo.charmm_script("prnlev 5")
+
             # Clear CHARMM session — main loop will reload fresh
             clear_block()
             clear_crystal()
@@ -846,6 +877,8 @@ class ALFSimulation:
     def initialize(self):
         """Perform full initialization sequence."""
         self._init_mpi()
+        # Wire MPI into bias analyzer for distributed WHAM
+        self._bias_analyzer.set_mpi(self._comm, self.state.rank, self.state.size)
         self._redirect_python_output()
 
         # Save real stderr for error reporting (sys.stdout is now redirected)
@@ -1098,11 +1131,11 @@ class ALFSimulation:
             print(f"Run {run_idx}.{k} dynamics completed in {elapsed:.1f}s")
             sys.stdout.flush()
 
-        # ALF analysis (rank 0 only)
+        # ALF analysis — all ranks participate for distributed WHAM
+        start_time = time.time()
+        self._alf_analysis(run_idx, repeats)
+        elapsed = time.time() - start_time
         if self.state.rank == 0:
-            start_time = time.time()
-            self._alf_analysis(run_idx, repeats)
-            elapsed = time.time() - start_time
             print(f"Analysis completed in {elapsed:.1f}s")
             sys.stdout.flush()
 
@@ -1136,11 +1169,11 @@ class ALFSimulation:
             print(f"Run {run_idx}.{k} (confirmation) completed in {elapsed:.1f}s")
             sys.stdout.flush()
 
-            # Re-run analysis with additional data
+            # Re-run analysis with additional data (all ranks for distributed WHAM)
             if self.state.rank == 0:
                 print("Re-analyzing with confirmation data...")
                 sys.stdout.flush()
-                self._alf_analysis(run_idx, repeats + 1, confirmation=True)
+            self._alf_analysis(run_idx, repeats + 1, confirmation=True)
 
             self._comm.Barrier()
 
@@ -1358,167 +1391,169 @@ class ALFSimulation:
     def _alf_analysis(self, run_idx: int, repeats: int, confirmation: bool = False):
         """Perform ALF analysis and update biases.
 
-        Steps:
-        1. Extract lambda values from binary trajectory files
-        2. Compute bias energies for WHAM reweighting
-        3. Run WHAM/LMALF free energy analysis
-        4. Update bias parameters for next iteration
-
-        Args:
-            run_idx: Current run number
-            repeats: Number of dynamics repeats completed
-            confirmation: If True, this is a confirmation re-analysis (skip bias update)
+        When MPI is active (size > 1), all ranks participate in data preparation
+        and WHAM computation. Only rank 0 handles file I/O and post-WHAM processing.
         """
-
         if self.state.alf_info is None:
             raise ValueError("alf_info not initialized")
 
+        is_rank0 = (self.state.rank == 0)
+        is_distributed = (self.state.size > 1 and self._comm is not None)
         home_path = os.getcwd()
 
         try:
             os.chdir(self.config.input_folder)
 
-            # Determine analysis window
-            # Phase 1: wider window (15 runs) — short simulations benefit from more history
-            # Phase 2/3: narrower window (5 runs) — longer simulations are self-sufficient
+            # Analysis window (consistent on all ranks)
             if self.state.phase == 1:
                 im5 = max(run_idx - 15, 1)
             else:
                 im5 = max(run_idx - 5, 1)
 
-            # Create analysis directory
             analysis_dir = Path(f"analysis{run_idx}")
-            analysis_dir.mkdir(exist_ok=True)
 
-            # Copy previous analysis results
-            prev_analysis = Path(f"analysis{run_idx - 1}")
-            if prev_analysis.exists():
-                for fname in ["b_sum.dat", "c_sum.dat", "x_sum.dat", "s_sum.dat",
-                              "t_sum.dat", "u_sum.dat"]:
-                    src = prev_analysis / fname
-                    dst = analysis_dir / fname.replace("_sum", "_prev")
-                    if src.exists():
-                        shutil.copy(src, dst)
+            # === Rank 0: setup + lambda processing ===
+            if is_rank0:
+                analysis_dir.mkdir(exist_ok=True)
 
-            # Process lambda files
-            os.chdir(analysis_dir)
-            self.state.alf_info["nreps"] = self.config.nreps
-            (Path("data")).mkdir(exist_ok=True)
+                # Copy previous analysis results
+                prev_analysis = Path(f"analysis{run_idx - 1}")
+                if prev_analysis.exists():
+                    for fname in ["b_sum.dat", "c_sum.dat", "x_sum.dat", "s_sum.dat",
+                                  "t_sum.dat", "u_sum.dat"]:
+                        src = prev_analysis / fname
+                        dst = analysis_dir / fname.replace("_sum", "_prev")
+                        if src.exists():
+                            shutil.copy(src, dst)
 
-            name = self.config.input_folder.name
+                # Process lambda files
+                os.chdir(analysis_dir)
+                self.state.alf_info["nreps"] = self.config.nreps
+                (Path("data")).mkdir(exist_ok=True)
 
-            # Redirect verbose ALF output to analysis.log
-            import contextlib
-            log_file = Path("analysis.log")
+                name = self.config.input_folder.name
 
-            with open(log_file, "w") as log_f:
-                with contextlib.redirect_stdout(log_f):
-                    # Process lambda files (verbose)
-                    for j in range(self.config.nreps):
-                        for kk in range(repeats):
-                            if self.state.phase in [1, 2]:
-                                fnmsin = [f"../run{run_idx}/res/{name}_flat.{kk}.{j}.lmd"]
-                            else:
-                                fnmsin = [f"../run{run_idx}/res/{name}_prod.{kk}.{j}.lmd"]
+                import contextlib
+                log_file = Path("analysis.log")
 
-                            fnmout = f"data/Lambda.{kk}.{j}.parquet"
+                with open(log_file, "w") as log_f:
+                    with contextlib.redirect_stdout(log_f):
+                        for j in range(self.config.nreps):
+                            for kk in range(repeats):
+                                if self.state.phase in [1, 2]:
+                                    fnmsin = [f"../run{run_idx}/res/{name}_flat.{kk}.{j}.lmd"]
+                                else:
+                                    fnmsin = [f"../run{run_idx}/res/{name}_prod.{kk}.{j}.lmd"]
 
-                            if Path(fnmsin[0]).exists():
-                                convert_lambda_binary_to_parquet(
-                                    self.state.alf_info, fnmout, fnmsin
-                                )
-                                # Delete source .lmd to save disk space
-                                for lmd_path in fnmsin:
-                                    p = Path(lmd_path)
-                                    if p.exists() and p.suffix == '.lmd':
-                                        p.unlink()
+                                fnmout = f"data/Lambda.{kk}.{j}.parquet"
 
-                    # Compute WHAM inputs in memory (no intermediate text files)
-                    nf = self._bias_analyzer.prepare_data(
-                        self.state.alf_info, run_idx, self.state.phase,
-                    )
+                                if Path(fnmsin[0]).exists():
+                                    convert_lambda_binary_to_parquet(
+                                        self.state.alf_info, fnmout, fnmsin
+                                    )
+                                    # Delete source .lmd to save disk space
+                                    for lmd_path in fnmsin:
+                                        p = Path(lmd_path)
+                                        if p.exists() and p.suffix == '.lmd':
+                                            p.unlink()
 
-            # Write nsubs and nblocks files for WHAM library
-            nsubs = self.state.alf_info["nsubs"]
-            nblocks = self.state.alf_info["nblocks"]
-            np.savetxt("nsubs", np.array(nsubs).reshape((1, -1)), fmt=" %d")
-            np.savetxt("nblocks", np.array([nblocks]), fmt=" %d")
+            # === Barrier: rank 0 done with file processing ===
+            if is_distributed:
+                self._comm.Barrier()
+                if not is_rank0:
+                    os.chdir(analysis_dir)
 
-            # Run free energy analysis
-            ntersite = self.state.alf_info.get("ntersite", self._ntersite())
-            ms, msprof = ntersite[0], ntersite[1]
-
-            # Copy nbshift folder to analysis directory (required for WHAM)
-            nbshift_src = Path("..") / "nbshift"
-            nbshift_dst = Path("nbshift")
-            if nbshift_src.exists() and not nbshift_dst.exists():
-                shutil.copytree(nbshift_src, nbshift_dst)
-
-            # Determine cutoff parameters based on phase
-            # Coupling cutoffs scale with system size: sqrt(2/max_nsubs)
-            # Reference = 2 substates (typical titratable residue)
-            max_nsubs = max(nsubs) if len(nsubs) > 0 else 2
-            coupling_scale = (2.0 / max(max_nsubs, 2)) ** 0.5
-
-            if self.state.phase == 1:
-                cut_params = self._adapt_cutoffs(run_idx)
-            elif self.state.phase == 2:
-                cut_params = self._phase2_cutoffs(run_idx, coupling_scale)
-            else:  # phase 3
-                cut_params = self._phase3_cutoffs(run_idx, coupling_scale)
-
-            # Apply exclusion flags for phases 2/3
-            if self.state.phase != 1:
-                if self.config.no_b_bias:
-                    cut_params["calc_phi"] = False
-                if self.config.no_c_bias:
-                    cut_params["calc_psi"] = False
-                if self.config.no_x_bias:
-                    cut_params["calc_chi"] = False
-                if self.config.no_s_bias:
-                    cut_params["calc_omega"] = False
-                if self.config.no_t_bias:
-                    cut_params["calc_omega2"] = False
-                if self.config.no_u_bias:
-                    cut_params["calc_omega3"] = False
-
-            # Compute transition counts from Lambda data for regularization
-            from cphmd.core.transitions import (
-                compute_connectivity_metric,
-                compute_transition_matrix,
-                save_transition_matrix,
-                transition_matrix_to_coupling_weights,
+            # === All ranks: compute WHAM inputs (distributed cross-energy) ===
+            nf = self._bias_analyzer.prepare_data(
+                self.state.alf_info, run_idx, self.state.phase,
             )
-            data_dir = Path("data")
-            pre_lambda_data, _ = load_lambda_data(data_dir)
-            trans_matrices = None
-            if pre_lambda_data is not None:
-                trans_matrices = compute_transition_matrix(
-                    pre_lambda_data, nsubs
-                )
-                save_transition_matrix(trans_matrices, Path("transitions.dat"))
-                connectivity, weak_pairs = compute_connectivity_metric(
-                    trans_matrices
-                )
-                print(f"  Transition connectivity: {connectivity:.2f} "
-                      f"(min-pair transitions: {int(connectivity * 50)})")
-                if weak_pairs:
-                    for site, si, sj in weak_pairs:
-                        print(f"    Weakest: site {site + 1}, states {si + 1}<->{sj + 1}")
-                trans_weights = transition_matrix_to_coupling_weights(
-                    trans_matrices, nsubs, ms=ms
-                )
-                cut_params["transition_weights"] = trans_weights
-                cut_params["connectivity"] = connectivity
 
-            # # DAMPENING DISABLED FOR TESTING
-            # # Read previous-run populations for differential dampening.
-            # if run_idx >= 1:
-            #     ...  (population wiring commented out)
+            # === Rank 0: metadata, cutoffs, transitions ===
+            nsubs = ms = msprof = None
+            cut_params = {}
 
-            # Run WHAM with retry (3 attempts) and validation
-            # Verbose output appended to analysis.log, summary message returned
-            # nf was set by get_energy_from_analysis_dir (actual count of ESim files)
+            if is_rank0:
+                nsubs = self.state.alf_info["nsubs"]
+                nblocks = self.state.alf_info["nblocks"]
+                np.savetxt("nsubs", np.array(nsubs).reshape((1, -1)), fmt=" %d")
+                np.savetxt("nblocks", np.array([nblocks]), fmt=" %d")
+
+                ntersite = self.state.alf_info.get("ntersite", self._ntersite())
+                ms, msprof = ntersite[0], ntersite[1]
+
+                nbshift_src = Path("..") / "nbshift"
+                nbshift_dst = Path("nbshift")
+                if nbshift_src.exists() and not nbshift_dst.exists():
+                    shutil.copytree(nbshift_src, nbshift_dst)
+
+                max_nsubs = max(nsubs) if len(nsubs) > 0 else 2
+                coupling_scale = (2.0 / max(max_nsubs, 2)) ** 0.5
+
+                if self.state.phase == 1:
+                    cut_params = self._adapt_cutoffs(run_idx)
+                elif self.state.phase == 2:
+                    cut_params = self._phase2_cutoffs(run_idx, coupling_scale)
+                else:
+                    cut_params = self._phase3_cutoffs(run_idx, coupling_scale)
+
+                if self.state.phase != 1:
+                    if self.config.no_b_bias:
+                        cut_params["calc_phi"] = False
+                    if self.config.no_c_bias:
+                        cut_params["calc_psi"] = False
+                    if self.config.no_x_bias:
+                        cut_params["calc_chi"] = False
+                    if self.config.no_s_bias:
+                        cut_params["calc_omega"] = False
+                    if self.config.no_t_bias:
+                        cut_params["calc_omega2"] = False
+                    if self.config.no_u_bias:
+                        cut_params["calc_omega3"] = False
+
+                # Compute transition counts
+                from cphmd.core.transitions import (
+                    compute_connectivity_metric,
+                    compute_transition_matrix,
+                    save_transition_matrix,
+                    transition_matrix_to_coupling_weights,
+                )
+                data_dir = Path("data")
+                pre_lambda_data, _ = load_lambda_data(data_dir)
+                trans_matrices = None
+                if pre_lambda_data is not None:
+                    trans_matrices = compute_transition_matrix(
+                        pre_lambda_data, nsubs
+                    )
+                    save_transition_matrix(trans_matrices, Path("transitions.dat"))
+
+                    from cphmd.core.phase_switcher import _per_site_ranges
+                    col_fracs = (pre_lambda_data > 0.8).mean(axis=0)
+                    visited_per_site = []
+                    for start, end in _per_site_ranges(nsubs):
+                        visited_per_site.append(col_fracs[start:end] > 0.01)
+
+                    connectivity, weak_pairs = compute_connectivity_metric(
+                        trans_matrices, visited_per_site=visited_per_site,
+                    )
+                    print(f"  Transition connectivity: {connectivity:.2f} "
+                          f"(min-pair transitions: {int(connectivity * 50)})")
+                    if weak_pairs:
+                        for site, si, sj in weak_pairs:
+                            print(f"    Weakest: site {site + 1}, states {si + 1}<->{sj + 1}")
+                    trans_weights = transition_matrix_to_coupling_weights(
+                        trans_matrices, nsubs, ms=ms
+                    )
+                    cut_params["transition_weights"] = trans_weights
+                    cut_params["connectivity"] = connectivity
+
+            # === Broadcast WHAM parameters to all ranks ===
+            if is_distributed:
+                nf = self._comm.bcast(nf, root=0)
+                ms = self._comm.bcast(ms, root=0)
+                msprof = self._comm.bcast(msprof, root=0)
+                cut_params = self._comm.bcast(cut_params, root=0)
+
+            # === All ranks: WHAM with retry ===
             wham_success, wham_msg = self._run_wham_with_retry(
                 run_idx=run_idx,
                 nf=nf,
@@ -1527,52 +1562,57 @@ class ALFSimulation:
                 cut_params=cut_params,
                 max_attempts=3,
             )
-            print(wham_msg)  # Print summary to main output
+
+            # Free analysis data to reduce memory between runs
+            self._bias_analyzer._packed_D = None
+            self._bias_analyzer._packed_sim_indices = None
+            self._bias_analyzer._packed_frame_counts = None
+            self._bias_analyzer._wham_lambda = None
+
+            # === Non-rank-0 returns after WHAM ===
+            if not is_rank0:
+                return
+
+            # === Rank 0: post-WHAM processing ===
+            print(wham_msg)
 
             if not wham_success:
                 print("All WHAM attempts failed, using zero bias updates")
+                nblocks = self.state.alf_info["nblocks"]
                 np.savetxt("b.dat", np.zeros((1, nblocks)), fmt=" %10.5f")
                 np.savetxt("c.dat", np.zeros((nblocks, nblocks)), fmt=" %10.5f")
                 np.savetxt("x.dat", np.zeros((nblocks, nblocks)), fmt=" %10.5f")
                 np.savetxt("s.dat", np.zeros((nblocks, nblocks)), fmt=" %10.5f")
 
-            # Update EWBS (Energy-Weighted Bias Stability) from b/c/x/s.dat
+            # Update EWBS
             self._convergence.update_ewbs()
 
-            # Compute populations from lambda data
+            # Compute populations
             lambda_data, pop_data, pop_strict = (
                 self._convergence.compute_populations(nsubs)
             )
 
             if pop_strict is not None and len(pop_strict) > 0:
-                # Detect unsampled states and set biased initial lambdas
                 self._convergence.detect_forced_lambdas(
                     run_idx, pop_strict, nsubs, trans_matrices,
                     self.config.input_folder,
                 )
-                # Save pop_strict for future history lookups
                 np.savetxt("pop_strict.dat", np.array(pop_strict), fmt=" %.6f")
 
-            # Generate convergence and diagnostic plots
             if lambda_data is not None:
                 self._convergence.generate_plots(
                     run_idx, nsubs, msprof, self.config.input_folder,
                 )
 
-            # Check phase transitions (RMSD or population-based)
             self._convergence.check_and_update_phase(
                 run_idx, lambda_data, nsubs, cut_params, trans_matrices,
                 self._regenerate_g_imp_if_needed,
             )
 
-            # Always save current phase to file (for resumption)
             np.savetxt("phase.dat", np.array([self.state.phase]), fmt="%d")
 
-            # Check stop criteria (Phase 3 convergence)
             self._convergence.check_stop(run_idx, lambda_data, nsubs, confirmation)
 
-            # Generate Henderson-Hasselbalch plots if enabled
-            # Guard: require nreps > 3 for meaningful multi-point HH fitting
             if (self.config.generate_hh_plots and
                 self.config.pH and
                 self.config.nreps > 3 and
@@ -1598,14 +1638,11 @@ class ALFSimulation:
                     ncentral=self.state.alf_info.get("ncentral", self.config.nreps // 2),
                 )
 
-            # Update variables for next run (skip during confirmation)
             if not confirmation:
                 set_vars_from_analysis_dir(
                     Path.cwd(), self.state.alf_info, step=run_idx + 1
                 )
 
-            # Cleanup old analysis directories to save disk space
-            # Keep enough history for the analysis window (15 for Phase 1, 5 for Phase 2/3)
             keep_window = 15 if self.state.phase == 1 else 5
             if self.config.cleanup_old_analysis and run_idx > keep_window:
                 old_analysis = Path(self.config.input_folder) / f"analysis{run_idx - keep_window}"
@@ -1613,7 +1650,6 @@ class ALFSimulation:
                     shutil.rmtree(old_analysis)
                     print(f"Cleaned up {old_analysis}")
 
-            # Clean up large intermediate files (ESim/Lambda consumed by WHAM)
             for subdir in ("Energy", "Lambda"):
                 p = Path(subdir)
                 if p.exists():

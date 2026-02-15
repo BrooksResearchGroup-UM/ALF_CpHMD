@@ -22,6 +22,9 @@ from scipy.optimize import curve_fit
 if TYPE_CHECKING:
     import pandas as pd
 
+    from .expected_populations import ExpectedPopulations  # noqa: F401
+
+
 
 @dataclass
 class PhaseTransitionConfig:
@@ -48,13 +51,15 @@ class PhaseTransitionConfig:
     # pKa tolerance for phase 2→3 (strict)
     pka_tolerance_2to3: float = 0.3
 
-    # Minimum states visited per site for phase 1→2 transition.
-    # Some states may be kinetically inaccessible in Phase 1 (e.g., ASP
-    # state 1 with a high 0→1 barrier). Phase 2 activates x/s coupling
-    # biases that can help overcome kinetic barriers. Requiring all-pairs
-    # connectivity would block transition forever for such systems.
-    # Default 2 means at least 2 out of N substates must be sampled.
-    min_visited_1to2: int = 2
+    # Minimum Phase 1 runs before allowing Phase 1→2 transition.
+    # Early runs use large cutoffs that artificially drive transitions;
+    # the resulting biases are too crude for Phase 2's tighter cutoffs.
+    min_phase1_runs: int = 20
+
+    # Minimum titratable states visited per site for phase 1→2 transition.
+    # Only UPOS/UNEG states count — NONE reference states are excluded.
+    # Set to a large value to require ALL titratable states visited.
+    min_visited_1to2: int = 999
 
     # Minimum fraction (of total frames) for a state to count as "visited"
     # in the Phase 1→2 check. States below this threshold are excluded
@@ -251,36 +256,6 @@ def _per_site_ranges(nsubs: list[int]) -> list[tuple[int, int]]:
     return ranges
 
 
-def _count_titratable_per_site(
-    patch_info: "pd.DataFrame | None",
-    nsubs: list[int] | None,
-) -> list[int] | None:
-    """Count titratable substates (UPOS/UNEG) per site.
-
-    NONE substates are reference states with no pH dependence and cannot be
-    visited through pH-driven transitions. For the visited-states gate, only
-    titratable states should count toward the requirement.
-
-    Returns:
-        List of titratable state counts per site, or None if patch_info unavailable.
-    """
-    if patch_info is None or nsubs is None:
-        return None
-    if "site" not in patch_info.columns or "TAG" not in patch_info.columns:
-        return None
-
-    sites = sorted(patch_info["site"].unique())
-    counts = []
-    for site_id in sites:
-        site_rows = patch_info[patch_info["site"] == site_id]
-        n_tit = 0
-        for _, row in site_rows.iterrows():
-            tag = str(row.get("TAG", "NONE")).strip().upper()
-            if tag.startswith("UPOS") or tag.startswith("UNEG"):
-                n_tit += 1
-        counts.append(n_tit)
-    return counts
-
 
 def _organize_by_replica(data_dir: Path) -> dict[int, list[Path]] | None:
     """Discover and organize lambda files by replica index.
@@ -340,16 +315,22 @@ def compute_worst_site_pop_diff(
     lambda_data: np.ndarray,
     nsubs: list[int] | None = None,
     strict_threshold: float = 0.985,
+    expected_pops: ExpectedPopulations | None = None,
 ) -> float:
     """Compute worst-site population diff at strict lambda threshold.
 
     For each site, computes normalized populations at the strict threshold
-    and returns max(max_pop - min_pop) across all sites.
+    and returns the worst deviation across all sites.
+
+    When ``expected_pops`` is provided, deviation is max|p_i - expected_i|
+    per site (pH-aware). Without it, deviation is max(p) - min(p)
+    (uniform target, backward compatible).
 
     Args:
         lambda_data: Lambda data array (frames x states)
         nsubs: Substates per site. If None, treats all states as one site.
         strict_threshold: Lambda threshold for physical-state assignment.
+        expected_pops: HH-predicted target populations (optional).
 
     Returns:
         Worst-site population difference in [0, 1].
@@ -364,6 +345,8 @@ def compute_worst_site_pop_diff(
             norm = raw_fracs / total
         else:
             return 1.0
+        if expected_pops is not None:
+            return float(np.max(np.abs(norm - expected_pops.per_state)))
         return float(np.max(norm) - np.min(norm))
     worst = 0.0
     for start, end in _per_site_ranges(nsubs):
@@ -374,7 +357,12 @@ def compute_worst_site_pop_diff(
         else:
             worst = max(worst, 1.0)
             continue
-        diff = float(np.max(site_norm) - np.min(site_norm))
+        if expected_pops is not None:
+            diff = float(np.max(np.abs(
+                site_norm - expected_pops.per_state[start:end]
+            )))
+        else:
+            diff = float(np.max(site_norm) - np.min(site_norm))
         worst = max(worst, diff)
     return worst
 
@@ -384,6 +372,7 @@ def good_overlap(
     spread_tol: float,
     nsubs: list[int] | None = None,
     visited_mask: np.ndarray | None = None,
+    expected_pops: ExpectedPopulations | None = None,
 ) -> bool:
     """Check if lambda fractions have good overlap across states.
 
@@ -395,13 +384,17 @@ def good_overlap(
     in the spread calculation. This allows Phase 1 to tolerate kinetically
     inaccessible states (e.g., ASP state 1).
 
+    When expected_pops is provided, spread is max|f_i - expected_i|
+    instead of max(f) - min(f). This handles pH-aware non-uniform targets.
+
     Args:
         fracs: Array of fraction of samples above threshold per state
-        spread_tol: Maximum allowed spread (max - min)
+        spread_tol: Maximum allowed spread (max - min or max deviation)
         nsubs: Number of substates per site (e.g. [2, 3]). If None,
                treats all states as one site (legacy behavior).
         visited_mask: Boolean array indicating which states to include.
                If None, all states are included (default behavior).
+        expected_pops: HH-predicted target populations (optional).
 
     Returns:
         True if spread is within tolerance (for every site when nsubs given)
@@ -412,15 +405,28 @@ def good_overlap(
         f = fracs[visited_mask] if visited_mask is not None else fracs
         if f.size < 2:
             return f.size == 1  # single visited state is trivially OK
+        if expected_pops is not None:
+            e = expected_pops.per_state
+            if visited_mask is not None:
+                e = e[visited_mask]
+            return float(np.max(np.abs(f - e))) < spread_tol
         return float(np.max(f) - np.min(f)) < spread_tol
     for start, end in _per_site_ranges(nsubs):
         site_fracs = fracs[start:end]
-        if visited_mask is not None:
-            site_fracs = site_fracs[visited_mask[start:end]]
+        site_vm = visited_mask[start:end] if visited_mask is not None else None
+        if site_vm is not None:
+            site_fracs = site_fracs[site_vm]
         if site_fracs.size < 2:
             continue  # single or no visited state — nothing to compare
-        if float(np.max(site_fracs) - np.min(site_fracs)) >= spread_tol:
-            return False
+        if expected_pops is not None:
+            site_exp = expected_pops.per_state[start:end]
+            if site_vm is not None:
+                site_exp = site_exp[site_vm]
+            if float(np.max(np.abs(site_fracs - site_exp))) >= spread_tol:
+                return False
+        else:
+            if float(np.max(site_fracs) - np.min(site_fracs)) >= spread_tol:
+                return False
     return True
 
 
@@ -937,6 +943,7 @@ def check_stop_criteria(
     bias_history: np.ndarray | None = None,
     nsubs: list[int] | None = None,
     ewbs_state: EWBSState | None = None,
+    expected_pops: ExpectedPopulations | None = None,
 ) -> StopCriteriaResult:
     """Check if Phase 3 → STOP criteria are met.
 
@@ -947,6 +954,11 @@ def check_stop_criteria(
     worst (largest) site frac_diff is used. Fractions are also normalized
     per-site for the score calculation. All sites must be balanced for
     the overall check to pass.
+
+    When expected_pops is provided, frac_diff measures deviation from
+    HH-predicted populations (max|measured_i - expected_i|) rather than
+    uniform (max - min). This allows convergence at non-uniform
+    equilibrium populations when pH is active.
 
     Stop criteria:
         1. Total samples >= min_total_samples (adjusted for HMR)
@@ -961,6 +973,7 @@ def check_stop_criteria(
         nsubs: Number of substates per site (e.g. [2, 3]). If None,
                uses global metrics (legacy behavior).
         ewbs_state: Optional EWBSState for bias stability metric.
+        expected_pops: HH-predicted target populations (optional).
 
     Returns:
         StopCriteriaResult with detailed metrics and decision
@@ -984,14 +997,27 @@ def check_stop_criteria(
     if nsubs is not None:
         # Per-site normalization and frac_diff
         fractions = _normalize_per_site(raw_fractions, nsubs)
-        site_diffs = [
-            float(np.max(raw_fractions[s:e]) - np.min(raw_fractions[s:e]))
-            for s, e in _per_site_ranges(nsubs)
-        ]
+        if expected_pops is not None:
+            site_diffs = [
+                float(np.max(np.abs(
+                    fractions[s:e] - expected_pops.per_state[s:e]
+                )))
+                for s, e in _per_site_ranges(nsubs)
+            ]
+        else:
+            site_diffs = [
+                float(np.max(raw_fractions[s:e]) - np.min(raw_fractions[s:e]))
+                for s, e in _per_site_ranges(nsubs)
+            ]
         frac_diff = max(site_diffs)
     else:
         fractions = raw_fractions
-        frac_diff = float(np.max(fractions) - np.min(fractions))
+        if expected_pops is not None:
+            frac_diff = float(np.max(np.abs(
+                fractions - expected_pops.per_state
+            )))
+        else:
+            frac_diff = float(np.max(fractions) - np.min(fractions))
 
     # Step5-style metrics
     avg_frac = float(np.mean(fractions))
@@ -1034,7 +1060,9 @@ def check_stop_criteria(
     if not bias_stable:
         reasons.append(f"bias_std={bias_rolling_std:.3f}>{config.bias_max_std}")
 
-    if entropy_norm < config.min_entropy:
+    if expected_pops is None and entropy_norm < config.min_entropy:
+        # Entropy check is skipped with pH-aware targets — model deviation
+        # already captures whether populations match the expected distribution.
         reasons.append(f"entropy={entropy_norm:.2f}<{config.min_entropy}")
 
     if block_var > config.max_block_variance:
@@ -1209,6 +1237,7 @@ def check_phase_transition(
     connectivity: float | None = None,
     phase2_run_count: int | None = None,
     ewbs_state: EWBSState | None = None,
+    expected_pops: ExpectedPopulations | None = None,
 ) -> tuple[int, str]:
     """Check if phase transition criteria are met.
 
@@ -1261,33 +1290,27 @@ def check_phase_transition(
 
     # Phase 1 → 2 transition
     if current_phase == 1:
-        # Phase 1 allows kinetically inaccessible states: compute spread
-        # and min_hits only over states that are actually visited.
         # A state is "visited" if its occupancy fraction exceeds a minimum.
         min_vf = config.min_visited_frac_1to2
         visited = col_fracs > min_vf  # bool mask over columns
 
-        # Count titratable states per site (UPOS/UNEG, not NONE).
-        # NONE states are reference states with no pH dependence — they can't
-        # be "visited" through pH-driven transitions (e.g., LYS protonated ref).
-        n_titratable = _count_titratable_per_site(patch_info, nsubs)
-
-        # Check that enough states are visited per site
+        # Check that ALL states are visited per site.
+        # NONE/UPOS/UNEG are all physically accessible protonation states;
+        # TAG only controls which gets the pH shift, not whether a state
+        # is titratable.  All must be sampled before advancing.
         visited_ok = True
         visited_reason = ""
         if nsubs is not None:
             for si, (start, end) in enumerate(_per_site_ranges(nsubs)):
-                n_visited = int(visited[start:end].sum())
-                n_tit = n_titratable[si] if n_titratable is not None else nsubs[si]
-                required = min(config.min_visited_1to2, n_tit)
+                n_states = nsubs[si]
+                required = min(config.min_visited_1to2, n_states)
                 if required < 2:
-                    # Site has < 2 titratable states (e.g., LYS with 1 UPOS + 1 NONE)
-                    # — always passes since the single titratable state is trivially visited
                     continue
+                n_visited = int(visited[start:end].sum())
                 if n_visited < required:
                     visited_ok = False
                     visited_reason = (
-                        f"site{si + 1}: {n_visited}/{n_tit} titratable states visited "
+                        f"site{si + 1}: {n_visited}/{n_states} states visited "
                         f"(need {required})")
                     break
         else:
@@ -1302,7 +1325,7 @@ def check_phase_transition(
         # Spread check on visited states only (per site)
         overlap_ok = good_overlap(
             col_fracs, config.spread_1to2, nsubs=nsubs,
-            visited_mask=visited,
+            visited_mask=visited, expected_pops=expected_pops,
         )
 
         # Min hits check on visited states only
@@ -1355,7 +1378,10 @@ def check_phase_transition(
 
     # Phase 2 → 3 transition
     elif current_phase == 2:
-        overlap_ok = good_overlap(col_fracs, config.spread_2to3, nsubs=nsubs)
+        overlap_ok = good_overlap(
+            col_fracs, config.spread_2to3, nsubs=nsubs,
+            expected_pops=expected_pops,
+        )
         samples_ok = enough_samples(mask, config.min_hits_2to3)
 
         # Check pKa convergence if CpHMD (stricter tolerance)
@@ -1468,6 +1494,7 @@ def check_phase3_stop(
     bias_history: np.ndarray | None = None,
     nsubs: list[int] | None = None,
     ewbs_state: EWBSState | None = None,
+    expected_pops: ExpectedPopulations | None = None,
 ) -> tuple[bool, str, StopCriteriaResult]:
     """Check if Phase 3 simulation should stop.
 
@@ -1482,6 +1509,7 @@ def check_phase3_stop(
         nsubs: Number of substates per site (e.g. [2, 3]). If None,
                uses global metrics (legacy behavior).
         ewbs_state: Optional EWBSState for bias stability metric.
+        expected_pops: HH-predicted target populations (optional).
 
     Returns:
         Tuple of (should_stop, reason_string, full_result)
@@ -1494,7 +1522,7 @@ def check_phase3_stop(
     """
     result = check_stop_criteria(
         lambda_data, stop_config, bias_history, nsubs=nsubs,
-        ewbs_state=ewbs_state,
+        ewbs_state=ewbs_state, expected_pops=expected_pops,
     )
 
     if result.should_stop:

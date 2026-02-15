@@ -50,8 +50,8 @@ docs/_build/
 .AppleDouble
 .LSOverride
 
-# Archived examples
-examples/_archive/
+# Examples (tracked separately)
+examples/*/prep
 
 # Simulation outputs (CpHMD specific)
 *.dcd

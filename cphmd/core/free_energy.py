@@ -202,16 +202,17 @@ def fallback_bias_update(
     nsubs: np.ndarray,
     temperature: float,
     max_change: float = 2.0,
+    expected_pops: np.ndarray | None = None,
 ) -> np.ndarray:
     """Compute bias updates from populations when WHAM fails.
 
     Uses Boltzmann relation: ΔG = RT * ln(p_target / p_current)
     This provides a simple heuristic to push undersampled states toward
-    uniform populations when the WHAM matrix is too ill-conditioned.
+    target populations when the WHAM matrix is too ill-conditioned.
 
     Normalization and targeting are done per-site: each site's populations
-    are normalized independently, and the uniform target is 1/nsubs[i]
-    (not 1/nblocks).
+    are normalized independently. Target is either HH-predicted fractions
+    (when expected_pops provided) or uniform 1/nsubs[i].
 
     Args:
         populations: Current population fractions for each state.
@@ -219,6 +220,8 @@ def fallback_bias_update(
         nsubs: Substituent counts per site.
         temperature: Simulation temperature in Kelvin.
         max_change: Maximum bias change per state (kcal/mol).
+        expected_pops: Per-state expected fractions from HH model (optional).
+            Shape: (nblocks,). When provided, used as target instead of 1/N.
 
     Returns:
         Bias changes (delta_b) to add to current b parameters.
@@ -242,7 +245,12 @@ def fallback_bias_update(
 
         # Normalize within this site
         site_pops = site_pops / site_sum
-        target = 1.0 / n
+
+        # Target: HH-predicted fractions or uniform
+        if expected_pops is not None:
+            target = expected_pops[ibuff : ibuff + n]
+        else:
+            target = np.full(n, 1.0 / n)
 
         with np.errstate(divide="ignore", invalid="ignore"):
             site_delta = RT * np.log(target / site_pops)

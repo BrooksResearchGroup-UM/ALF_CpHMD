@@ -9,7 +9,7 @@ shape parameters that are physically determined by FNEX:
     OMEGA_SCALE   = 1 / FNEX      (reciprocal for CUDA kernels)
 
 For the default FNEX=5.5 (matching CHARMM BLOCK FNEX):
-    OMEGA_DECAY = 5.5, CHI_OFFSET = 0.01634, OMEGA_SCALE = 0.18182
+    OMEGA_DECAY = 5.56, CHI_OFFSET = 0.01634, OMEGA_SCALE = 0.18182
 
 Historical note: These were previously hardcoded as 5.56, 0.017, and 0.18 —
 approximations that drifted from the exact FNEX-derived values.

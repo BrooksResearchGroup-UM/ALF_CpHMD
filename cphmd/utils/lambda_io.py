@@ -166,14 +166,16 @@ def write_lambda_parquet(
     filepath: str | Path,
     lambda_data: np.ndarray,
     column_names: list[str] | None = None,
-    compression: str = "snappy"
+    nsubs: list[int] | None = None,
+    compression: str = "snappy",
 ) -> Path:
     """Write lambda data to Parquet file.
 
     Args:
         filepath: Output path
         lambda_data: Array with shape (nsteps, ncols) - first col is time
-        column_names: Optional column names (defaults to time, λ1, λ2, ...)
+        column_names: Optional column names (overrides nsubs-based naming)
+        nsubs: Number of substituents per site for s{site}s{subsite} naming
         compression: Parquet compression (snappy, gzip, lz4, zstd)
 
     Returns:
@@ -187,7 +189,14 @@ def write_lambda_parquet(
 
     if column_names is None:
         n_lambdas = lambda_data.shape[1] - 1
-        column_names = ["time"] + [f"λ{i+1}" for i in range(n_lambdas)]
+        if nsubs is not None:
+            column_names = ["time"]
+            for site_idx, n_sub in enumerate(nsubs):
+                for sub_idx in range(n_sub):
+                    column_names.append(f"s{site_idx + 1}s{sub_idx + 1}")
+        else:
+            # Single-site fallback
+            column_names = ["time"] + [f"s1s{i + 1}" for i in range(n_lambdas)]
 
     table = pa.table(
         {column_names[i]: pa.array(lambda_data[:, i]) for i in range(lambda_data.shape[1])}
@@ -254,6 +263,108 @@ def read_lambda_values(filepath: str | Path) -> np.ndarray:
         return data
     else:
         raise ValueError(f"Unknown lambda file format: {filepath.suffix}")
+
+
+def get_lambda_frame_count(filepath: str | Path, skipE: int = 1) -> int:
+    """Get the number of frames in a lambda file without loading data.
+
+    For parquet files, reads row count from metadata (zero I/O on data pages).
+    For .lmd binary files, computes from file size and record layout.
+    For .dat text files, falls back to counting lines.
+
+    Args:
+        filepath: Path to lambda file (.parquet, .lmd, or .dat).
+        skipE: Subsample interval (every Nth frame). Default 1 = all.
+
+    Returns:
+        Number of frames after applying skipE subsampling.
+    """
+    filepath = Path(filepath)
+
+    if filepath.suffix == ".parquet":
+        import pyarrow.parquet as pq
+
+        meta = pq.read_metadata(str(filepath))
+        total_rows = meta.num_rows
+    elif filepath.suffix == ".lmd":
+        from scipy.io import FortranFile
+
+        fp = FortranFile(str(filepath), "r")
+        header = fp.read_record([("hdr", np.bytes_, 4), ("icntrl", np.int32, 20)])
+        nblocks = int(header["icntrl"][0][6])
+        # Skip remaining header records to find data start
+        _ = fp.read_record(dtype=np.float32)  # delta
+        _ = fp.read_record(dtype=[("h", np.int32), ("title", "S80")])  # title
+        _ = fp.read_record(dtype=np.int32)  # nbiasv
+        _ = fp.read_record(dtype=np.float32)  # junk
+        _ = fp.read_record(dtype=np.int32)  # isitemld
+        _ = fp.read_record(dtype=np.float32)  # temp
+        _ = fp.read_record(dtype=np.float32)  # unused
+        pos = fp._fp.tell()
+        fp.close()
+
+        file_size = filepath.stat().st_size
+        data_bytes = file_size - pos
+        lambda_rec = nblocks * 4 + 8
+        theta_rec = (nblocks - 1) * 4 + 8
+        frame_bytes = lambda_rec + theta_rec
+        total_rows = data_bytes // frame_bytes
+    elif filepath.suffix == ".dat":
+        with open(filepath) as f:
+            total_rows = sum(1 for line in f if line.strip())
+    else:
+        raise ValueError(f"Unknown lambda file format: {filepath.suffix}")
+
+    if skipE <= 1:
+        return total_rows
+    # Match the (skipE-1)::skipE slicing pattern used by _load_simulation_data
+    return len(range(skipE - 1, total_rows, skipE))
+
+
+def read_lambda_columns(
+    filepath: str | Path,
+    columns: list[int] | None = None,
+    skipE: int = 1,
+) -> np.ndarray:
+    """Read lambda values with optional column selection and subsampling.
+
+    When columns is None, equivalent to read_lambda_values with skipE applied.
+    When specified, reads only those column indices (0-based, after time removal).
+    For parquet: uses pyarrow's column selection for zero-copy selective read.
+    For .lmd/.dat: falls back to full read + column indexing.
+
+    Args:
+        filepath: Path to lambda file (.parquet, .dat, or .lmd).
+        columns: Column indices to read (None = all). 0-based into lambda columns
+                 (time column already excluded).
+        skipE: Subsample interval (every Nth frame). Default 1 = all.
+
+    Returns:
+        Lambda values array with shape (nframes_after_skip, ncols_selected).
+    """
+    filepath = Path(filepath)
+
+    if filepath.suffix == ".parquet" and columns is not None:
+        import pyarrow.parquet as pq
+
+        table = pq.read_table(str(filepath))
+        # Drop time column if present
+        if "time" in table.column_names:
+            table = table.drop("time")
+        col_names = [table.column_names[c] for c in columns]
+        subset = table.select(col_names)
+        data = np.column_stack([col.to_numpy() for col in subset.columns])
+    else:
+        # Full read, then select columns
+        data = read_lambda_values(filepath)
+        if columns is not None:
+            data = data[:, columns]
+
+    # Apply skipE subsampling
+    if skipE > 1:
+        data = data[(skipE - 1) :: skipE, :]
+
+    return data
 
 
 def find_lambda_files(data_dir: Path, pattern: str = "Lambda.*.*") -> list[Path]:
@@ -326,23 +437,22 @@ def concatenate_lambda_files(
 
 def get_lambda_columns_for_sites(
     nsubs: list[int],
-    site_names: list[str] | None = None
+    site_names: list[str] | None = None,
 ) -> list[str]:
     """Generate column names for lambda values based on site structure.
 
     Args:
         nsubs: Number of substituents per site
-        site_names: Optional site names (e.g., ["GLU35", "ASP52"])
+        site_names: Optional site names (unused, kept for API compatibility)
 
     Returns:
-        List of column names like ["time", "GLU35_0", "GLU35_1", ...]
+        List of column names like ["time", "s1s1", "s1s2", "s2s1", ...]
     """
     columns = ["time"]
 
     for site_idx, n_sub in enumerate(nsubs):
-        site_name = site_names[site_idx] if site_names else f"site{site_idx+1}"
         for sub_idx in range(n_sub):
-            columns.append(f"{site_name}_{sub_idx}")
+            columns.append(f"s{site_idx + 1}s{sub_idx + 1}")
 
     return columns
 

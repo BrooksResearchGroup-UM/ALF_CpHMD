@@ -142,6 +142,96 @@ def _get_wham_lib() -> ctypes.CDLL:
     ]
     lib.wham_from_memory.restype = ctypes.c_int
 
+    # Configure wham_iterate_from_memory() function signature (Phase A: f-convergence)
+    lib.wham_iterate_from_memory.argtypes = [
+        ctypes.c_int,                         # nf
+        ctypes.c_double,                      # temp
+        ctypes.c_int,                         # nts0
+        ctypes.c_int,                         # nts1
+        ctypes.c_int,                         # use_gshift
+        ctypes.POINTER(ctypes.c_int),         # nsubs
+        ctypes.c_int,                         # nsites
+        ctypes.c_char_p,                      # g_imp_path
+        ctypes.c_double,                      # chi_offset
+        ctypes.c_double,                      # omega_scale
+        ctypes.c_double,                      # cutlsum
+        ctypes.c_double,                      # chi_offset_t
+        ctypes.c_double,                      # chi_offset_u
+        ctypes.c_int,                         # ntriangle
+        ctypes.POINTER(ctypes.c_double),      # D_flat
+        ctypes.POINTER(ctypes.c_int),         # sim_indices
+        ctypes.POINTER(ctypes.c_int),         # frame_counts
+        ctypes.c_int,                         # total_frames
+        ctypes.POINTER(ctypes.c_double),      # gshift_flat
+        ctypes.POINTER(ctypes.c_double),      # f_out
+        ctypes.POINTER(ctypes.c_int),         # nf_out
+    ]
+    lib.wham_iterate_from_memory.restype = ctypes.c_int
+
+    # Configure wham_profiles_from_memory() function signature (Phase B: profile subset)
+    lib.wham_profiles_from_memory.argtypes = [
+        ctypes.c_int,                         # nf
+        ctypes.c_double,                      # temp
+        ctypes.c_int,                         # nts0
+        ctypes.c_int,                         # nts1
+        ctypes.c_int,                         # use_gshift
+        ctypes.POINTER(ctypes.c_int),         # nsubs
+        ctypes.c_int,                         # nsites
+        ctypes.c_char_p,                      # g_imp_path
+        ctypes.c_double,                      # chi_offset
+        ctypes.c_double,                      # omega_scale
+        ctypes.c_double,                      # cutlsum
+        ctypes.c_double,                      # chi_offset_t
+        ctypes.c_double,                      # chi_offset_u
+        ctypes.c_int,                         # ntriangle
+        ctypes.POINTER(ctypes.c_double),      # D_flat
+        ctypes.POINTER(ctypes.c_int),         # sim_indices
+        ctypes.POINTER(ctypes.c_int),         # frame_counts
+        ctypes.c_int,                         # total_frames
+        ctypes.POINTER(ctypes.c_double),      # gshift_flat
+        ctypes.POINTER(ctypes.c_double),      # f_in
+        ctypes.c_int,                         # f_size
+        ctypes.c_int,                         # profile_start
+        ctypes.c_int,                         # profile_end
+        ctypes.POINTER(ctypes.c_double),      # C_out
+        ctypes.POINTER(ctypes.c_double),      # V_out
+        ctypes.POINTER(ctypes.c_int),         # dim_out
+    ]
+    lib.wham_profiles_from_memory.restype = ctypes.c_int
+
+    # Configure wham_profiles_slim_from_memory() (Phase B with slim D + pre-computed lnDenom)
+    lib.wham_profiles_slim_from_memory.argtypes = [
+        ctypes.c_int,                         # nf
+        ctypes.c_double,                      # temp
+        ctypes.c_int,                         # nts0
+        ctypes.c_int,                         # nts1
+        ctypes.c_int,                         # use_gshift
+        ctypes.POINTER(ctypes.c_int),         # nsubs
+        ctypes.c_int,                         # nsites
+        ctypes.c_char_p,                      # g_imp_path
+        ctypes.c_double,                      # chi_offset
+        ctypes.c_double,                      # omega_scale
+        ctypes.c_double,                      # cutlsum
+        ctypes.c_double,                      # chi_offset_t
+        ctypes.c_double,                      # chi_offset_u
+        ctypes.c_int,                         # ntriangle
+        ctypes.POINTER(ctypes.c_double),      # D_flat (slim: no cross-energies)
+        ctypes.c_int,                         # ndim (slim stride)
+        ctypes.POINTER(ctypes.c_int),         # sim_indices
+        ctypes.POINTER(ctypes.c_int),         # frame_counts
+        ctypes.c_int,                         # total_frames
+        ctypes.POINTER(ctypes.c_double),      # gshift_flat
+        ctypes.POINTER(ctypes.c_double),      # f_in
+        ctypes.c_int,                         # f_size
+        ctypes.POINTER(ctypes.c_double),      # lnDenom_in
+        ctypes.c_int,                         # profile_start
+        ctypes.c_int,                         # profile_end
+        ctypes.POINTER(ctypes.c_double),      # C_out
+        ctypes.POINTER(ctypes.c_double),      # V_out
+        ctypes.POINTER(ctypes.c_int),         # dim_out
+    ]
+    lib.wham_profiles_slim_from_memory.restype = ctypes.c_int
+
     # Configure lmalf_from_memory() function signature
     lib.lmalf_from_memory.argtypes = [
         ctypes.c_int,                         # nf
@@ -192,6 +282,33 @@ def _get_wham_lib() -> ctypes.CDLL:
         ctypes.c_int,                         # nblocks_sq
     ]
     lib.nonlinear_from_memory.restype = ctypes.c_int
+
+    # Configure wham_compute_weights_from_memory() function signature
+    lib.wham_compute_weights_from_memory.argtypes = [
+        ctypes.c_int,                         # nf
+        ctypes.c_double,                      # temp
+        ctypes.c_int,                         # nts0
+        ctypes.c_int,                         # nts1
+        ctypes.c_int,                         # use_gshift
+        ctypes.POINTER(ctypes.c_int),         # nsubs
+        ctypes.c_int,                         # nsites
+        ctypes.c_char_p,                      # g_imp_path
+        ctypes.c_double,                      # chi_offset
+        ctypes.c_double,                      # omega_scale
+        ctypes.c_double,                      # cutlsum
+        ctypes.c_double,                      # chi_offset_t
+        ctypes.c_double,                      # chi_offset_u
+        ctypes.c_int,                         # ntriangle
+        ctypes.POINTER(ctypes.c_double),      # D_flat
+        ctypes.POINTER(ctypes.c_int),         # sim_indices
+        ctypes.POINTER(ctypes.c_int),         # frame_counts
+        ctypes.c_int,                         # total_frames
+        ctypes.POINTER(ctypes.c_double),      # gshift_flat
+        ctypes.POINTER(ctypes.c_double),      # weights_out
+        ctypes.POINTER(ctypes.c_double),      # f_out
+        ctypes.POINTER(ctypes.c_int),         # nf_out
+    ]
+    lib.wham_compute_weights_from_memory.restype = ctypes.c_int
 
     _wham_lib_cache = lib
     return lib
@@ -872,6 +989,1147 @@ def run_wham_from_memory(
     logger.info("WHAM (in-memory) analysis completed successfully")
 
 
+def run_wham_from_packed(
+    D_flat: np.ndarray,
+    sim_indices: np.ndarray,
+    frame_counts: np.ndarray,
+    total_frames: int,
+    nf: int,
+    nblocks: int,
+    temp: float,
+    nts0: int = 1,
+    nts1: int = 1,
+    use_gshift: bool = False,
+    nsubs: np.ndarray | list[int] | None = None,
+    g_imp_path: str | Path | None = None,
+    gshift_data: np.ndarray | None = None,
+    output_dir: str | Path | None = None,
+    log_file: str | Path | None = None,
+    fnex: float = 5.5,
+    cutlsum: float = 0.8,
+    chi_offset: float | None = None,
+    omega_decay: float | None = None,
+    chi_offset_t: float = 0.012,
+    chi_offset_u: float = 0.012,
+    ntriangle: int = 5,
+) -> None:
+    """Run WHAM from pre-packed D_h data (no intermediate energy_matrix).
+
+    Same as run_wham_from_memory but skips _pack_wham_data() — the caller
+    (compute_packed_wham_data) has already built D_flat in CUDA layout.
+
+    Args:
+        D_flat: Pre-packed float64 array of shape (total_frames * ndim,).
+        sim_indices: int32 array of shape (total_frames,).
+        frame_counts: int32 array of shape (nf,).
+        total_frames: Total number of frames.
+        nf: Number of simulations.
+        nblocks: Total number of lambda blocks.
+        temp: Temperature in Kelvin.
+        (other args: same as run_wham_from_memory)
+    """
+    if cutlsum <= 0.0 or cutlsum >= 1.0:
+        raise ValueError(
+            f"cutlsum must be in (0, 1), got {cutlsum}. "
+            "Typical value is 0.8 (exclude frames where lambda_i + lambda_j < 0.8)."
+        )
+
+    # Ensure contiguous arrays
+    D_flat = np.ascontiguousarray(D_flat, dtype=np.float64)
+    sim_indices = np.ascontiguousarray(sim_indices, dtype=np.int32)
+    frame_counts = np.ascontiguousarray(frame_counts, dtype=np.int32)
+
+    if gshift_data is not None:
+        gshift_flat = np.ascontiguousarray(gshift_data.ravel(), dtype=np.float64)
+    else:
+        gshift_flat = np.zeros(1, dtype=np.float64)
+
+    lib = _get_wham_lib()
+    nsubs_arr, nsubs_ptr, nsites = _prepare_nsubs(nsubs)
+    g_imp_path_bytes = _to_bytes(g_imp_path)
+    log_path = Path(log_file).resolve() if log_file is not None else None
+
+    constants = derive_bias_constants(fnex, chi_offset=chi_offset, omega_decay=omega_decay)
+
+    if output_dir is not None:
+        out_path = Path(output_dir)
+    else:
+        out_path = Path.cwd()
+    out_path.mkdir(parents=True, exist_ok=True)
+    (out_path / "multisite").mkdir(exist_ok=True)
+
+    D_ptr = D_flat.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+    si_ptr = sim_indices.ctypes.data_as(ctypes.POINTER(ctypes.c_int))
+    fc_ptr = frame_counts.ctypes.data_as(ctypes.POINTER(ctypes.c_int))
+    gs_ptr = gshift_flat.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+
+    logger.info(
+        f"Running WHAM (packed) with nf={nf}, temp={temp}, "
+        f"total_frames={total_frames}, fnex={fnex}"
+    )
+
+    with _chdir_context(out_path):
+        with _redirect_c_output(log_path):
+            result = lib.wham_from_memory(
+                nf, temp, nts0, nts1, int(use_gshift),
+                nsubs_ptr, nsites, g_imp_path_bytes,
+                constants.chi_offset, constants.omega_scale, cutlsum,
+                chi_offset_t, chi_offset_u, ntriangle,
+                D_ptr, si_ptr, fc_ptr,
+                total_frames, gs_ptr,
+            )
+        if result != 0:
+            raise RuntimeError(f"WHAM (packed) returned error code: {result}")
+
+    logger.info("WHAM (packed) analysis completed successfully")
+
+
+def compute_weights_from_packed(
+    D_flat: np.ndarray,
+    sim_indices: np.ndarray,
+    frame_counts: np.ndarray,
+    total_frames: int,
+    nf: int,
+    nblocks: int,
+    temp: float,
+    nts0: int = 1,
+    nts1: int = 1,
+    use_gshift: bool = False,
+    nsubs: np.ndarray | list[int] | None = None,
+    g_imp_path: str | Path | None = None,
+    gshift_data: np.ndarray | None = None,
+    output_dir: str | Path | None = None,
+    log_file: str | Path | None = None,
+    fnex: float = 5.5,
+    cutlsum: float = 0.8,
+    chi_offset: float | None = None,
+    omega_decay: float | None = None,
+    chi_offset_t: float = 0.012,
+    chi_offset_u: float = 0.012,
+    ntriangle: int = 5,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Compute WHAM per-frame weights from pre-packed D_h data (GPU).
+
+    Runs f-value convergence then computes w(t) = 1/Σ_j n_j·exp(f_j - β·E_j(t))
+    for each frame. Returns weights and converged f-values.
+
+    Args:
+        D_flat: Pre-packed float64 array of shape (total_frames * ndim,).
+        sim_indices: int32 array of shape (total_frames,).
+        frame_counts: int32 array of shape (nf,).
+        total_frames: Total number of frames.
+        nf: Number of simulations.
+        nblocks: Total number of lambda blocks.
+        temp: Temperature in Kelvin.
+        (other args: same as run_wham_from_packed)
+
+    Returns:
+        Tuple of (weights, f_values):
+            weights: float64 array of shape (total_frames,) — per-frame WHAM weights.
+            f_values: float64 array of shape (nf,) — converged free energies.
+    """
+    if cutlsum <= 0.0 or cutlsum >= 1.0:
+        raise ValueError(
+            f"cutlsum must be in (0, 1), got {cutlsum}. "
+            "Typical value is 0.8 (exclude frames where lambda_i + lambda_j < 0.8)."
+        )
+
+    D_flat = np.ascontiguousarray(D_flat, dtype=np.float64)
+    sim_indices = np.ascontiguousarray(sim_indices, dtype=np.int32)
+    frame_counts = np.ascontiguousarray(frame_counts, dtype=np.int32)
+
+    if gshift_data is not None:
+        gshift_flat = np.ascontiguousarray(gshift_data.ravel(), dtype=np.float64)
+    else:
+        gshift_flat = np.zeros(1, dtype=np.float64)
+
+    lib = _get_wham_lib()
+    nsubs_arr, nsubs_ptr, nsites = _prepare_nsubs(nsubs)
+    g_imp_path_bytes = _to_bytes(g_imp_path)
+    log_path = Path(log_file).resolve() if log_file is not None else None
+
+    constants = derive_bias_constants(fnex, chi_offset=chi_offset, omega_decay=omega_decay)
+
+    if output_dir is not None:
+        out_path = Path(output_dir)
+    else:
+        out_path = Path.cwd()
+    out_path.mkdir(parents=True, exist_ok=True)
+
+    D_ptr = D_flat.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+    si_ptr = sim_indices.ctypes.data_as(ctypes.POINTER(ctypes.c_int))
+    fc_ptr = frame_counts.ctypes.data_as(ctypes.POINTER(ctypes.c_int))
+    gs_ptr = gshift_flat.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+
+    # Pre-allocate output arrays
+    weights_out = np.empty(total_frames, dtype=np.float64)
+    f_out = np.empty(nf, dtype=np.float64)
+    nf_out = ctypes.c_int(0)
+
+    w_ptr = weights_out.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+    f_ptr = f_out.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+
+    logger.info(
+        f"Computing WHAM weights (packed) with nf={nf}, temp={temp}, "
+        f"total_frames={total_frames}, fnex={fnex}"
+    )
+
+    with _chdir_context(out_path):
+        with _redirect_c_output(log_path):
+            result = lib.wham_compute_weights_from_memory(
+                nf, temp, nts0, nts1, int(use_gshift),
+                nsubs_ptr, nsites, g_imp_path_bytes,
+                constants.chi_offset, constants.omega_scale, cutlsum,
+                chi_offset_t, chi_offset_u, ntriangle,
+                D_ptr, si_ptr, fc_ptr,
+                total_frames, gs_ptr,
+                w_ptr, f_ptr, ctypes.byref(nf_out),
+            )
+        if result != 0:
+            raise RuntimeError(f"WHAM weight computation returned error code: {result}")
+
+    actual_nf = nf_out.value
+    logger.info(f"WHAM weight computation completed (nf={actual_nf})")
+    return weights_out, f_out[:actual_nf]
+
+
+def compute_weights_numpy(
+    D_flat: np.ndarray,
+    frame_counts: np.ndarray,
+    nf: int,
+    nblocks: int,
+    temp: float,
+    f_values: np.ndarray,
+) -> np.ndarray:
+    """Compute WHAM weights from packed D_h data using numpy (CPU fallback).
+
+    Pure numpy implementation for testing without GPU. Uses the log-sum-exp
+    trick for numerical stability.
+
+    Args:
+        D_flat: Pre-packed float64 array of shape (total_frames * ndim,).
+        frame_counts: int32 array of shape (nf,) — frames per simulation.
+        nf: Number of simulations.
+        nblocks: Total number of lambda blocks (NL).
+        temp: Temperature in Kelvin.
+        f_values: float64 array of shape (nf,) — converged f-values.
+
+    Returns:
+        float64 array of shape (total_frames,) — per-frame WHAM weights.
+    """
+    NL = nblocks
+    ndim = NL + nf + 3
+    kB = 0.001987204  # kcal/(mol·K)
+    beta = 1.0 / (kB * temp)
+    total_frames = int(frame_counts.sum())
+    D = D_flat.reshape(total_frames, ndim)
+
+    # Cross-energies: columns NL+1 .. NL+nf
+    cross_E = D[:, NL + 1 : NL + 1 + nf]  # (total_frames, nf)
+    n_j = frame_counts.astype(np.float64)  # (nf,)
+
+    # log-space: log_denom[t,j] = log(n_j) + f_j - β·E_j(t)
+    log_terms = np.log(n_j[np.newaxis, :]) + f_values[np.newaxis, :] - beta * cross_E
+    # log-sum-exp for numerical stability
+    max_log = np.max(log_terms, axis=1, keepdims=True)
+    log_denom = max_log.ravel() + np.log(np.sum(np.exp(log_terms - max_log), axis=1))
+    weights = np.exp(-log_denom)
+
+    return weights
+
+
+def run_wham_distributed_from_packed(
+    D_flat: np.ndarray,
+    sim_indices: np.ndarray,
+    frame_counts: np.ndarray,
+    total_frames: int,
+    nf: int,
+    nblocks: int,
+    temp: float,
+    comm,
+    rank: int,
+    nranks: int,
+    nts0: int = 1,
+    nts1: int = 1,
+    use_gshift: bool = False,
+    nsubs: np.ndarray | list[int] | None = None,
+    g_imp_path: str | Path | None = None,
+    gshift_data: np.ndarray | None = None,
+    output_dir: str | Path | None = None,
+    log_file: str | Path | None = None,
+    fnex: float = 5.5,
+    cutlsum: float = 0.8,
+    chi_offset: float | None = None,
+    omega_decay: float | None = None,
+    chi_offset_t: float = 0.012,
+    chi_offset_u: float = 0.012,
+    ntriangle: int = 5,
+) -> None:
+    """Run distributed WHAM from pre-packed D_h data.
+
+    Same workflow as run_wham_distributed but the D_h data is already packed
+    on rank 0 (from compute_packed_wham_data_distributed). Skips the
+    _prepare_wham_common_args/_pack_wham_data call.
+
+    Falls back to run_wham_from_packed for nranks <= 1.
+    """
+    from mpi4py import MPI
+
+    if nranks <= 1:
+        if rank == 0:
+            run_wham_from_packed(
+                D_flat=D_flat,
+                sim_indices=sim_indices,
+                frame_counts=frame_counts,
+                total_frames=total_frames,
+                nf=nf,
+                nblocks=nblocks,
+                temp=temp,
+                nts0=nts0,
+                nts1=nts1,
+                use_gshift=use_gshift,
+                nsubs=nsubs,
+                g_imp_path=g_imp_path,
+                gshift_data=gshift_data,
+                output_dir=output_dir,
+                log_file=log_file,
+                fnex=fnex,
+                cutlsum=cutlsum,
+                chi_offset=chi_offset,
+                omega_decay=omega_decay,
+                chi_offset_t=chi_offset_t,
+                chi_offset_u=chi_offset_u,
+                ntriangle=ntriangle,
+            )
+        return
+
+    out_path = Path(output_dir) if output_dir is not None else Path.cwd()
+    log_path = Path(log_file).resolve() if log_file is not None else None
+
+    if cutlsum <= 0.0 or cutlsum >= 1.0:
+        raise ValueError(f"cutlsum must be in (0, 1), got {cutlsum}.")
+
+    # Prepare gshift
+    if gshift_data is not None:
+        gshift_flat = np.ascontiguousarray(gshift_data.ravel(), dtype=np.float64)
+    else:
+        gshift_flat = np.zeros(1, dtype=np.float64)
+
+    # ------------------------------------------------------------------
+    # Phase A: rank 0 runs f-value convergence on pre-packed data
+    # ------------------------------------------------------------------
+    iterate_ok = True
+    f_values = None
+    n_profiles = 0
+
+    if rank == 0:
+        try:
+            D_flat = np.ascontiguousarray(D_flat, dtype=np.float64)
+            sim_indices = np.ascontiguousarray(sim_indices, dtype=np.int32)
+            frame_counts = np.ascontiguousarray(frame_counts, dtype=np.int32)
+
+            lib = _get_wham_lib()
+            nsubs_arr, nsubs_ptr, nsites = _prepare_nsubs(nsubs)
+            g_imp_path_bytes = _to_bytes(g_imp_path)
+            constants = derive_bias_constants(
+                fnex, chi_offset=chi_offset, omega_decay=omega_decay
+            )
+
+            out_path.mkdir(parents=True, exist_ok=True)
+            (out_path / "multisite").mkdir(exist_ok=True)
+
+            f_out = np.zeros(nf, dtype=np.float64)
+            nf_out = ctypes.c_int(0)
+
+            D_ptr = D_flat.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+            si_ptr = sim_indices.ctypes.data_as(ctypes.POINTER(ctypes.c_int))
+            fc_ptr = frame_counts.ctypes.data_as(ctypes.POINTER(ctypes.c_int))
+            gs_ptr = gshift_flat.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+            f_ptr = f_out.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+
+            with _chdir_context(out_path):
+                with _redirect_c_output(log_path):
+                    result = lib.wham_iterate_from_memory(
+                        nf, temp, nts0, nts1, int(use_gshift),
+                        nsubs_ptr, nsites, g_imp_path_bytes,
+                        constants.chi_offset, constants.omega_scale, cutlsum,
+                        chi_offset_t, chi_offset_u, ntriangle,
+                        D_ptr, si_ptr, fc_ptr,
+                        total_frames, gs_ptr,
+                        f_ptr, ctypes.byref(nf_out),
+                    )
+                if result != 0:
+                    raise RuntimeError(f"WHAM iterate returned error code: {result}")
+
+            f_values = f_out[: nf_out.value]
+            n_profiles = _compute_n_profiles(nsubs, nts1)
+            logger.info(
+                f"Phase A done: {nf_out.value} f-values, {n_profiles} profiles"
+            )
+        except Exception as e:
+            iterate_ok = False
+            logger.error(f"Phase A (packed) failed: {e}")
+
+    # Broadcast iterate status
+    iterate_ok = comm.bcast(iterate_ok, root=0)
+    if not iterate_ok:
+        raise RuntimeError("WHAM Phase A (f-convergence) failed on rank 0")
+
+    # ------------------------------------------------------------------
+    # Build slim D + pre-compute lnDenom on rank 0, then broadcast
+    # ------------------------------------------------------------------
+    # Slim D layout: [E_self | lambda[0..NL-1] | bin1D | bin2D]
+    #   ndim = NL + 3  (vs full ndim = NL + nf + 3)
+    # lnDenom: one scalar per frame (WHAM reweighting denominator)
+    nsubs_arr_local = np.asarray(nsubs, dtype=np.int32)
+    NL = int(nsubs_arr_local.sum())
+    slim_ndim = NL + 3
+
+    if rank == 0:
+        full_ndim = NL + nf + 3
+        D_2d = D_flat.reshape(total_frames, full_ndim)
+
+        # Compute lnDenom = logsumexp_j(log(n_j) + f_j - beta * E_cross[t,j])
+        from scipy.special import logsumexp as _logsumexp
+
+        kB = 0.001987204  # kcal/mol/K, matches CUDA
+        beta = 1.0 / (kB * temp)
+        E_cross = D_2d[:, 1 + NL : 1 + NL + nf]  # (total_frames, nf)
+        log_n = np.log(frame_counts.astype(np.float64))  # (nf,)
+        terms = log_n[np.newaxis, :] + f_values[np.newaxis, :] - beta * E_cross
+        lnDenom = _logsumexp(terms, axis=1).astype(np.float64)  # (total_frames,)
+
+        # Build slim D (strip cross-energy columns)
+        slim_D = np.zeros((total_frames, slim_ndim), dtype=np.float64)
+        slim_D[:, 0] = D_2d[:, 0]  # E_self
+        slim_D[:, 1 : 1 + NL] = D_2d[:, 1 : 1 + NL]  # lambda columns
+        # bin1D/bin2D = zeros (CUDA writes them)
+        slim_D_flat = np.ascontiguousarray(slim_D.ravel())
+
+        # Free full D — the big memory win
+        del D_flat, D_2d, E_cross, terms, slim_D
+
+        sizes = (
+            slim_D_flat.shape[0], sim_indices.shape[0],
+            frame_counts.shape[0], gshift_flat.shape[0], total_frames,
+        )
+        logger.info(
+            f"Slim D: {slim_D_flat.nbytes / 1e6:.0f} MB "
+            f"(was {total_frames * full_ndim * 8 / 1e6:.0f} MB)"
+        )
+    else:
+        slim_D_flat = None
+        lnDenom = None
+        sizes = None
+
+    sizes = comm.bcast(sizes, root=0)
+    sd_sz, si_sz, fc_sz, gs_sz, total_frames = sizes
+
+    if rank != 0:
+        slim_D_flat = np.empty(sd_sz, dtype=np.float64)
+        lnDenom = np.empty(total_frames, dtype=np.float64)
+        sim_indices = np.empty(si_sz, dtype=np.int32)
+        frame_counts = np.empty(fc_sz, dtype=np.int32)
+        gshift_flat = np.empty(gs_sz, dtype=np.float64)
+
+    comm.Bcast(slim_D_flat, root=0)
+    comm.Bcast(lnDenom, root=0)
+    comm.Bcast(sim_indices, root=0)
+    comm.Bcast(frame_counts, root=0)
+    comm.Bcast(gshift_flat, root=0)
+
+    f_values = comm.bcast(f_values, root=0)
+    n_profiles = comm.bcast(n_profiles, root=0)
+
+    # ------------------------------------------------------------------
+    # Phase B: each rank computes its profile subset (slim D path)
+    # ------------------------------------------------------------------
+    my_start = rank * n_profiles // nranks
+    my_end = (rank + 1) * n_profiles // nranks
+
+    logger.info(
+        f"Phase B (slim): rank {rank} profiles [{my_start}, {my_end}) "
+        f"of {n_profiles}, ndim={slim_ndim}"
+    )
+
+    profile_ok = True
+    dim_out = ctypes.c_int(0)
+    max_dim = 1000
+    C_out = np.zeros(max_dim * max_dim, dtype=np.float64)
+    V_out = np.zeros(max_dim, dtype=np.float64)
+
+    if my_start < my_end:
+        lib = _get_wham_lib()
+        nsubs_arr, nsubs_ptr, nsites = _prepare_nsubs(nsubs)
+        g_imp_path_bytes = _to_bytes(g_imp_path)
+        constants = derive_bias_constants(fnex, chi_offset=chi_offset, omega_decay=omega_decay)
+        f_in = np.ascontiguousarray(f_values, dtype=np.float64)
+        lnDenom_c = np.ascontiguousarray(lnDenom, dtype=np.float64)
+
+        out_path.mkdir(parents=True, exist_ok=True)
+        (out_path / "multisite").mkdir(exist_ok=True)
+
+        D_ptr = slim_D_flat.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+        si_ptr = sim_indices.ctypes.data_as(ctypes.POINTER(ctypes.c_int))
+        fc_ptr = frame_counts.ctypes.data_as(ctypes.POINTER(ctypes.c_int))
+        gs_ptr = gshift_flat.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+        f_ptr = f_in.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+        ld_ptr = lnDenom_c.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+        C_ptr = C_out.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+        V_ptr = V_out.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+
+        try:
+            with _chdir_context(out_path):
+                with _redirect_c_output(log_path):
+                    result = lib.wham_profiles_slim_from_memory(
+                        nf, temp, nts0, nts1, int(use_gshift),
+                        nsubs_ptr, nsites, g_imp_path_bytes,
+                        constants.chi_offset, constants.omega_scale, cutlsum,
+                        chi_offset_t, chi_offset_u, ntriangle,
+                        D_ptr, slim_ndim,
+                        si_ptr, fc_ptr,
+                        total_frames, gs_ptr,
+                        f_ptr, len(f_in),
+                        ld_ptr,
+                        my_start, my_end,
+                        C_ptr, V_ptr, ctypes.byref(dim_out),
+                    )
+                if result != 0:
+                    raise RuntimeError(f"WHAM profiles returned error code: {result}")
+        except Exception as e:
+            profile_ok = False
+            logger.error(f"Phase B (slim) failed on rank {rank}: {e}")
+
+
+    all_ok = comm.allreduce(int(profile_ok), op=MPI.MIN)
+    if not all_ok:
+        raise RuntimeError(
+            "WHAM Phase B (profile computation) failed on one or more ranks"
+        )
+
+    # Ranks that skipped CUDA have dim_out=0; get the real dim via allreduce MAX.
+    dim = comm.allreduce(dim_out.value, op=MPI.MAX)
+    if dim > max_dim:
+        raise RuntimeError(f"C/V dimension {dim} exceeds max_dim={max_dim}")
+
+    C_local = C_out[: dim * dim].copy()
+    V_local = V_out[:dim].copy()
+
+    if rank == 0:
+        C_global = np.zeros_like(C_local)
+        V_global = np.zeros_like(V_local)
+    else:
+        C_global = None
+        V_global = None
+
+    comm.Reduce(C_local, C_global, op=MPI.SUM, root=0)
+    comm.Reduce(V_local, V_global, op=MPI.SUM, root=0)
+
+    if rank == 0:
+        _finalize_cv(C_global, V_global, dim, out_path)
+        logger.info(f"WHAM distributed (packed) completed: C/V dim={dim}")
+
+
+def _prepare_wham_common_args(
+    lambda_arrays: list[np.ndarray],
+    energy_matrix: list[list[np.ndarray]],
+    nblocks: int,
+    nf: int,
+    temp: float,
+    nts0: int,
+    nts1: int,
+    use_gshift: bool,
+    nsubs: np.ndarray | list[int] | None,
+    g_imp_path: str | Path | None,
+    gshift_data: np.ndarray | None,
+    fnex: float,
+    cutlsum: float,
+    chi_offset: float | None,
+    omega_decay: float | None,
+    chi_offset_t: float,
+    chi_offset_u: float,
+    ntriangle: int,
+) -> dict:
+    """Prepare common arguments for distributed WHAM calls.
+
+    Packs data, resolves constants, prepares ctypes pointers.
+    Returns a dict of all prepared arguments.
+    """
+    if cutlsum <= 0.0 or cutlsum >= 1.0:
+        raise ValueError(f"cutlsum must be in (0, 1), got {cutlsum}.")
+
+    D_flat, sim_indices, frame_counts, total_frames = _pack_wham_data(
+        lambda_arrays, energy_matrix, nblocks, nf,
+    )
+
+    if gshift_data is not None:
+        gshift_flat = np.ascontiguousarray(gshift_data.ravel(), dtype=np.float64)
+    else:
+        gshift_flat = np.zeros(1, dtype=np.float64)
+
+    lib = _get_wham_lib()
+    nsubs_arr, nsubs_ptr, nsites = _prepare_nsubs(nsubs)
+    g_imp_path_bytes = _to_bytes(g_imp_path)
+    constants = derive_bias_constants(fnex, chi_offset=chi_offset, omega_decay=omega_decay)
+
+    return {
+        "lib": lib,
+        "D_flat": D_flat,
+        "sim_indices": sim_indices,
+        "frame_counts": frame_counts,
+        "total_frames": total_frames,
+        "gshift_flat": gshift_flat,
+        "nsubs_arr": nsubs_arr,
+        "nsubs_ptr": nsubs_ptr,
+        "nsites": nsites,
+        "g_imp_path_bytes": g_imp_path_bytes,
+        "constants": constants,
+        "nf": nf,
+        "temp": temp,
+        "nts0": nts0,
+        "nts1": nts1,
+        "use_gshift": use_gshift,
+        "chi_offset_t": chi_offset_t,
+        "chi_offset_u": chi_offset_u,
+        "ntriangle": ntriangle,
+        "cutlsum": cutlsum,
+    }
+
+
+def run_wham_iterate(
+    lambda_arrays: list[np.ndarray],
+    energy_matrix: list[list[np.ndarray]],
+    nblocks: int,
+    nf: int,
+    temp: float,
+    nts0: int = 1,
+    nts1: int = 1,
+    use_gshift: bool = False,
+    nsubs: np.ndarray | list[int] | None = None,
+    g_imp_path: str | Path | None = None,
+    gshift_data: np.ndarray | None = None,
+    output_dir: str | Path | None = None,
+    log_file: str | Path | None = None,
+    fnex: float = 5.5,
+    cutlsum: float = 0.8,
+    chi_offset: float | None = None,
+    omega_decay: float | None = None,
+    chi_offset_t: float = 0.012,
+    chi_offset_u: float = 0.012,
+    ntriangle: int = 5,
+) -> np.ndarray:
+    """Run WHAM Phase A: f-value convergence only.
+
+    Returns the converged f-values array for broadcasting to other ranks.
+    Does NOT compute profiles (C.dat/V.dat).
+
+    Returns:
+        f_values: float64 array of shape (NF,) with converged f-values.
+    """
+    args = _prepare_wham_common_args(
+        lambda_arrays, energy_matrix, nblocks, nf, temp, nts0, nts1,
+        use_gshift, nsubs, g_imp_path, gshift_data,
+        fnex, cutlsum, chi_offset, omega_decay, chi_offset_t, chi_offset_u, ntriangle,
+    )
+
+    # Prepare output directory (for f.dat written by iteratedata)
+    if output_dir is not None:
+        out_path = Path(output_dir)
+    else:
+        out_path = Path.cwd()
+    out_path.mkdir(parents=True, exist_ok=True)
+    (out_path / "multisite").mkdir(exist_ok=True)
+
+    # Output buffers for f-values
+    f_out = np.zeros(nf, dtype=np.float64)
+    nf_out = ctypes.c_int(0)
+
+    D_ptr = args["D_flat"].ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+    si_ptr = args["sim_indices"].ctypes.data_as(ctypes.POINTER(ctypes.c_int))
+    fc_ptr = args["frame_counts"].ctypes.data_as(ctypes.POINTER(ctypes.c_int))
+    gs_ptr = args["gshift_flat"].ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+    f_ptr = f_out.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+
+    log_path = Path(log_file).resolve() if log_file is not None else None
+
+    logger.info(f"Running WHAM iterate (Phase A) with nf={nf}, temp={temp}")
+
+    with _chdir_context(out_path):
+        with _redirect_c_output(log_path):
+            result = args["lib"].wham_iterate_from_memory(
+                nf, temp, nts0, nts1, int(use_gshift),
+                args["nsubs_ptr"], args["nsites"], args["g_imp_path_bytes"],
+                args["constants"].chi_offset, args["constants"].omega_scale, cutlsum,
+                chi_offset_t, chi_offset_u, ntriangle,
+                D_ptr, si_ptr, fc_ptr,
+                args["total_frames"], gs_ptr,
+                f_ptr, ctypes.byref(nf_out),
+            )
+        if result != 0:
+            raise RuntimeError(f"WHAM iterate returned error code: {result}")
+
+    actual_nf = nf_out.value
+    logger.info(f"WHAM iterate completed, {actual_nf} f-values converged")
+    return f_out[:actual_nf]
+
+
+def run_wham_profiles(
+    lambda_arrays: list[np.ndarray],
+    energy_matrix: list[list[np.ndarray]],
+    nblocks: int,
+    nf: int,
+    temp: float,
+    f_values: np.ndarray,
+    profile_start: int,
+    profile_end: int,
+    nts0: int = 1,
+    nts1: int = 1,
+    use_gshift: bool = False,
+    nsubs: np.ndarray | list[int] | None = None,
+    g_imp_path: str | Path | None = None,
+    gshift_data: np.ndarray | None = None,
+    output_dir: str | Path | None = None,
+    log_file: str | Path | None = None,
+    fnex: float = 5.5,
+    cutlsum: float = 0.8,
+    chi_offset: float | None = None,
+    omega_decay: float | None = None,
+    chi_offset_t: float = 0.012,
+    chi_offset_u: float = 0.012,
+    ntriangle: int = 5,
+) -> tuple[np.ndarray, np.ndarray, int]:
+    """Run WHAM Phase B: compute profiles for a subset.
+
+    Uses pre-converged f-values from run_wham_iterate().
+    Returns raw (unregularized) C/V contributions for MPI_Reduce.
+
+    Args:
+        f_values: Converged f-values from Phase A.
+        profile_start: First profile index (inclusive).
+        profile_end: Last profile index (exclusive).
+
+    Returns:
+        C_partial: float64 array of shape (dim*dim,) — raw Hessian contributions.
+        V_partial: float64 array of shape (dim,) — raw gradient contributions.
+        dim: Dimension of the C/V system (jN + iN).
+    """
+    args = _prepare_wham_common_args(
+        lambda_arrays, energy_matrix, nblocks, nf, temp, nts0, nts1,
+        use_gshift, nsubs, g_imp_path, gshift_data,
+        fnex, cutlsum, chi_offset, omega_decay, chi_offset_t, chi_offset_u, ntriangle,
+    )
+
+    if output_dir is not None:
+        out_path = Path(output_dir)
+    else:
+        out_path = Path.cwd()
+    out_path.mkdir(parents=True, exist_ok=True)
+    (out_path / "multisite").mkdir(exist_ok=True)
+
+    # We don't know the exact dim until CUDA computes it, but we can estimate:
+    # dim = jN + iN, which depends on nsubs, ntriangle, ms, msprof.
+    # Allocate generously — CUDA will tell us the actual dim.
+    # Upper bound: for nsubs with N subsites each, jN ~ N + ntriangle*N*(N-1)/2 per site
+    # and iN ~ N + 2*N*(N-1)/2 per site. 1000 is a safe upper bound for any system.
+    max_dim = 1000
+    C_out = np.zeros(max_dim * max_dim, dtype=np.float64)
+    V_out = np.zeros(max_dim, dtype=np.float64)
+    dim_out = ctypes.c_int(0)
+
+    f_in = np.ascontiguousarray(f_values, dtype=np.float64)
+
+    D_ptr = args["D_flat"].ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+    si_ptr = args["sim_indices"].ctypes.data_as(ctypes.POINTER(ctypes.c_int))
+    fc_ptr = args["frame_counts"].ctypes.data_as(ctypes.POINTER(ctypes.c_int))
+    gs_ptr = args["gshift_flat"].ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+    f_ptr = f_in.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+    C_ptr = C_out.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+    V_ptr = V_out.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+
+    log_path = Path(log_file).resolve() if log_file is not None else None
+
+    logger.info(
+        f"Running WHAM profiles (Phase B) for profiles [{profile_start}, {profile_end})"
+    )
+
+    with _chdir_context(out_path):
+        with _redirect_c_output(log_path):
+            result = args["lib"].wham_profiles_from_memory(
+                nf, temp, nts0, nts1, int(use_gshift),
+                args["nsubs_ptr"], args["nsites"], args["g_imp_path_bytes"],
+                args["constants"].chi_offset, args["constants"].omega_scale, cutlsum,
+                chi_offset_t, chi_offset_u, ntriangle,
+                D_ptr, si_ptr, fc_ptr,
+                args["total_frames"], gs_ptr,
+                f_ptr, len(f_in),
+                profile_start, profile_end,
+                C_ptr, V_ptr, ctypes.byref(dim_out),
+            )
+        if result != 0:
+            raise RuntimeError(f"WHAM profiles returned error code: {result}")
+
+    dim = dim_out.value
+    logger.info(f"WHAM profiles completed, dim={dim}")
+
+    # Reshape to actual dimensions
+    C_partial = C_out[:dim * dim].copy()
+    V_partial = V_out[:dim].copy()
+    return C_partial, V_partial, dim
+
+
+def _finalize_cv(C: np.ndarray, V: np.ndarray, dim: int, output_dir: Path) -> None:
+    """Apply regularization and write C.dat/V.dat after MPI_Reduce.
+
+    Mirrors the finalization logic in getfofq() (wham.cu):
+    - Add regularization to empty rows and diagonal
+    - Write multisite/C.dat and multisite/V.dat
+    """
+    C_mat = C.reshape(dim, dim)
+    lambda_reg = 1e-9
+    big_lambda = 1.0
+
+    for j1 in range(dim):
+        row_weight = np.sum(np.abs(C_mat[j1, :]))
+        if row_weight < 1e-12:
+            C_mat[j1, j1] += big_lambda
+            V[j1] = 0.0
+        C_mat[j1, j1] += lambda_reg
+
+    multisite_dir = output_dir / "multisite"
+    multisite_dir.mkdir(exist_ok=True)
+
+    with open(multisite_dir / "C.dat", "w") as f:
+        for j1 in range(dim):
+            f.write(" ".join(f"{C_mat[j1, j2]:.12g}" for j2 in range(dim)))
+            f.write("\n")
+
+    with open(multisite_dir / "V.dat", "w") as f:
+        for j1 in range(dim):
+            f.write(f" {V[j1]:.12g}\n")
+
+
+def _compute_n_profiles(nsubs, nts1: int) -> int:
+    """Compute total number of WHAM profiles (iN) from nsubs.
+
+    Mirrors the profile counting logic in wham.cu readdata_from_memory.
+    """
+    nsubs_arr = np.asarray(nsubs, dtype=np.int32) if nsubs is not None else np.array([], dtype=np.int32)
+    iN = 0
+    nsites_val = len(nsubs_arr)
+    for s1 in range(nsites_val):
+        for s2 in range(s1, nsites_val):
+            if s1 == s2:
+                ns = int(nsubs_arr[s1])
+                if ns == 2:
+                    iN += ns + ns * (ns - 1) // 2
+                else:
+                    iN += ns + 2 * ns * (ns - 1) // 2
+            elif nts1 > 0:  # msprof
+                iN += int(nsubs_arr[s1]) * int(nsubs_arr[s2])
+    return iN
+
+
+def run_wham_distributed(
+    lambda_arrays: list[np.ndarray],
+    energy_matrix: list[list[np.ndarray]],
+    nblocks: int,
+    nf: int,
+    temp: float,
+    comm,
+    rank: int,
+    nranks: int,
+    nts0: int = 1,
+    nts1: int = 1,
+    use_gshift: bool = False,
+    nsubs: np.ndarray | list[int] | None = None,
+    g_imp_path: str | Path | None = None,
+    gshift_data: np.ndarray | None = None,
+    output_dir: str | Path | None = None,
+    log_file: str | Path | None = None,
+    fnex: float = 5.5,
+    cutlsum: float = 0.8,
+    chi_offset: float | None = None,
+    omega_decay: float | None = None,
+    chi_offset_t: float = 0.012,
+    chi_offset_u: float = 0.012,
+    ntriangle: int = 5,
+) -> None:
+    """Run WHAM with profile computation distributed across MPI ranks.
+
+    Flow:
+    1. Rank 0: pack data + f-value convergence (iteratedata on 1 GPU)
+    2. Broadcast packed data arrays + f-values to all ranks
+    3. All ranks: compute assigned profile subset on own GPU
+    4. MPI_Reduce(SUM) partial C/V on rank 0
+    5. Rank 0: regularize + write C.dat/V.dat
+
+    Non-rank-0 ranks need not have lambda_arrays/energy_matrix — the packed
+    data is broadcast from rank 0. Falls back to run_wham_from_memory() when
+    nranks=1.
+
+    Args:
+        comm: MPI communicator (e.g., MPI.COMM_WORLD).
+        rank: This rank's index.
+        nranks: Total number of ranks.
+        (other args: same as run_wham_from_memory)
+    """
+    from mpi4py import MPI
+
+    # Single-rank fallback: use the standard non-distributed path
+    if nranks <= 1:
+        if rank == 0:
+            run_wham_from_memory(
+                lambda_arrays=lambda_arrays,
+                energy_matrix=energy_matrix,
+                nblocks=nblocks,
+                nf=nf,
+                temp=temp,
+                nts0=nts0,
+                nts1=nts1,
+                use_gshift=use_gshift,
+                nsubs=nsubs,
+                g_imp_path=g_imp_path,
+                gshift_data=gshift_data,
+                output_dir=output_dir,
+                log_file=log_file,
+                fnex=fnex,
+                cutlsum=cutlsum,
+                chi_offset=chi_offset,
+                omega_decay=omega_decay,
+                chi_offset_t=chi_offset_t,
+                chi_offset_u=chi_offset_u,
+                ntriangle=ntriangle,
+            )
+        return
+
+    out_path = Path(output_dir) if output_dir is not None else Path.cwd()
+    log_path = Path(log_file).resolve() if log_file is not None else None
+
+    # ------------------------------------------------------------------
+    # Phase A: rank 0 packs data + runs f-value convergence
+    # ------------------------------------------------------------------
+    iterate_ok = True
+    f_values = None
+    n_profiles = 0
+    # Packed arrays (only meaningful on rank 0 initially)
+    D_flat = sim_indices = frame_counts = gshift_flat = None
+    total_frames = 0
+
+    if rank == 0:
+        try:
+            packed = _prepare_wham_common_args(
+                lambda_arrays, energy_matrix, nblocks, nf, temp, nts0, nts1,
+                use_gshift, nsubs, g_imp_path, gshift_data,
+                fnex, cutlsum, chi_offset, omega_decay,
+                chi_offset_t, chi_offset_u, ntriangle,
+            )
+
+            D_flat = packed["D_flat"]
+            sim_indices = packed["sim_indices"]
+            frame_counts = packed["frame_counts"]
+            total_frames = packed["total_frames"]
+            gshift_flat = packed["gshift_flat"]
+
+            # Prepare output directory
+            out_path.mkdir(parents=True, exist_ok=True)
+            (out_path / "multisite").mkdir(exist_ok=True)
+
+            # Run iterate from packed data
+            f_out = np.zeros(nf, dtype=np.float64)
+            nf_out = ctypes.c_int(0)
+
+            D_ptr = D_flat.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+            si_ptr = sim_indices.ctypes.data_as(ctypes.POINTER(ctypes.c_int))
+            fc_ptr = frame_counts.ctypes.data_as(ctypes.POINTER(ctypes.c_int))
+            gs_ptr = gshift_flat.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+            f_ptr = f_out.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+
+            with _chdir_context(out_path):
+                with _redirect_c_output(log_path):
+                    result = packed["lib"].wham_iterate_from_memory(
+                        nf, temp, nts0, nts1, int(use_gshift),
+                        packed["nsubs_ptr"], packed["nsites"],
+                        packed["g_imp_path_bytes"],
+                        packed["constants"].chi_offset,
+                        packed["constants"].omega_scale, cutlsum,
+                        chi_offset_t, chi_offset_u, ntriangle,
+                        D_ptr, si_ptr, fc_ptr,
+                        total_frames, gs_ptr,
+                        f_ptr, ctypes.byref(nf_out),
+                    )
+                if result != 0:
+                    raise RuntimeError(f"WHAM iterate returned error code: {result}")
+
+            f_values = f_out[: nf_out.value]
+            n_profiles = _compute_n_profiles(nsubs, nts1)
+            logger.info(
+                f"Phase A done: {nf_out.value} f-values, {n_profiles} profiles"
+            )
+        except Exception as e:
+            iterate_ok = False
+            logger.error(f"Phase A failed: {e}")
+
+    # Broadcast iterate status — MUST happen so non-rank-0 doesn't deadlock
+    iterate_ok = comm.bcast(iterate_ok, root=0)
+    if not iterate_ok:
+        raise RuntimeError("WHAM Phase A (f-convergence) failed on rank 0")
+
+    # ------------------------------------------------------------------
+    # Build slim D + pre-compute lnDenom on rank 0, then broadcast
+    # ------------------------------------------------------------------
+    # Slim D layout: [E_self | lambda[0..NL-1] | bin1D | bin2D]
+    #   ndim = NL + 3  (vs full ndim = NL + nf + 3)
+    # lnDenom: one scalar per frame (WHAM reweighting denominator)
+    nsubs_arr_local = np.asarray(nsubs, dtype=np.int32)
+    NL = int(nsubs_arr_local.sum())
+    slim_ndim = NL + 3
+
+    if rank == 0:
+        full_ndim = NL + nf + 3
+        D_2d = D_flat.reshape(total_frames, full_ndim)
+
+        # Compute lnDenom = logsumexp_j(log(n_j) + f_j - beta * E_cross[t,j])
+        from scipy.special import logsumexp as _logsumexp
+
+        kB = 0.001987204  # kcal/mol/K, matches CUDA
+        beta = 1.0 / (kB * temp)
+        E_cross = D_2d[:, 1 + NL : 1 + NL + nf]  # (total_frames, nf)
+        log_n = np.log(frame_counts.astype(np.float64))  # (nf,)
+        terms = log_n[np.newaxis, :] + f_values[np.newaxis, :] - beta * E_cross
+        lnDenom = _logsumexp(terms, axis=1).astype(np.float64)  # (total_frames,)
+
+        # Build slim D (strip cross-energy columns)
+        slim_D = np.zeros((total_frames, slim_ndim), dtype=np.float64)
+        slim_D[:, 0] = D_2d[:, 0]  # E_self
+        slim_D[:, 1 : 1 + NL] = D_2d[:, 1 : 1 + NL]  # lambda columns
+        # bin1D/bin2D = zeros (CUDA writes them)
+        slim_D_flat = np.ascontiguousarray(slim_D.ravel())
+
+        # Free full D — the big memory win
+        del D_flat, D_2d, E_cross, terms, slim_D
+
+        sizes = (
+            slim_D_flat.shape[0], sim_indices.shape[0],
+            frame_counts.shape[0], gshift_flat.shape[0], total_frames,
+        )
+        logger.info(
+            f"Slim D: {slim_D_flat.nbytes / 1e6:.0f} MB "
+            f"(was {total_frames * full_ndim * 8 / 1e6:.0f} MB)"
+        )
+    else:
+        slim_D_flat = None
+        lnDenom = None
+        sizes = None
+
+    sizes = comm.bcast(sizes, root=0)
+    sd_sz, si_sz, fc_sz, gs_sz, total_frames = sizes
+
+    if rank != 0:
+        slim_D_flat = np.empty(sd_sz, dtype=np.float64)
+        lnDenom = np.empty(total_frames, dtype=np.float64)
+        sim_indices = np.empty(si_sz, dtype=np.int32)
+        frame_counts = np.empty(fc_sz, dtype=np.int32)
+        gshift_flat = np.empty(gs_sz, dtype=np.float64)
+
+    comm.Bcast(slim_D_flat, root=0)
+    comm.Bcast(lnDenom, root=0)
+    comm.Bcast(sim_indices, root=0)
+    comm.Bcast(frame_counts, root=0)
+    comm.Bcast(gshift_flat, root=0)
+
+    f_values = comm.bcast(f_values, root=0)
+    n_profiles = comm.bcast(n_profiles, root=0)
+
+    # ------------------------------------------------------------------
+    # Phase B: each rank computes its profile subset (slim D path)
+    # ------------------------------------------------------------------
+    my_start = rank * n_profiles // nranks
+    my_end = (rank + 1) * n_profiles // nranks
+
+    logger.info(
+        f"Phase B (slim): rank {rank} profiles [{my_start}, {my_end}) "
+        f"of {n_profiles}, ndim={slim_ndim}"
+    )
+
+    profile_ok = True
+    dim_out = ctypes.c_int(0)
+    max_dim = 1000
+    C_out = np.zeros(max_dim * max_dim, dtype=np.float64)
+    V_out = np.zeros(max_dim, dtype=np.float64)
+
+    if my_start < my_end:
+        lib = _get_wham_lib()
+        nsubs_arr, nsubs_ptr, nsites = _prepare_nsubs(nsubs)
+        g_imp_path_bytes = _to_bytes(g_imp_path)
+        constants = derive_bias_constants(fnex, chi_offset=chi_offset, omega_decay=omega_decay)
+        f_in = np.ascontiguousarray(f_values, dtype=np.float64)
+        lnDenom_c = np.ascontiguousarray(lnDenom, dtype=np.float64)
+
+        out_path.mkdir(parents=True, exist_ok=True)
+        (out_path / "multisite").mkdir(exist_ok=True)
+
+        D_ptr = slim_D_flat.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+        si_ptr = sim_indices.ctypes.data_as(ctypes.POINTER(ctypes.c_int))
+        fc_ptr = frame_counts.ctypes.data_as(ctypes.POINTER(ctypes.c_int))
+        gs_ptr = gshift_flat.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+        f_ptr = f_in.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+        ld_ptr = lnDenom_c.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+        C_ptr = C_out.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+        V_ptr = V_out.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+
+        try:
+            with _chdir_context(out_path):
+                with _redirect_c_output(log_path):
+                    result = lib.wham_profiles_slim_from_memory(
+                        nf, temp, nts0, nts1, int(use_gshift),
+                        nsubs_ptr, nsites, g_imp_path_bytes,
+                        constants.chi_offset, constants.omega_scale, cutlsum,
+                        chi_offset_t, chi_offset_u, ntriangle,
+                        D_ptr, slim_ndim,
+                        si_ptr, fc_ptr,
+                        total_frames, gs_ptr,
+                        f_ptr, len(f_in),
+                        ld_ptr,
+                        my_start, my_end,
+                        C_ptr, V_ptr, ctypes.byref(dim_out),
+                    )
+                if result != 0:
+                    raise RuntimeError(f"WHAM profiles returned error code: {result}")
+        except Exception as e:
+            profile_ok = False
+            logger.error(f"Phase B (slim) failed on rank {rank}: {e}")
+
+    # Sync profile status — ensures all ranks reach Reduce together
+    all_ok = comm.allreduce(int(profile_ok), op=MPI.MIN)
+    if not all_ok:
+        raise RuntimeError("WHAM Phase B (profile computation) failed on one or more ranks")
+
+    # Ranks that skipped CUDA have dim_out=0; get the real dim via allreduce MAX.
+    dim = comm.allreduce(dim_out.value, op=MPI.MAX)
+    if dim > max_dim:
+        raise RuntimeError(
+            f"WHAM dimension {dim} exceeds buffer size {max_dim} — "
+            f"increase max_dim in run_wham_distributed"
+        )
+    C_partial = C_out[: dim * dim].copy()
+    V_partial = V_out[:dim].copy()
+
+    # ------------------------------------------------------------------
+    # MPI_Reduce: sum partial C/V on rank 0
+    # ------------------------------------------------------------------
+    # Use empty arrays (not None) on non-root for portability across mpi4py versions
+    C_total = np.zeros_like(C_partial) if rank == 0 else np.empty_like(C_partial)
+    V_total = np.zeros_like(V_partial) if rank == 0 else np.empty_like(V_partial)
+
+    comm.Reduce(C_partial, C_total, op=MPI.SUM, root=0)
+    comm.Reduce(V_partial, V_total, op=MPI.SUM, root=0)
+
+    # --- Rank 0: finalize and write output ---
+    if rank == 0:
+        _finalize_cv(C_total, V_total, dim, out_path)
+        logger.info("Distributed WHAM completed successfully")
+
+
 def run_lmalf_from_memory(
     lambda_combined: np.ndarray,
     ensweight: np.ndarray | None,
@@ -1053,10 +2311,9 @@ def run_nonlinear_from_memory(
 
     if ensweight is not None:
         ens_flat = np.ascontiguousarray(ensweight.ravel(), dtype=np.float64)
-        ens_ptr = ens_flat.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
     else:
-        ens_flat = None  # noqa: F841
-        ens_ptr = ctypes.POINTER(ctypes.c_double)()
+        ens_flat = np.ones(n_frames, dtype=np.float64)
+    ens_ptr = ens_flat.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
 
     if x_prev is not None:
         x_flat = np.ascontiguousarray(x_prev.ravel(), dtype=np.float64)
