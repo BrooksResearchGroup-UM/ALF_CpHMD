@@ -363,7 +363,7 @@ def solvate_system(config: SolvationConfig) -> Path:
             else:
                 lingo.charmm_script(f"JOIN SOLV W{wsegid} RENUmber")
 
-    if psf.get_natom == 0:
+    if psf.get_natom() == 0:
         raise RuntimeError("No waters in the box")
 
     psf.delete_atoms(pycharmm.SelectAtoms(seg_id="W000"))

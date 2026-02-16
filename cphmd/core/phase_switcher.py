@@ -62,9 +62,9 @@ class PhaseTransitionConfig:
     # the resulting biases are too crude for Phase 2's tighter cutoffs.
     min_phase1_runs: int = 20
 
-    # Minimum titratable states visited per site for phase 1→2 transition.
-    # Only UPOS/UNEG states count — NONE reference states are excluded.
-    # Set to a large value to require ALL titratable states visited.
+    # Minimum states visited per site for phase 1→2 transition.
+    # All protonation states must be visited (TAG only controls pH shift, not accessibility).
+    # Set to a large value to require ALL states visited.
     min_visited_1to2: int = 999
 
     # Minimum fraction (of total frames) for a state to count as "visited"
@@ -1048,7 +1048,7 @@ def check_stop_criteria(
             ]
         else:
             site_diffs = [
-                float(np.max(raw_fractions[s:e]) - np.min(raw_fractions[s:e]))
+                float(np.max(fractions[s:e]) - np.min(fractions[s:e]))
                 for s, e in _per_site_ranges(nsubs)
             ]
         frac_diff = max(site_diffs)
@@ -1781,11 +1781,13 @@ def check_pka_convergence(
             theoretical_pKa = np.mean(pKa_values)
 
         # Get state indices for this site (charged states for fitting)
+        # Use global column offsets, not local enumerate indices
+        site_offset = patch_info.index.get_loc(site_patches.index[0])
         state_indices = []
         for idx, (_, row) in enumerate(site_patches.iterrows()):
             tag = str(row.get("TAG", "NONE")).strip().upper()
             if tag.startswith("UPOS") or tag.startswith("UNEG"):
-                state_indices.append(idx)
+                state_indices.append(site_offset + idx)
 
         if not state_indices:
             continue

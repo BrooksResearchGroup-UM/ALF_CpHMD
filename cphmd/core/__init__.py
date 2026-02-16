@@ -21,7 +21,6 @@ from .alf_utils import (
     convert_lambda_binary_to_parquet,
     get_energy_from_analysis_dir,
     init_vars,
-    set_vars,
     set_vars_from_analysis_dir,
 )
 from .bias_analyzer import BiasAnalyzer
@@ -241,7 +240,6 @@ __all__ = [
     # ALF Utilities
     "ALFInfo",
     "init_vars",
-    "set_vars",
     "set_vars_from_analysis_dir",
     "get_energy_from_analysis_dir",
     "compute_wham_inputs",

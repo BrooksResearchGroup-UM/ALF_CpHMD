@@ -619,7 +619,6 @@ class ALFSimulation:
 
         # Build alf_info dictionary
         alf_info = {
-            "name": self.config.input_folder.name,
             "nsubs": np.array([], dtype=int),
             "nblocks": 0,
             "nreps": self.config.nreps,
@@ -655,7 +654,9 @@ class ALFSimulation:
             self._ensure_g_imp()
 
         # Initialize ALF variables (creates analysis0/, variables1.inp)
-        if self.state.rank == 0:
+        # Skip if analysis0 already has bias files (rerun protection)
+        analysis0_marker = self.config.input_folder / "analysis0" / "b_prev.dat"
+        if self.state.rank == 0 and not analysis0_marker.exists():
             if self.config.use_presets:
                 site_res_types = self._get_site_residue_types()
                 preset_cfg = self._resolve_preset_config()
@@ -775,7 +776,9 @@ class ALFSimulation:
             self._ensure_g_imp()
 
         # Initialize ALF variables (creates analysis0/, variables1.inp)
-        if self.state.rank == 0:
+        # Skip if analysis0 already has bias files (rerun protection)
+        analysis0_marker = self.config.input_folder / "analysis0" / "b_prev.dat"
+        if self.state.rank == 0 and not analysis0_marker.exists():
             init_vars(self.config.input_folder, alf_info)
 
     def _ensure_g_imp(self):
@@ -1018,6 +1021,7 @@ class ALFSimulation:
               f"phase {self.state.phase}, nreps {self.config.nreps}")
 
         # Main simulation loop
+        run_idx = start_run
         for run_idx in range(start_run, self.config.end + 1):
             self._execute_run(run_idx)
 
@@ -1030,6 +1034,12 @@ class ALFSimulation:
         # Run final analysis after simulation completes (convergence or end of runs)
         final_run = run_idx if self.state.converged else self.config.end
         self._run_final_analysis(final_run)
+
+        # Close redirected python log
+        if self._python_log is not None:
+            sys.stdout = sys.__stdout__
+            self._python_log.close()
+            self._python_log = None
 
     def _run_final_analysis(self, final_run: int) -> None:
         """Run final analysis after simulation completes or converges."""
@@ -1082,8 +1092,8 @@ class ALFSimulation:
 
         for i in range(self.config.end + 1, self.config.start - 1, -1):
             var_file = self.config.input_folder / f"variables{i}.inp"
-            if var_file.exists() and "set" in var_file.read_text():
-                if "nan" in var_file.read_text().lower():
+            if var_file.exists() and "set" in (content := var_file.read_text()):
+                if "nan" in content.lower():
                     # Clean up corrupted run
                     self._cleanup_run(i)
                     continue
@@ -1409,18 +1419,17 @@ class ALFSimulation:
         import glob as glob_mod
 
         prev_run = run_idx - 1
-        name = self.config.input_folder.name
         prev_res = self.config.input_folder / f"run{prev_run}" / "res"
         sim_type = "flat" if self.state.phase in (1, 2) else "prod"
 
         # Look for segmented restart files from k=0 of previous run
-        seg_pattern = str(prev_res / f"{name}_{sim_type}.0.{replica_idx}.seg*.rst")
+        seg_pattern = str(prev_res / f"{sim_type}.0.{replica_idx}.seg*.rst")
         seg_files = sorted(glob_mod.glob(seg_pattern))
         if seg_files:
             return Path(seg_files[-1])
 
         # Fallback: non-segmented restart
-        non_seg = prev_res / f"{name}_{sim_type}.0.{replica_idx}.rst"
+        non_seg = prev_res / f"{sim_type}.0.{replica_idx}.rst"
         if non_seg.exists():
             return non_seg
 
@@ -1605,12 +1614,6 @@ class ALFSimulation:
         try:
             os.chdir(self.config.input_folder)
 
-            # Analysis window (consistent on all ranks)
-            if self.state.phase == 1:
-                im5 = max(run_idx - 15, 1)
-            else:
-                im5 = max(run_idx - 5, 1)
-
             analysis_dir = Path(f"analysis{run_idx}")
 
             # === Rank 0: setup + lambda processing ===
@@ -1632,8 +1635,6 @@ class ALFSimulation:
                 self.state.alf_info["nreps"] = self.config.nreps
                 (Path("data")).mkdir(exist_ok=True)
 
-                name = self.config.input_folder.name
-
                 import contextlib
                 log_file = Path("analysis.log")
 
@@ -1649,13 +1650,13 @@ class ALFSimulation:
 
                                     seg_pattern = (
                                         f"../run{run_idx}/res/"
-                                        f"{name}_{sim_type}.{kk}.{j}.seg*.lmd"
+                                        f"{sim_type}.{kk}.{j}.seg*.lmd"
                                     )
                                     fnmsin = sorted(glob_mod.glob(seg_pattern))
                                 else:
                                     fnmsin = [
                                         f"../run{run_idx}/res/"
-                                        f"{name}_{sim_type}.{kk}.{j}.lmd"
+                                        f"{sim_type}.{kk}.{j}.lmd"
                                     ]
 
                                 fnmout = f"data/Lambda.{kk}.{j}.parquet"
@@ -1675,7 +1676,7 @@ class ALFSimulation:
                                     if self._exchanger is not None:
                                         seg_rst_pattern = (
                                             f"../run{run_idx}/res/"
-                                            f"{name}_{sim_type}.{kk}.{j}.seg*.rst"
+                                            f"{sim_type}.{kk}.{j}.seg*.rst"
                                         )
                                         seg_rsts = sorted(glob_mod.glob(seg_rst_pattern))
                                         # Keep the last segment's restart, delete the rest
