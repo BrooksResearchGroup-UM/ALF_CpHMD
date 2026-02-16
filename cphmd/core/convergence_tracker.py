@@ -172,6 +172,87 @@ class ConvergenceTracker:
         return lambda_data, pop_data, pop_strict
 
     # ------------------------------------------------------------------
+    # Per-repeat health check
+    # ------------------------------------------------------------------
+
+    def check_repeat_health(
+        self, nsubs: list[int] | None, stuck_threshold: float = 0.95,
+    ) -> dict:
+        """Check whether any repeat has catastrophically stuck populations.
+
+        Loads lambda data per-repeat and per-replica, computes the max-state
+        population fraction for each (repeat, replica) pair.  A repeat is
+        flagged as "stuck" when its max-state fraction exceeds
+        *stuck_threshold* for ALL replicas (i.e. no pH dependence).
+
+        Args:
+            nsubs: Substates per site (used only for nblocks fallback).
+            stuck_threshold: Fraction above which a single state dominates.
+
+        Returns:
+            Dict with keys:
+            - ``stuck_repeats``: list of repeat indices flagged as stuck
+            - ``per_repeat``: {repeat_idx: {replica_idx: max_state_frac}}
+        """
+        from cphmd.utils.lambda_io import find_lambda_files, read_lambda_values
+
+        data_dir = Path("data")
+        if not data_dir.exists():
+            return {"stuck_repeats": [], "per_repeat": {}}
+
+        lambda_fpaths = find_lambda_files(data_dir)
+        if not lambda_fpaths:
+            return {"stuck_repeats": [], "per_repeat": {}}
+
+        # Group files by (repeat, replica)
+        by_repeat_replica: dict[int, dict[int, list[Path]]] = {}
+        for fpath in lambda_fpaths:
+            try:
+                parts = fpath.name.split(".")
+                if len(parts) >= 4:
+                    repeat_idx = int(parts[1])
+                    replica_idx = int(parts[2])
+                    by_repeat_replica.setdefault(repeat_idx, {}).setdefault(
+                        replica_idx, []
+                    ).append(fpath)
+            except (ValueError, IndexError):
+                continue
+
+        if not by_repeat_replica:
+            return {"stuck_repeats": [], "per_repeat": {}}
+
+        per_repeat: dict[int, dict[int, float]] = {}
+        stuck_repeats: list[int] = []
+
+        for rep_k in sorted(by_repeat_replica):
+            replicas = by_repeat_replica[rep_k]
+            per_repeat[rep_k] = {}
+            all_stuck = True
+
+            for replica in sorted(replicas):
+                # Load and combine lambda data for this (repeat, replica)
+                combined = None
+                for fpath in sorted(replicas[replica]):
+                    arr = read_lambda_values(fpath)
+                    combined = arr if combined is None else np.vstack([combined, arr])
+
+                if combined is None or combined.size == 0:
+                    per_repeat[rep_k][replica] = 0.0
+                    all_stuck = False
+                    continue
+
+                max_frac = float(np.max(np.mean(combined, axis=0)))
+                per_repeat[rep_k][replica] = max_frac
+
+                if max_frac <= stuck_threshold:
+                    all_stuck = False
+
+            if all_stuck and len(replicas) > 0:
+                stuck_repeats.append(rep_k)
+
+        return {"stuck_repeats": stuck_repeats, "per_repeat": per_repeat}
+
+    # ------------------------------------------------------------------
     # Forced initial lambdas
     # ------------------------------------------------------------------
 

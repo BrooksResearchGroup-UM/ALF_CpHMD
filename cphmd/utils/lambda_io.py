@@ -128,7 +128,7 @@ def read_lambda_binary(filepath: str | Path) -> tuple[np.ndarray, LambdaFileMeta
 
     # Prepend timestamps as first column
     lambda_data = np.column_stack([timestamps, Lambda])
-    lambda_data = np.round(lambda_data, 3)
+    # No rounding: float32 source precision (~7 digits) preserved through parquet compression
 
     metadata = LambdaFileMetadata(
         nfile=nfile,

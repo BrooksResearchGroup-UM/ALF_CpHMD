@@ -23,6 +23,7 @@ chi_offset_u: 0.012   # u-term offset (independent of FNEX)
 hmr: true
 cleanup: false
 coupling: 0
+# bias_guess: true  # Run solvated-vacuum bias guessing on first run
 # min_xs_coverage_runs: 3  # Consecutive covered runs before Phase 1 x/s enable
 # phase1_xs_cutoff: 2.0    # cutx/cuts when x/s enabled in Phase 1
 

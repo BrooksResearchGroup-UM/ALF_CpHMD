@@ -109,6 +109,7 @@ class ALFConfig:
 
     # Preset biases (converged single-site biases from cubic box simulations)
     use_presets: bool = False  # Use preset biases for initial ALF parameters
+    bias_guess: bool = True  # Run solvated-vacuum bias guessing on first run
 
     # Inter-site coupling
     coupling: Literal[0, 1, 2] = 0  # 0=none, 1=full c/x/s, 2=c-only
@@ -619,6 +620,7 @@ class ALFSimulation:
 
         # Build alf_info dictionary
         alf_info = {
+            "name": self.config.input_folder.name,
             "nsubs": np.array([], dtype=int),
             "nblocks": 0,
             "nreps": self.config.nreps,
@@ -850,6 +852,8 @@ class ALFSimulation:
         starts with a fresh PSF load.
         """
         if self.config.use_presets:
+            return
+        if not self.config.bias_guess:
             return
         marker = self.config.input_folder / "analysis0" / ".biases_guessed"
         if marker.exists():
@@ -1354,13 +1358,19 @@ class ALFSimulation:
             self._dynamics.run_dynamics(run_idx, letter, k, replica_idx)
             return
 
-        # For k>0: restart equilibration from previous run's production restart
-        # to avoid inheriting k=0's exchange-homogenized lambda state.
-        # k=0 exchange funnels all replicas into one microstate — restarting
-        # from the previous run gives diverse, independent starting conditions.
+        # Cross-restart: each repeat restarts from the OTHER repeat's
+        # previous production.  k=0 reads k=1, k=1 reads k=0.  This gives
+        # warm starts (no random LDIN trapping) AND diverse initial
+        # conditions per repeat.  Falls back to same-k restart when the
+        # cross-k file doesn't exist (e.g. first Phase 2 run after Phase 1
+        # which only had k=0).
         prev_rst = None
-        if k > 0 and run_idx > 0:
-            prev_rst = self._find_exchange_restart(run_idx, replica_idx)
+        if run_idx > 0:
+            source_k = 1 - k  # cross: 0→1, 1→0
+            prev_rst = self._find_exchange_restart(run_idx, replica_idx, source_k)
+            if prev_rst is None:
+                # Fallback: own previous production (better than fresh start)
+                prev_rst = self._find_exchange_restart(run_idx, replica_idx, k)
 
         # Run equilibration if needed (Phase 2: 10000 steps).
         # No exchanges during eq — biases aren't stable yet.
@@ -1407,11 +1417,19 @@ class ALFSimulation:
         # Turn off BLADE after all segments
         self._dynamics.finish_blade()
 
-    def _find_exchange_restart(self, run_idx: int, replica_idx: int) -> Path | None:
+    def _find_exchange_restart(
+        self, run_idx: int, replica_idx: int, source_k: int = 0,
+    ) -> Path | None:
         """Find the previous run's last segment restart for this replica.
 
-        Looks for the last k=0 production segment restart in run{run_idx-1}.
-        Falls back to non-segmented restart if no segments found.
+        Looks for the last production segment restart of repeat *source_k*
+        in run{run_idx-1}.  Falls back to non-segmented restart if no
+        segments found.
+
+        Args:
+            run_idx: Current run index (searches run_idx - 1).
+            replica_idx: Replica (pH) index.
+            source_k: Which repeat's restart to look for (default 0).
 
         Returns:
             Path to restart file, or None if not found.
@@ -1422,14 +1440,14 @@ class ALFSimulation:
         prev_res = self.config.input_folder / f"run{prev_run}" / "res"
         sim_type = "flat" if self.state.phase in (1, 2) else "prod"
 
-        # Look for segmented restart files from k=0 of previous run
-        seg_pattern = str(prev_res / f"{sim_type}.0.{replica_idx}.seg*.rst")
+        # Look for segmented restart files from source_k of previous run
+        seg_pattern = str(prev_res / f"{sim_type}.{source_k}.{replica_idx}.seg*.rst")
         seg_files = sorted(glob_mod.glob(seg_pattern))
         if seg_files:
             return Path(seg_files[-1])
 
         # Fallback: non-segmented restart
-        non_seg = prev_res / f"{sim_type}.0.{replica_idx}.rst"
+        non_seg = prev_res / f"{sim_type}.{source_k}.{replica_idx}.rst"
         if non_seg.exists():
             return non_seg
 
@@ -1827,6 +1845,19 @@ class ALFSimulation:
             lambda_data, pop_data, pop_strict = (
                 self._convergence.compute_populations(nsubs)
             )
+
+            # Per-repeat health check (Phase 2+ with multiple repeats)
+            if repeats > 1:
+                health = self._convergence.check_repeat_health(nsubs)
+                if health["stuck_repeats"]:
+                    stuck = health["stuck_repeats"]
+                    print(f"WARNING: Repeat(s) {stuck} stuck (>95% in one state "
+                          f"at all pH replicas). Cross-restart should fix this "
+                          f"in subsequent runs.")
+                    for rk, replicas in health["per_repeat"].items():
+                        fracs = [f"{v:.3f}" for v in replicas.values()]
+                        tag = " <-- STUCK" if rk in stuck else ""
+                        print(f"  repeat {rk}: max_state_frac = [{', '.join(fracs)}]{tag}")
 
             if pop_strict is not None and len(pop_strict) > 0:
                 self._convergence.detect_forced_lambdas(
