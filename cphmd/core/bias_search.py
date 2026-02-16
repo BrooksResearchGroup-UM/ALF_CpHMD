@@ -11,11 +11,11 @@ This module identifies the best ALF run based on:
 Usage:
     # Programmatic
     from cphmd.core.bias_search import BiasSearchConfig, run_bias_search
-    config = BiasSearchConfig(input_folder="my_system", cutoff=0.985)
+    config = BiasSearchConfig(input_folder="my_system", cutoff=0.97)
     result = run_bias_search(config)
 
     # CLI
-    python -m cphmd.core.bias_search -i my_system -c 0.985 -v
+    python -m cphmd.core.bias_search -i my_system -c 0.97 -v
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ class BiasSearchConfig:
 
     Attributes:
         input_folder: Path to simulation directory with analysis folders
-        cutoff: Lambda cutoff for population counting (default: 0.985)
+        cutoff: Lambda cutoff for population counting (default: 0.97)
         adjustment: Bias adjustment type: '+' (positive), '-' (negative), '0' (none)
         alpha: Penalty factor for population imbalance in scoring
         temperature: Simulation temperature in Kelvin
@@ -46,7 +46,7 @@ class BiasSearchConfig:
     """
 
     input_folder: str
-    cutoff: float = 0.985
+    cutoff: float = 0.97
     adjustment: str = "0"  # '+', '-', or '0'
     alpha: float = 10.0
     temperature: float = 298.15
@@ -422,8 +422,8 @@ def main():
         "-c",
         "--cutoff",
         type=float,
-        default=0.985,
-        help="Lambda cutoff for population counting (default: 0.985)",
+        default=0.97,
+        help="Lambda cutoff for population counting (default: 0.97)",
     )
     parser.add_argument(
         "-a",

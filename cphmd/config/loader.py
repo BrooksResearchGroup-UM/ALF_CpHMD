@@ -185,6 +185,14 @@ def config_to_alf(
         else:
             cfg["endpoint_weight"] = float(ew)
 
+    # Handle endpoint_decay string parsing (same per-phase pattern)
+    ed = cfg.get("endpoint_decay")
+    if isinstance(ed, str):
+        if "," in ed:
+            cfg["endpoint_decay"] = [float(x.strip()) for x in ed.split(",")]
+        else:
+            cfg["endpoint_decay"] = float(ed)
+
     # Warn if bias_type and individual no_*_bias flags are both specified
     _bias_flags = {"no_b_bias", "no_c_bias", "no_x_bias", "no_s_bias", "no_t_bias", "no_u_bias"}
     if "bias_type" in cfg and any(k in cfg for k in _bias_flags):

@@ -45,6 +45,12 @@ class PhaseTransitionConfig:
     # Minimum sample count per state for phase 2→3
     min_hits_2to3: int = 1000
 
+    # Minimum independent transition events per state for phase 1→2
+    min_transitions_1to2: int = 10
+
+    # Minimum independent transition events per state for phase 2→3
+    min_transitions_2to3: int = 20
+
     # pKa tolerance for phase 1→2 (relaxed)
     pka_tolerance_1to2: float = 1.5
 
@@ -79,7 +85,7 @@ class PhaseTransitionConfig:
     # Per-state minimum normalized fraction at strict threshold for 2→3
     # Prevents transition when any state has near-zero population
     min_state_fraction_2to3: float = 0.01  # 1% per state
-    strict_threshold_2to3: float = 0.985
+    strict_threshold_2to3: float = 0.97
 
     # Minimum runs in Phase 2 before allowing 2→3 transition
     # Ensures x/s coupling cutoffs reach near-target values
@@ -89,7 +95,7 @@ class PhaseTransitionConfig:
     ewbs_2to3: float = 0.10
     ewbs_2to3_window: int = 5  # Consecutive runs below threshold
 
-    # Maximum worst-site population diff (at λ>0.985) for the LAST run
+    # Maximum worst-site population diff (at λ>0.97) for the LAST run
     # when using accumulated data for Phase 1→2 check. If the last run's
     # worst-site diff exceeds this, accumulated data is discarded and
     # single-run data is used instead (which blocks transition naturally).
@@ -112,7 +118,7 @@ class StopCriteriaConfig:
     """Configuration for Phase 3 → STOP criteria.
 
     Uses step5_bias_search-style scoring based on population fractions
-    at the strict lambda threshold (0.985).
+    at the strict lambda threshold (0.97).
 
     Stop when:
         1. Population fraction difference < max_frac_diff (e.g., 2%)
@@ -121,7 +127,7 @@ class StopCriteriaConfig:
     """
 
     # Lambda threshold for physical state detection (strict endpoint)
-    threshold_strict: float = 0.985
+    threshold_strict: float = 0.97
 
     # Maximum allowed fraction difference between states (e.g., 0.02 = 2%)
     max_frac_diff: float = 0.02
@@ -314,7 +320,7 @@ def _normalize_per_site(
 def compute_worst_site_pop_diff(
     lambda_data: np.ndarray,
     nsubs: list[int] | None = None,
-    strict_threshold: float = 0.985,
+    strict_threshold: float = 0.97,
     expected_pops: ExpectedPopulations | None = None,
 ) -> float:
     """Compute worst-site population diff at strict lambda threshold.
@@ -444,6 +450,42 @@ def enough_samples(mask: np.ndarray, min_hits: int = 200) -> bool:
         return False
     hits = np.sum(mask, axis=0)
     return bool(np.all(hits >= min_hits))
+
+
+def count_transition_events(mask: np.ndarray) -> np.ndarray:
+    """Count independent transition events (False→True rising edges) per state.
+
+    Each rising edge represents an independent visit to a state, immune to
+    autocorrelation inflation that plagues raw frame counting.
+
+    Args:
+        mask: Boolean array (samples,) or (samples, states).
+
+    Returns:
+        Array of transition event counts per state.
+    """
+    if mask.ndim == 1:
+        mask = mask[:, np.newaxis]
+    if mask.shape[0] < 2:
+        return np.zeros(mask.shape[1], dtype=int)
+    edges = mask[1:] & ~mask[:-1]  # True only at False→True transitions
+    return np.sum(edges, axis=0)
+
+
+def enough_transitions(mask: np.ndarray, min_events: int) -> bool:
+    """Check if every state has minimum independent transition events.
+
+    Args:
+        mask: Boolean array (samples,) or (samples, states).
+        min_events: Minimum required transition events per state.
+
+    Returns:
+        True if all states have sufficient transition events.
+    """
+    if mask.size == 0:
+        return False
+    events = count_transition_events(mask)
+    return bool(np.all(events >= min_events))
 
 
 def load_lambda_data(
@@ -600,7 +642,7 @@ def compute_replica_populations(
 
 def calculate_populations(
     lambda_data: np.ndarray,
-    thresholds: tuple[float, float] = (0.8, 0.985),
+    thresholds: tuple[float, float] = (0.8, 0.97),
     nsubs: list[int] | None = None,
 ) -> dict[str, np.ndarray]:
     """Calculate state populations at different lambda thresholds.
@@ -948,7 +990,7 @@ def check_stop_criteria(
     """Check if Phase 3 → STOP criteria are met.
 
     Uses step5_bias_search-style scoring based on population fractions
-    at the strict lambda threshold (0.985).
+    at the strict lambda threshold (0.97).
 
     When nsubs is provided, frac_diff is computed **per site** and the
     worst (largest) site frac_diff is used. Fractions are also normalized
@@ -1328,8 +1370,8 @@ def check_phase_transition(
             visited_mask=visited, expected_pops=expected_pops,
         )
 
-        # Min hits check on visited states only
-        samples_ok = enough_samples(mask[:, visited], config.min_hits_1to2)
+        # Transition events check on visited states only
+        samples_ok = enough_transitions(mask[:, visited], config.min_transitions_1to2)
 
         # Compute summary stats for reporting
         visited_fracs = col_fracs[visited]
@@ -1338,7 +1380,7 @@ def check_phase_transition(
                 np.max(visited_fracs) - np.min(visited_fracs))
         else:
             spread_visited = spread
-        min_hits_visited = int(mask[:, visited].sum(axis=0).min()) if visited.any() else 0
+        min_trans_visited = int(count_transition_events(mask[:, visited]).min()) if visited.any() else 0
 
         # Check pKa convergence if CpHMD
         pka_ok = True
@@ -1360,7 +1402,7 @@ def check_phase_transition(
             n_vis = int(visited.sum())
             n_tot = len(col_fracs)
             return 2, (f"Phase 1→2: spread={spread_visited:.3f}, "
-                       f"min_hits={min_hits_visited}, "
+                       f"min_trans={min_trans_visited}, "
                        f"visited={n_vis}/{n_tot}")
         else:
             reasons = []
@@ -1371,7 +1413,7 @@ def check_phase_transition(
                     f"spread={spread_visited:.3f}>={config.spread_1to2}")
             if not samples_ok:
                 reasons.append(
-                    f"min_hits={min_hits_visited}<{config.min_hits_1to2}")
+                    f"min_trans={min_trans_visited}<{config.min_transitions_1to2}")
             if not pka_ok:
                 reasons.append(pka_reason)
             return 1, f"Staying in phase 1: {', '.join(reasons)}"
@@ -1382,7 +1424,7 @@ def check_phase_transition(
             col_fracs, config.spread_2to3, nsubs=nsubs,
             expected_pops=expected_pops,
         )
-        samples_ok = enough_samples(mask, config.min_hits_2to3)
+        samples_ok = enough_transitions(mask, config.min_transitions_2to3)
 
         # Check pKa convergence if CpHMD (stricter tolerance)
         pka_ok = True
@@ -1465,13 +1507,15 @@ def check_phase_transition(
         all_ok = (overlap_ok and samples_ok and pka_ok and conn_ok
                   and state_frac_ok and phase2_dur_ok and ewbs_ok)
         if all_ok:
-            return 3, f"Phase 2→3: spread={spread:.3f}, min_hits={min_sample_count}"
+            min_trans = int(count_transition_events(mask).min())
+            return 3, f"Phase 2→3: spread={spread:.3f}, min_trans={min_trans}"
         else:
             reasons = []
             if not overlap_ok:
                 reasons.append(f"spread={spread:.3f}>{config.spread_2to3}")
             if not samples_ok:
-                reasons.append(f"min_hits={min_sample_count}<{config.min_hits_2to3}")
+                min_trans = int(count_transition_events(mask).min())
+                reasons.append(f"min_trans={min_trans}<{config.min_transitions_2to3}")
             if not pka_ok:
                 reasons.append(pka_reason)
             if not conn_ok:

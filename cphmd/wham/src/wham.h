@@ -107,6 +107,7 @@ typedef struct struct_data
   int ntriangle;         // pair params per unique pair: 5(bcxs), 7(+t), 9(+tu)
   double cutlsum;        // G12 conditional threshold (λ_i + λ_j > cutlsum)
   double endpoint_weight; // Phase-dependent endpoint bin weight (default 100.0)
+  double endpoint_decay;  // Exponential ramp decay rate (default 2.0)
   struct_gimp_cache *gimp_cache;  // Cached G_imp file data (host-only)
   profile_desc *profiles;         // Precomputed profile descriptors [iN] (host-only)
   param_desc *params;             // Precomputed param descriptors [jN] (host-only)
@@ -238,7 +239,7 @@ int wham_from_memory(
     int *nsubs, int nsites, const char *g_imp_path,
     double chi_offset, double omega_scale, double cutlsum,
     double chi_offset_t, double chi_offset_u, int ntriangle,
-    double endpoint_weight,
+    double endpoint_weight, double endpoint_decay,
     double *D_flat, int *sim_indices, int *frame_counts,
     int total_frames, double *gshift_flat);
 
@@ -248,7 +249,7 @@ int wham_iterate_from_memory(
     int *nsubs, int nsites, const char *g_imp_path,
     double chi_offset, double omega_scale, double cutlsum,
     double chi_offset_t, double chi_offset_u, int ntriangle,
-    double endpoint_weight,
+    double endpoint_weight, double endpoint_decay,
     double *D_flat, int *sim_indices, int *frame_counts,
     int total_frames, double *gshift_flat,
     double *f_out, int *nf_out);
@@ -259,7 +260,7 @@ int wham_profiles_from_memory(
     int *nsubs, int nsites, const char *g_imp_path,
     double chi_offset, double omega_scale, double cutlsum,
     double chi_offset_t, double chi_offset_u, int ntriangle,
-    double endpoint_weight,
+    double endpoint_weight, double endpoint_decay,
     double *D_flat, int *sim_indices, int *frame_counts,
     int total_frames, double *gshift_flat,
     double *f_in, int f_size,
@@ -272,7 +273,7 @@ int wham_profiles_slim_from_memory(
     int *nsubs, int nsites, const char *g_imp_path,
     double chi_offset, double omega_scale, double cutlsum,
     double chi_offset_t, double chi_offset_u, int ntriangle,
-    double endpoint_weight,
+    double endpoint_weight, double endpoint_decay,
     double *D_flat, int ndim,
     int *sim_indices, int *frame_counts,
     int total_frames, double *gshift_flat,
@@ -294,7 +295,7 @@ int wham_compute_weights_from_memory(
     int *nsubs, int nsites, const char *g_imp_path,
     double chi_offset, double omega_scale, double cutlsum,
     double chi_offset_t, double chi_offset_u, int ntriangle,
-    double endpoint_weight,
+    double endpoint_weight, double endpoint_decay,
     double *D_flat, int *sim_indices, int *frame_counts,
     int total_frames, double *gshift_flat,
     double *weights_out,

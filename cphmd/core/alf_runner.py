@@ -114,6 +114,10 @@ class ALFConfig:
     coupling: Literal[0, 1, 2] = 0  # 0=none, 1=full c/x/s, 2=c-only
     coupling_profile: bool | None = None  # None=follow coupling, True/False=override
 
+    # Phase 1 x/s coverage gate: enable coupling when all states are visited
+    min_xs_coverage_runs: int = 3  # consecutive covered runs before Phase 1 x/s enable
+    phase1_xs_cutoff: float = 2.0  # cutx/cuts value when x/s enabled in Phase 1
+
     # FNEX softmax constraint parameter (controls bias potential shape)
     fnex: float = 5.5
     # Optional overrides for bias potential shape constants (None = derive from fnex)
@@ -138,6 +142,12 @@ class ALFConfig:
     # Phase 1 (far from solution): low weight avoids sign-switching.
     # Phase 3 (near solution): high weight locks endpoint accuracy.
     endpoint_weight: float | list[float] = 100.0
+    # Exponential ramp decay rate for endpoint weighting.
+    # Controls how many bins near each endpoint are upweighted:
+    # w(k) = 1 + (W-1)*exp(-α*min(k, N-1-k)), where α = endpoint_decay.
+    # At α=2: weights ~100, 14, 2.8, 1.0 (3-bin effective ramp).
+    # float = same for all phases; list[float] = per-phase [phase1, phase2, phase3].
+    endpoint_decay: float | list[float] = 2.0
 
     # gshift correction in WHAM Stage 2 profile extraction
     use_gshift: bool = True  # Apply G_imp entropy shifts (recommended; see docs/WHAM/gshift_theory.md)
@@ -228,9 +238,9 @@ class ALFConfig:
         # non-HMR(2fs) uses lighter mass (Kramers ∝ 1/M) with scaled friction
         # γ(M) = γ₀·√(M₀/M) for near-critical damping.
         if self.lambda_mass is None:
-            self.lambda_mass = 12.0 if self.hmr else 5.0
+            self.lambda_mass = 7.0 if self.hmr else 4.0
         if self.lambda_fbeta is None:
-            self.lambda_fbeta = 6.0 if self.hmr else 7.0
+            self.lambda_fbeta = 7.0 if self.hmr else 10.0
 
         # bias_type enum overrides individual no_*_bias flags
         if self.bias_type is not None:
@@ -402,6 +412,9 @@ class SimulationState:
     # Phase 2→1 regression tracking
     stuck_phase2_count: int = 0  # consecutive stuck runs in Phase 2
     phase_regression_count: int = 0  # number of Phase 2→1 regressions performed
+
+    # Phase 1 x/s coverage gate: consecutive runs with all states visited per site
+    xs_coverage_count: int = 0
 
     # Replica exchange state (persisted alongside ewbs_state)
     exchange_state: Any = None  # ExchangeState instance, lazy-initialized
@@ -1164,13 +1177,19 @@ class ALFSimulation:
                 self._setup_run_directory(run_idx)
                 self._redirect_output(run_idx, k, replica_idx)
 
-                # Setup system (method depends on prep format)
+                # Setup system (method depends on prep format).
+                # With exchange, force full setup for k>0 so each repeat
+                # gets fresh crystal/BLOCK state (exchange homogenizes
+                # all replicas into one microstate by end of k=0).
+                force_setup = (k > 0 and self._exchanger is not None)
                 if self.config.prep_format == "legacy":
                     self._setup_legacy(run_idx, letter, k, replica_idx)
                 else:
-                    self._setup_crystal(run_idx, letter, k, replica_idx)
-                    self._build_block_commands(run_idx, letter, k, replica_idx)
-                    self._apply_restraints(run_idx, k)
+                    self._setup_crystal(run_idx, letter, k, replica_idx,
+                                        force=force_setup)
+                    self._build_block_commands(run_idx, letter, k, replica_idx,
+                                              force=force_setup)
+                    self._apply_restraints(run_idx, k, force=force_setup)
 
                 # Run minimization on first runs if needed
                 if run_idx <= 5:
@@ -1264,9 +1283,10 @@ class ALFSimulation:
             (run_dir / "res").mkdir(exist_ok=True)
         self._comm.Barrier()
 
-    def _setup_crystal(self, run_idx: int, letter: str, k: int, replica_idx: int):
+    def _setup_crystal(self, run_idx: int, letter: str, k: int, replica_idx: int,
+                       force: bool = False):
         """Setup crystal/periodic boundary conditions."""
-        self._dynamics.setup_crystal(run_idx, letter, k, replica_idx)
+        self._dynamics.setup_crystal(run_idx, letter, k, replica_idx, force=force)
 
     def _setup_legacy(self, run_idx: int, letter: str, k: int, replica_idx: int):
         """Set up CHARMM session by streaming a legacy setup script."""
@@ -1276,13 +1296,14 @@ class ALFSimulation:
         """Stream user-provided restraints for legacy mode."""
         self._dynamics.apply_legacy_restraints()
 
-    def _build_block_commands(self, run_idx: int, letter: str, k: int, replica_idx: int):
+    def _build_block_commands(self, run_idx: int, letter: str, k: int, replica_idx: int,
+                              force: bool = False):
         """Build and execute BLOCK/MSLD commands for lambda dynamics."""
-        self._dynamics.build_block_commands(run_idx, letter, k, replica_idx)
+        self._dynamics.build_block_commands(run_idx, letter, k, replica_idx, force=force)
 
-    def _apply_restraints(self, run_idx: int, k: int = 0):
+    def _apply_restraints(self, run_idx: int, k: int = 0, force: bool = False):
         """Apply SCAT or NOE restraints to titratable atoms."""
-        self._dynamics.apply_restraints(run_idx, k)
+        self._dynamics.apply_restraints(run_idx, k, force=force)
 
     def _run_minimization(self, run_idx: int, replica_idx: int):
         """Run energy minimization before dynamics."""
@@ -1310,6 +1331,11 @@ class ALFSimulation:
         n_segments = self._exchanger.compute_n_segments(nsteps_prod)
         seg_steps = self.config.replica_exchange.exchange_freq
 
+        # Reset permutation to identity at the start of each run.
+        # The exchange log captures the final permutation per run.
+        npairs = self.state.size - 1
+        self._exchanger.state.permutation = list(range(npairs + 1))
+
         nblocks = self.state.alf_info["nblocks"]
         delta_pKa = get_delta_pKa_for_phase(self.state.phase)
 
@@ -1318,9 +1344,19 @@ class ALFSimulation:
             self._dynamics.run_dynamics(run_idx, letter, k, replica_idx)
             return
 
+        # For k>0: restart equilibration from previous run's production restart
+        # to avoid inheriting k=0's exchange-homogenized lambda state.
+        # k=0 exchange funnels all replicas into one microstate — restarting
+        # from the previous run gives diverse, independent starting conditions.
+        prev_rst = None
+        if k > 0 and run_idx > 0:
+            prev_rst = self._find_exchange_restart(run_idx, replica_idx)
+
         # Run equilibration if needed (Phase 2: 10000 steps).
         # No exchanges during eq — biases aren't stable yet.
-        eq_rst = self._dynamics.run_equilibration(run_idx, k, replica_idx)
+        eq_rst = self._dynamics.run_equilibration(
+            run_idx, k, replica_idx, restart_from=prev_rst,
+        )
 
         # First segment reads from eq restart (if produced) or starts fresh
         restart_override = eq_rst
@@ -1361,6 +1397,35 @@ class ALFSimulation:
         # Turn off BLADE after all segments
         self._dynamics.finish_blade()
 
+    def _find_exchange_restart(self, run_idx: int, replica_idx: int) -> Path | None:
+        """Find the previous run's last segment restart for this replica.
+
+        Looks for the last k=0 production segment restart in run{run_idx-1}.
+        Falls back to non-segmented restart if no segments found.
+
+        Returns:
+            Path to restart file, or None if not found.
+        """
+        import glob as glob_mod
+
+        prev_run = run_idx - 1
+        name = self.config.input_folder.name
+        prev_res = self.config.input_folder / f"run{prev_run}" / "res"
+        sim_type = "flat" if self.state.phase in (1, 2) else "prod"
+
+        # Look for segmented restart files from k=0 of previous run
+        seg_pattern = str(prev_res / f"{name}_{sim_type}.0.{replica_idx}.seg*.rst")
+        seg_files = sorted(glob_mod.glob(seg_pattern))
+        if seg_files:
+            return Path(seg_files[-1])
+
+        # Fallback: non-segmented restart
+        non_seg = prev_res / f"{name}_{sim_type}.0.{replica_idx}.rst"
+        if non_seg.exists():
+            return non_seg
+
+        return None
+
     def _is_wham_output_invalid(self, analysis_dir: Path, cut_params: dict | None = None) -> bool:
         """Check for invalid WHAM output (all-zero, NaN, or Inf)."""
         return BiasAnalyzer.is_output_invalid(analysis_dir, cut_params)
@@ -1371,12 +1436,13 @@ class ALFSimulation:
 
     # --- Adaptive cutoff helpers ---
 
-    def _adapt_cutoffs(self, run_idx: int) -> dict:
+    def _adapt_cutoffs(self, run_idx: int, xs_enabled: bool = False) -> dict:
         """Compute fixed staged cutoffs for Phase 1."""
         return self._bias_analyzer.compute_cutoffs(
             phase=1, run_idx=run_idx, coupling_scale=0.0,
             phase2_start_run=None, alf_info=self.state.alf_info,
             input_folder=self.config.input_folder,
+            xs_enabled=xs_enabled,
         )
 
     def _phase2_cutoffs(self, run_idx: int, coupling_scale: float) -> dict:
@@ -1649,7 +1715,9 @@ class ALFSimulation:
                 coupling_scale = (2.0 / max(max_nsubs, 2)) ** 0.5
 
                 if self.state.phase == 1:
-                    cut_params = self._adapt_cutoffs(run_idx)
+                    xs_ok = (self.state.xs_coverage_count
+                             >= self.config.min_xs_coverage_runs)
+                    cut_params = self._adapt_cutoffs(run_idx, xs_enabled=xs_ok)
                 elif self.state.phase == 2:
                     cut_params = self._phase2_cutoffs(run_idx, coupling_scale)
                 else:
@@ -1690,6 +1758,14 @@ class ALFSimulation:
                     visited_per_site = []
                     for start, end in _per_site_ranges(nsubs):
                         visited_per_site.append(col_fracs[start:end] > 0.01)
+
+                    # Phase 1 x/s coverage gate: track consecutive all-visited runs
+                    if self.state.phase == 1 and run_idx >= 20:
+                        all_visited = all(v.all() for v in visited_per_site)
+                        if all_visited:
+                            self.state.xs_coverage_count += 1
+                        else:
+                            self.state.xs_coverage_count = 0
 
                     connectivity, weak_pairs = compute_connectivity_metric(
                         trans_matrices, visited_per_site=visited_per_site,

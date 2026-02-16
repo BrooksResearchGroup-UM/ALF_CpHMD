@@ -19,9 +19,12 @@ no_u_bias: true       # Disable u-term bias updates (bcxstu)
 chi_offset_t: 0.012   # t-term sigmoid offset (independent of FNEX)
 chi_offset_u: 0.012   # u-term offset (independent of FNEX)
 # endpoint_weight: 100.0  # WHAM endpoint bin weight (float or [phase1, phase2, phase3])
+# endpoint_decay: 2.0     # Endpoint ramp decay rate (float or [phase1, phase2, phase3])
 hmr: true
 cleanup: false
 coupling: 0
+# min_xs_coverage_runs: 3  # Consecutive covered runs before Phase 1 x/s enable
+# phase1_xs_cutoff: 2.0    # cutx/cuts when x/s enabled in Phase 1
 
 # Replica exchange (pH-ladder swaps between dynamics segments)
 replica_exchange:
