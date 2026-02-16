@@ -340,7 +340,7 @@ class ConvergenceTracker:
 
         # Accumulate lambda data for Phase 1→2 check
         lambda_data_for_check = lambda_data
-        min_phase1_runs = 20
+        min_phase1_runs = self.config.phase_transition.min_phase1_runs
         if self.state.phase == 1 and run_idx >= min_phase1_runs:
             window = 20
             accumulated = []

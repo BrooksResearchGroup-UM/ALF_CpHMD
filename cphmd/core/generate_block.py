@@ -336,7 +336,7 @@ def _generate_block_str(
         msld_line += f" {site_num}"
         if (i + 1) % 10 == 0 and i < len(msld_sites) - 1:
             msld_line += " -\n"
-    msld_line += " -\nfnex 5.5\n"
+    msld_line += f" -\nfnex {fnex}\n"
     output.append(msld_line)
 
     output.append("!------------------------------------------")

@@ -8,23 +8,19 @@ states for constant pH molecular dynamics simulations.
 from __future__ import annotations
 
 import itertools
-import os
 import re
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
 
 import numpy as np
 import pandas as pd
-
 import pycharmm
 import pycharmm.coor as coor
 import pycharmm.ic as ic
 import pycharmm.lingo as lingo
 import pycharmm.psf as psf
 import pycharmm.read as read
-import pycharmm.select as select
 import pycharmm.settings as settings
 import pycharmm.write as write
 
@@ -285,7 +281,7 @@ class PatchParser:
                     if lines[j].startswith("ATOM"):
                         atoms.append(lines[j].split()[1])
                     if lines[j].startswith("BOND"):
-                        bonds = lines[j].split()[1:]
+                        bonds.extend(lines[j].split()[1:])
 
                 # Filter atoms to only those in topology
                 self.atom_groups[resname] = [

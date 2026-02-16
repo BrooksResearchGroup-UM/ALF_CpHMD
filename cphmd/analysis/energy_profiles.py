@@ -99,36 +99,30 @@ def energy_E_b(lambda_vec: np.ndarray, b: np.ndarray) -> float:
 
 
 def energy_E_c(lambda_vec: np.ndarray, c: np.ndarray) -> float:
-    """Compute quadratic coupling energy E_c."""
-    n = len(lambda_vec)
-    E_c = 0.0
-    for i in range(n):
-        for j in range(n):
-            E_c += (c[i, j] + c[j, i]) * lambda_vec[i] * lambda_vec[j]
-    return E_c
+    """Compute quadratic coupling energy E_c = 0.5 * lambda^T c lambda (symmetric c)."""
+    return 0.5 * float(np.einsum("i,ij,j->", lambda_vec, c, lambda_vec))
 
 
 def energy_E_s(lambda_vec: np.ndarray, s: np.ndarray, epsilon: float = CHI_OFFSET) -> float:
     """Compute endpoint bias energy E_s with regularization."""
-    n = len(lambda_vec)
-    E_s = 0.0
-    for i in range(n):
-        for j in range(n):
-            term_i = s[i, j] / (lambda_vec[i] + epsilon)
-            term_j = s[j, i] / (lambda_vec[j] + epsilon)
-            E_s += (term_i + term_j) * lambda_vec[i] * lambda_vec[j]
-    return E_s
+    lam_reg = lambda_vec + epsilon
+    # s[i,j]/(lam[i]+eps) * lam[i] * lam[j] + s[j,i]/(lam[j]+eps) * lam[i] * lam[j]
+    # = s[i,j] * lam[j] * lam[i]/lam_reg[i] + s[j,i] * lam[i] * lam[j]/lam_reg[j]
+    ratio = lambda_vec / lam_reg  # lam[k] / (lam[k] + eps)
+    # Term1: sum_ij s[i,j] * ratio[i] * lam[j]
+    term1 = float(np.einsum("ij,i,j->", s, ratio, lambda_vec))
+    # Term2: sum_ij s[j,i] * ratio[j] * lam[i] = sum_ij s[i,j] * ratio[i] * lam[j] (by swapping i,j)
+    # So total = 2 * term1... but that's the old double-count. Actually:
+    # The CHARMM energy is: sum_{i<j} [s[i,j]*lam[j]/lam_reg[i] + s[j,i]*lam[i]/lam_reg[j]] * lam[i]*lam[j]
+    # Expanding the full (i,j) loop once: sum_ij s[i,j] * lam[j] * ratio[i]
+    return float(np.einsum("ij,i,j->", s, ratio, lambda_vec))
 
 
 def energy_E_x(lambda_vec: np.ndarray, x: np.ndarray, alpha: float = OMEGA_DECAY) -> float:
     """Compute skew bias energy E_x with exponential form."""
-    n = len(lambda_vec)
-    E_x = 0.0
-    for i in range(n):
-        for j in range(n):
-            E_x += x[i, j] * lambda_vec[j] * (1 - np.exp(-alpha * lambda_vec[i]))
-            E_x += x[j, i] * lambda_vec[i] * (1 - np.exp(-alpha * lambda_vec[j]))
-    return E_x
+    exp_term = 1 - np.exp(-alpha * lambda_vec)
+    # sum_ij x[i,j] * lam[j] * (1 - exp(-alpha*lam[i]))
+    return float(np.einsum("ij,j,i->", x, lambda_vec, exp_term))
 
 
 def total_energy(

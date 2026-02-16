@@ -231,20 +231,28 @@ if HAS_NUMBA:
         seed: int,
     ) -> np.ndarray:
         """Numba-optimized 1D histogram for FNEX."""
-        np.random.seed(seed)
         bins_1d = bins * bins  # 1D uses bins²
+        n_chunks = 64
+        chunk_size = (nmc + n_chunks - 1) // n_chunks
+        partial = np.zeros((n_chunks, bins_1d))
+
+        for c in prange(n_chunks):
+            np.random.seed(seed + c)
+            n_iter = min(chunk_size, nmc - c * chunk_size)
+            for _ in range(n_iter):
+                theta = np.random.random(ndim)
+                unnorm = np.exp(fnex * np.sin(np.pi * theta - np.pi / 2))
+                lam = unnorm / np.sum(unnorm)
+
+                for j in range(ndim):
+                    ind = int(np.floor(lam[j] * bins_1d))
+                    if 0 <= ind < bins_1d:
+                        partial[c, ind] += 1
+
         histogram = np.zeros(bins_1d)
-
-        for _ in prange(nmc):
-            theta = np.random.random(ndim)
-            unnorm = np.exp(fnex * np.sin(np.pi * theta - np.pi / 2))
-            lam = unnorm / np.sum(unnorm)
-
-            for j in range(ndim):
-                ind = int(np.floor(lam[j] * bins_1d))
-                if 0 <= ind < bins_1d:
-                    histogram[ind] += 1
-
+        for i in range(n_chunks):
+            for j in range(bins_1d):
+                histogram[j] += partial[i, j]
         return histogram
 
     @jit(nopython=True, parallel=True)
@@ -256,21 +264,30 @@ if HAS_NUMBA:
         seed: int,
     ) -> np.ndarray:
         """Numba-optimized 2D histogram for FNEX."""
-        np.random.seed(seed)
+        n_chunks = 64
+        chunk_size = (nmc + n_chunks - 1) // n_chunks
+        partial = np.zeros((n_chunks, bins, bins))
+
+        for c in prange(n_chunks):
+            np.random.seed(seed + c)
+            n_iter = min(chunk_size, nmc - c * chunk_size)
+            for _ in range(n_iter):
+                theta = np.random.random(ndim)
+                unnorm = np.exp(fnex * np.sin(np.pi * theta - np.pi / 2))
+                lam = unnorm / np.sum(unnorm)
+
+                for j in range(ndim):
+                    for k in range(j + 1, ndim):
+                        ind_j = int(np.floor(lam[j] * bins))
+                        ind_k = int(np.floor(lam[k] * bins))
+                        if 0 <= ind_j < bins and 0 <= ind_k < bins:
+                            partial[c, ind_j, ind_k] += 1
+
         histogram = np.zeros((bins, bins))
-
-        for _ in prange(nmc):
-            theta = np.random.random(ndim)
-            unnorm = np.exp(fnex * np.sin(np.pi * theta - np.pi / 2))
-            lam = unnorm / np.sum(unnorm)
-
-            for j in range(ndim):
-                for k in range(j + 1, ndim):
-                    ind_j = int(np.floor(lam[j] * bins))
-                    ind_k = int(np.floor(lam[k] * bins))
-                    if 0 <= ind_j < bins and 0 <= ind_k < bins:
-                        histogram[ind_j, ind_k] += 1
-
+        for i in range(n_chunks):
+            for j in range(bins):
+                for k in range(bins):
+                    histogram[j, k] += partial[i, j, k]
         return histogram
 
     @jit(nopython=True, parallel=True)
@@ -281,21 +298,29 @@ if HAS_NUMBA:
         seed: int,
     ) -> np.ndarray:
         """Numba-optimized 1D histogram for FPIE."""
-        np.random.seed(seed)
         bins_1d = bins * bins
+        n_chunks = 64
+        chunk_size = (nmc + n_chunks - 1) // n_chunks
+        partial = np.zeros((n_chunks, bins_1d))
+
+        for c in prange(n_chunks):
+            np.random.seed(seed + c)
+            n_iter = min(chunk_size, nmc - c * chunk_size)
+            for _ in range(n_iter):
+                theta = np.random.random(ndim)
+                theta0 = _solve_fpie_constraint_numba(theta)
+
+                for j in range(ndim):
+                    dist = theta[j] - theta0
+                    lam_j = dist ** 3 if dist > 0 else 0.0
+                    ind = int(np.floor(lam_j * bins_1d))
+                    if 0 <= ind < bins_1d:
+                        partial[c, ind] += 1
+
         histogram = np.zeros(bins_1d)
-
-        for _ in prange(nmc):
-            theta = np.random.random(ndim)
-            theta0 = _solve_fpie_constraint_numba(theta)
-
-            for j in range(ndim):
-                dist = theta[j] - theta0
-                lam_j = dist ** 3 if dist > 0 else 0.0
-                ind = int(np.floor(lam_j * bins_1d))
-                if 0 <= ind < bins_1d:
-                    histogram[ind] += 1
-
+        for i in range(n_chunks):
+            for j in range(bins_1d):
+                histogram[j] += partial[i, j]
         return histogram
 
     @jit(nopython=True, parallel=True)
@@ -306,25 +331,34 @@ if HAS_NUMBA:
         seed: int,
     ) -> np.ndarray:
         """Numba-optimized 2D histogram for FPIE."""
-        np.random.seed(seed)
+        n_chunks = 64
+        chunk_size = (nmc + n_chunks - 1) // n_chunks
+        partial = np.zeros((n_chunks, bins, bins))
+
+        for c in prange(n_chunks):
+            np.random.seed(seed + c)
+            n_iter = min(chunk_size, nmc - c * chunk_size)
+            for _ in range(n_iter):
+                theta = np.random.random(ndim)
+                theta0 = _solve_fpie_constraint_numba(theta)
+
+                lam = np.zeros(ndim)
+                for j in range(ndim):
+                    dist = theta[j] - theta0
+                    lam[j] = dist ** 3 if dist > 0 else 0.0
+
+                for j in range(ndim):
+                    for k in range(j + 1, ndim):
+                        ind_j = int(np.floor(lam[j] * bins))
+                        ind_k = int(np.floor(lam[k] * bins))
+                        if 0 <= ind_j < bins and 0 <= ind_k < bins:
+                            partial[c, ind_j, ind_k] += 1
+
         histogram = np.zeros((bins, bins))
-
-        for _ in prange(nmc):
-            theta = np.random.random(ndim)
-            theta0 = _solve_fpie_constraint_numba(theta)
-
-            lam = np.zeros(ndim)
-            for j in range(ndim):
-                dist = theta[j] - theta0
-                lam[j] = dist ** 3 if dist > 0 else 0.0
-
-            for j in range(ndim):
-                for k in range(j + 1, ndim):
-                    ind_j = int(np.floor(lam[j] * bins))
-                    ind_k = int(np.floor(lam[k] * bins))
-                    if 0 <= ind_j < bins and 0 <= ind_k < bins:
-                        histogram[ind_j, ind_k] += 1
-
+        for i in range(n_chunks):
+            for j in range(bins):
+                for k in range(bins):
+                    histogram[j, k] += partial[i, j, k]
         return histogram
 
     @jit(nopython=True, parallel=True)
@@ -337,23 +371,31 @@ if HAS_NUMBA:
         seed: int,
     ) -> np.ndarray:
         """Numba-optimized G12 conditional ratio histogram for FNEX."""
-        np.random.seed(seed)
         bins_1d = bins * bins
+        n_chunks = 64
+        chunk_size = (nmc + n_chunks - 1) // n_chunks
+        partial = np.zeros((n_chunks, bins_1d))
+
+        for c in prange(n_chunks):
+            np.random.seed(seed + c)
+            n_iter = min(chunk_size, nmc - c * chunk_size)
+            for _ in range(n_iter):
+                theta = np.random.random(ndim)
+                unnorm = np.exp(fnex * np.sin(np.pi * theta - np.pi / 2))
+                lam = unnorm / np.sum(unnorm)
+
+                for j in range(ndim):
+                    for k in range(j + 1, ndim):
+                        lisum = lam[j] + lam[k]
+                        if lisum > cutlsum:
+                            ind = int(np.floor((lam[j] / lisum) * bins_1d))
+                            if 0 <= ind < bins_1d:
+                                partial[c, ind] += 1
+
         histogram = np.zeros(bins_1d)
-
-        for _ in prange(nmc):
-            theta = np.random.random(ndim)
-            unnorm = np.exp(fnex * np.sin(np.pi * theta - np.pi / 2))
-            lam = unnorm / np.sum(unnorm)
-
-            for j in range(ndim):
-                for k in range(j + 1, ndim):
-                    lisum = lam[j] + lam[k]
-                    if lisum > cutlsum:
-                        ind = int(np.floor((lam[j] / lisum) * bins_1d))
-                        if 0 <= ind < bins_1d:
-                            histogram[ind] += 1
-
+        for i in range(n_chunks):
+            for j in range(bins_1d):
+                histogram[j] += partial[i, j]
         return histogram
 
     @jit(nopython=True, parallel=True)
@@ -365,27 +407,35 @@ if HAS_NUMBA:
         seed: int,
     ) -> np.ndarray:
         """Numba-optimized G12 conditional ratio histogram for FPIE."""
-        np.random.seed(seed)
         bins_1d = bins * bins
+        n_chunks = 64
+        chunk_size = (nmc + n_chunks - 1) // n_chunks
+        partial = np.zeros((n_chunks, bins_1d))
+
+        for c in prange(n_chunks):
+            np.random.seed(seed + c)
+            n_iter = min(chunk_size, nmc - c * chunk_size)
+            for _ in range(n_iter):
+                theta = np.random.random(ndim)
+                theta0 = _solve_fpie_constraint_numba(theta)
+
+                lam = np.zeros(ndim)
+                for j in range(ndim):
+                    dist = theta[j] - theta0
+                    lam[j] = dist ** 3 if dist > 0 else 0.0
+
+                for j in range(ndim):
+                    for k in range(j + 1, ndim):
+                        lisum = lam[j] + lam[k]
+                        if lisum > cutlsum:
+                            ind = int(np.floor((lam[j] / lisum) * bins_1d))
+                            if 0 <= ind < bins_1d:
+                                partial[c, ind] += 1
+
         histogram = np.zeros(bins_1d)
-
-        for _ in prange(nmc):
-            theta = np.random.random(ndim)
-            theta0 = _solve_fpie_constraint_numba(theta)
-
-            lam = np.zeros(ndim)
-            for j in range(ndim):
-                dist = theta[j] - theta0
-                lam[j] = dist ** 3 if dist > 0 else 0.0
-
-            for j in range(ndim):
-                for k in range(j + 1, ndim):
-                    lisum = lam[j] + lam[k]
-                    if lisum > cutlsum:
-                        ind = int(np.floor((lam[j] / lisum) * bins_1d))
-                        if 0 <= ind < bins_1d:
-                            histogram[ind] += 1
-
+        for i in range(n_chunks):
+            for j in range(bins_1d):
+                histogram[j] += partial[i, j]
         return histogram
 
 
