@@ -4,8 +4,11 @@ Handles CHARMM output redirection, crystal/legacy setup, BLOCK commands,
 restraints, minimization, and production dynamics via BLADE GPU.
 """
 
+from __future__ import annotations
+
 import logging
 import re
+from pathlib import Path
 
 import numpy as np
 
@@ -62,8 +65,16 @@ class DynamicsRunner:
     # Crystal / default setup
     # ------------------------------------------------------------------
 
-    def setup_crystal(self, run_idx: int, letter: str, k: int, replica_idx: int):
-        """Setup crystal/periodic boundary conditions."""
+    def setup_crystal(
+        self, run_idx: int, letter: str, k: int, replica_idx: int,
+        force: bool = False,
+    ):
+        """Setup crystal/periodic boundary conditions.
+
+        Args:
+            force: If True, run setup even for k > 0 (used in exchange mode
+                so that k=1 gets a fresh crystal/coordinate state).
+        """
         import random
 
         import pycharmm.read as read
@@ -83,7 +94,7 @@ class DynamicsRunner:
         prep_dir = self.config.input_folder / "prep"
         is_first_run = not self.state.structure_loaded and k == 0
 
-        if k > 0:
+        if k > 0 and not force:
             return
 
         if is_first_run:
@@ -282,8 +293,16 @@ class DynamicsRunner:
     # BLOCK commands
     # ------------------------------------------------------------------
 
-    def build_block_commands(self, run_idx: int, letter: str, k: int, replica_idx: int):
-        """Build and execute BLOCK/MSLD commands for lambda dynamics."""
+    def build_block_commands(
+        self, run_idx: int, letter: str, k: int, replica_idx: int,
+        force: bool = False,
+    ):
+        """Build and execute BLOCK/MSLD commands for lambda dynamics.
+
+        Args:
+            force: If True, run setup even for k > 0 (used in exchange mode
+                so that k=1 gets a fresh BLOCK/PHMD state).
+        """
         from .block_builder import BlockConfig, build_block_command, read_variable_file
         from .charmm_utils import execute_block_command
         from .cphmd_params import (
@@ -297,7 +316,7 @@ class DynamicsRunner:
             replica_pH as compute_replica_pH,
         )
 
-        if k > 0:
+        if k > 0 and not force:
             return
 
         if self.state.patch_info is None:
@@ -374,13 +393,13 @@ class DynamicsRunner:
     # Restraints
     # ------------------------------------------------------------------
 
-    def apply_restraints(self, run_idx: int, k: int = 0):
+    def apply_restraints(self, run_idx: int, k: int = 0, force: bool = False):
         """Apply SCAT or NOE restraints to titratable atoms."""
         import pycharmm.lingo as lingo
 
         from .restraints import generate_noe_restraints, generate_scat_restraints
 
-        if k > 0:
+        if k > 0 and not force:
             return
 
         if self.state.patch_info is None:
@@ -525,7 +544,6 @@ class DynamicsRunner:
             "tmass": 1000,
         })
 
-        name = self.config.input_folder.name
         run_dir = self.config.input_folder / f"run{run_idx}"
         res_dir = run_dir / "res"
         dcd_dir = run_dir / "dcd"
@@ -534,18 +552,35 @@ class DynamicsRunner:
 
         # === Equilibration Run ===
         if nsteps_eq > 0:
-            rst_fn = str(res_dir / f"{name}_eq.{k}.{replica_idx}.rst")
-            lmd_fn = str(res_dir / f"{name}_eq.{k}.{replica_idx}.lmd")
+            rst_fn = str(res_dir / f"eq.{k}.{replica_idx}.rst")
+            lmd_fn = str(res_dir / f"eq.{k}.{replica_idx}.lmd")
 
             dcd = None
             if nsavc > 0:
-                dcd_fn = str(dcd_dir / f"{name}_eq.{k}.{replica_idx}.dcd")
+                dcd_fn = str(dcd_dir / f"eq.{k}.{replica_idx}.dcd")
                 dcd = pycharmm.CharmmFile(file_name=dcd_fn, file_unit=dcd_unit,
                                           read_only=False, formatted=False)
             rst = pycharmm.CharmmFile(file_name=rst_fn, file_unit=rst_unit,
                                       read_only=False, formatted=True)
             lmd = pycharmm.CharmmFile(file_name=lmd_fn, file_unit=lmd_unit,
                                       read_only=False, formatted=False)
+
+            # For k>0, restart from k=0's production restart to get
+            # CPT-evolved crystal params.  blade off after k=0 may not
+            # transfer box dimensions back to CPU, so starting fresh
+            # would use stale crystal → image clashes.  iasvel=1
+            # (already set) randomizes velocities for independence.
+            rpr = None
+            if k > 0:
+                sim_type_k0 = "flat" if self.state.phase in (1, 2) else "prod"
+                k0_rst = res_dir / f"{sim_type_k0}.0.{replica_idx}.rst"
+                if k0_rst.exists():
+                    dyn_param.update({"start": False, "restart": True,
+                                      "iunrea": rpr_unit})
+                    rpr = pycharmm.CharmmFile(
+                        file_name=str(k0_rst), file_unit=rpr_unit,
+                        read_only=True, formatted=True,
+                    )
 
             dyn_param.update({"nstep": nsteps_eq, "isvfrq": nsteps_eq})
             pycharmm.DynamicsScript(**dyn_param).run()
@@ -554,6 +589,8 @@ class DynamicsRunner:
                 dcd.close()
             rst.close()
             lmd.close()
+            if rpr is not None:
+                rpr.close()
 
         lingo.charmm_script("energy blade")
 
@@ -573,11 +610,18 @@ class DynamicsRunner:
                     res_dir / f"{name}_eq.rst",
                 ]
             else:
+                candidates = []
+                # For k>0, prefer current run's k=0 production restart
+                # (has CPT-evolved crystal params from this run's k=0).
+                if k > 0:
+                    candidates.append(
+                        res_dir / f"{name}_prod.0.{replica_idx}.rst"
+                    )
                 restart_run = run_idx - 1
-                candidates = [
+                candidates.extend([
                     self.config.input_folder / f"run{restart_run}" / "res" / f"{name}_prod.{k}.{replica_idx}.rst",
                     self.config.input_folder / f"run{restart_run}" / "res" / f"{name}_flat.{k}.{replica_idx}.rst",
-                ]
+                ])
 
             for candidate in candidates:
                 if candidate.exists():
@@ -613,5 +657,361 @@ class DynamicsRunner:
             lmd.close()
             if rpr is not None:
                 rpr.close()
+
+        lingo.charmm_script("blade off")
+
+    # ------------------------------------------------------------------
+    # Segmented production dynamics (for replica exchange)
+    # ------------------------------------------------------------------
+
+    def get_production_steps(self) -> tuple[int, int, int, float]:
+        """Return (nsteps_eq, nsteps_prod, nsavl, timestep) for the current phase.
+
+        Applies HMR and legacy adjustments. Shared between run_dynamics
+        and run_dynamics_segment so step counts are consistent.
+        """
+        if self.state.phase == 1:
+            nsteps_eq = 0
+            nsteps_prod = 50000
+            nsavl = 1
+        elif self.state.phase == 2:
+            nsteps_eq = 10000
+            nsteps_prod = 500000
+            nsavl = 1
+        else:
+            nsteps_eq = 0
+            nsteps_prod = 1000000
+            nsavl = 1
+
+        timestep = 0.002
+        if self.config.hmr:
+            nsteps_eq //= 2
+            nsteps_prod //= 2
+            nsavl = max(nsavl, 1)
+            timestep = 0.004
+
+        if self.config.prep_format == "legacy":
+            nsavl = 10
+
+        return nsteps_eq, nsteps_prod, nsavl, timestep
+
+    def run_equilibration(
+        self, run_idx: int, k: int, replica_idx: int,
+        restart_from: Path | None = None,
+    ) -> Path | None:
+        """Run equilibration dynamics (Phase 2 only), returning the restart path.
+
+        This is extracted from the eq section of ``run_dynamics()`` so that
+        the exchange path can run eq separately before segmented production.
+
+        Args:
+            restart_from: Optional restart file to read instead of starting
+                fresh. Used for k>0 in exchange mode to restore diverse lambda
+                states after k=0's exchange homogenizes all replicas.
+
+        Returns:
+            Path to the eq restart file, or None if nsteps_eq == 0.
+        """
+        import pycharmm
+        import pycharmm.dynamics as dyn
+        import pycharmm.lingo as lingo
+        import pycharmm.psf as psf
+        import pycharmm.shake as shake
+
+        nsteps_eq, _, nsavl, timestep = self.get_production_steps()
+        if nsteps_eq == 0:
+            return None
+
+        rst_unit = 52
+        lmd_unit = 53
+        rpr_unit = 54
+
+        name = self.config.input_folder.name
+        run_dir = self.config.input_folder / f"run{run_idx}"
+        res_dir = run_dir / "res"
+
+        shake.on(fast=True, bonh=True, param=True, tol=1e-7)
+        lingo.charmm_script("faster on")
+
+        gpuid = replica_idx % 8
+        lingo.charmm_script(f"blade on gpuid {gpuid}")
+
+        dyn.set_fbetas(np.full(psf.get_natom(), self.config.gscale, dtype=float))
+        lingo.charmm_script("energy blade")
+
+        # Use restart if provided, otherwise start fresh
+        use_restart = restart_from is not None and Path(restart_from).exists()
+
+        dyn_param = {
+            "start": not use_restart,
+            "restart": use_restart,
+            "blade": True,
+            "prmc": True,
+            "iprs": 100,
+            "prdv": 100,
+            "cpt": True,
+            "timestep": timestep,
+            "firstt": self.config.temperature,
+            "finalt": self.config.temperature,
+            "tstruc": self.config.temperature,
+            "tbath": self.config.temperature,
+            "ichecw": 0,
+            "ihtfrq": 0,
+            "ieqfrq": 0,
+            "iasors": 1,
+            "iasvel": 1,
+            "iscvel": 0,
+            "inbfrq": -1,
+            "ilbfrq": 0,
+            "imgfrq": -1,
+            "ntrfrq": 0,
+            "echeck": -1,
+            "iunldm": lmd_unit,
+            "iunwri": rst_unit,
+            "iuncrd": -1,
+            "nsavc": 0,
+            "nsavl": nsavl,
+            "nprint": 10000,
+            "iprfrq": 10000,
+            "nstep": nsteps_eq,
+            "isvfrq": nsteps_eq,
+            "pconstant": True,
+            "pmass": psf.get_natom() * 0.12,
+            "pref": 1.0,
+            "pgamma": 20.0,
+            "hoover": True,
+            "reft": self.config.temperature,
+            "tmass": 1000,
+        }
+
+        if use_restart:
+            dyn_param["iunrea"] = rpr_unit
+
+        rst_fn = res_dir / f"{name}_eq.{k}.{replica_idx}.rst"
+        lmd_fn = res_dir / f"{name}_eq.{k}.{replica_idx}.lmd"
+
+        rpr = None
+        if use_restart:
+            rpr = pycharmm.CharmmFile(
+                file_name=str(restart_from), file_unit=rpr_unit,
+                read_only=True, formatted=True,
+            )
+
+        rst = pycharmm.CharmmFile(
+            file_name=str(rst_fn), file_unit=rst_unit,
+            read_only=False, formatted=True,
+        )
+        lmd = pycharmm.CharmmFile(
+            file_name=str(lmd_fn), file_unit=lmd_unit,
+            read_only=False, formatted=False,
+        )
+
+        pycharmm.DynamicsScript(**dyn_param).run()
+
+        rst.close()
+        lmd.close()
+        if rpr is not None:
+            rpr.close()
+
+        lingo.charmm_script("energy blade")
+
+        return rst_fn
+
+    def run_dynamics_segment(
+        self,
+        run_idx: int,
+        letter: str,
+        k: int,
+        replica_idx: int,
+        segment_idx: int,
+        nsteps: int,
+        restart_from: Path | None = None,
+        is_first_segment: bool = False,
+        blade_ready: bool = False,
+    ) -> tuple[Path, Path]:
+        """Run a single dynamics segment for replica exchange.
+
+        Each segment produces a restart file and an LMD file.
+        Subsequent segments (or swapped partners) chain via restart files.
+
+        Args:
+            run_idx: ALF run index.
+            letter: Replica letter suffix.
+            k: Repeat index.
+            replica_idx: Replica index.
+            segment_idx: Segment index within this run.
+            nsteps: Number of MD steps for this segment.
+            restart_from: Path to restart file to read (partner's or
+                          previous segment's). None for first segment.
+            is_first_segment: Whether this is the very first segment
+                              in the run (may need ``start=True``).
+            blade_ready: If True, BLADE/shake are already configured
+                         (e.g. by a prior equilibration call).
+
+        Returns:
+            Tuple of (rst_path, lmd_path) for the completed segment.
+        """
+        import pycharmm
+        import pycharmm.lingo as lingo
+        import pycharmm.psf as psf
+
+        rst_unit = 52
+        lmd_unit = 53
+        rpr_unit = 54
+
+        _, _, nsavl, timestep = self.get_production_steps()
+
+        name = self.config.input_folder.name
+        run_dir = self.config.input_folder / f"run{run_idx}"
+        res_dir = run_dir / "res"
+
+        sim_type = "flat" if self.state.phase in (1, 2) else "prod"
+        seg_tag = f"seg{segment_idx:04d}"
+
+        rst_fn = res_dir / f"{name}_{sim_type}.{k}.{replica_idx}.{seg_tag}.rst"
+        lmd_fn = res_dir / f"{name}_{sim_type}.{k}.{replica_idx}.{seg_tag}.lmd"
+
+        # Build base dynamics params (same as run_dynamics production section)
+        import pycharmm.dynamics as dyn
+        import pycharmm.shake as shake
+
+        if is_first_segment and segment_idx == 0 and not blade_ready:
+            shake.on(fast=True, bonh=True, param=True, tol=1e-7)
+            lingo.charmm_script("faster on")
+
+            gpuid = replica_idx % 8
+            lingo.charmm_script(f"blade on gpuid {gpuid}")
+
+            dyn.set_fbetas(np.full(psf.get_natom(), self.config.gscale, dtype=float))
+            lingo.charmm_script("energy blade")
+
+        dyn_param = {
+            "blade": True,
+            "prmc": True,
+            "iprs": 100,
+            "prdv": 100,
+            "cpt": True,
+            "timestep": timestep,
+            "firstt": self.config.temperature,
+            "finalt": self.config.temperature,
+            "tstruc": self.config.temperature,
+            "tbath": self.config.temperature,
+            "ichecw": 0,
+            "ihtfrq": 0,
+            "ieqfrq": 0,
+            "iasors": 1,
+            "iasvel": 1,
+            "iscvel": 0,
+            "inbfrq": -1,
+            "ilbfrq": 0,
+            "imgfrq": -1,
+            "ntrfrq": 0,
+            "echeck": -1,
+            "iunldm": lmd_unit,
+            "iunwri": rst_unit,
+            "iuncrd": -1,
+            "nsavc": 0,
+            "nsavl": nsavl,
+            "nprint": min(nsteps, 10000),
+            "iprfrq": min(nsteps, 10000),
+            "nstep": nsteps,
+            "isvfrq": nsteps,  # write restart at end of segment
+            "pconstant": True,
+            "pmass": psf.get_natom() * 0.12,
+            "pref": 1.0,
+            "pgamma": 20.0,
+            "hoover": True,
+            "reft": self.config.temperature,
+            "tmass": 1000,
+        }
+
+        # Determine start vs restart
+        rpr = None
+        if restart_from is not None and Path(restart_from).exists():
+            dyn_param["start"] = False
+            dyn_param["restart"] = True
+            dyn_param["iunrea"] = rpr_unit
+            rpr = pycharmm.CharmmFile(
+                file_name=str(restart_from),
+                file_unit=rpr_unit,
+                read_only=True,
+                formatted=True,
+            )
+        elif is_first_segment:
+            # First segment of run: look for eq restart or previous run restart
+            rpr_fn = self._find_segment_restart(run_idx, k, replica_idx, name, res_dir)
+            if rpr_fn is not None:
+                dyn_param["start"] = False
+                dyn_param["restart"] = True
+                dyn_param["iunrea"] = rpr_unit
+                rpr = pycharmm.CharmmFile(
+                    file_name=str(rpr_fn),
+                    file_unit=rpr_unit,
+                    read_only=True,
+                    formatted=True,
+                )
+            else:
+                dyn_param["start"] = True
+                dyn_param["restart"] = False
+        else:
+            # Should not happen — subsequent segments always have restart_from
+            raise RuntimeError(
+                f"No restart file for segment {segment_idx} "
+                f"(run {run_idx}, replica {replica_idx})"
+            )
+
+        rst = pycharmm.CharmmFile(
+            file_name=str(rst_fn), file_unit=rst_unit,
+            read_only=False, formatted=True,
+        )
+        lmd = pycharmm.CharmmFile(
+            file_name=str(lmd_fn), file_unit=lmd_unit,
+            read_only=False, formatted=False,
+        )
+
+        pycharmm.DynamicsScript(**dyn_param).run()
+
+        rst.close()
+        lmd.close()
+        if rpr is not None:
+            rpr.close()
+
+        return (rst_fn, lmd_fn)
+
+    def _find_segment_restart(
+        self,
+        run_idx: int,
+        k: int,
+        replica_idx: int,
+        name: str,
+        res_dir: "Path",
+    ) -> "str | None":
+        """Find a restart file for the first segment of a run.
+
+        Searches for eq restart (flat runs) or previous run's final restart.
+        """
+        sim_type = "flat" if self.state.phase in (1, 2) else "prod"
+
+        if sim_type == "flat":
+            candidates = [
+                res_dir / f"{name}_eq.{k}.{replica_idx}.rst",
+                res_dir / f"{name}_eq.rst",
+            ]
+        else:
+            restart_run = run_idx - 1
+            prev_res = self.config.input_folder / f"run{restart_run}" / "res"
+            candidates = [
+                prev_res / f"{name}_prod.{k}.{replica_idx}.rst",
+                prev_res / f"{name}_flat.{k}.{replica_idx}.rst",
+            ]
+
+        for c in candidates:
+            if c.exists():
+                return str(c)
+        return None
+
+    def finish_blade(self):
+        """Turn off BLADE GPU acceleration (call after all segments done)."""
+        import pycharmm.lingo as lingo
 
         lingo.charmm_script("blade off")

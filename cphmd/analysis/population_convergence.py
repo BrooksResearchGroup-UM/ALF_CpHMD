@@ -2,7 +2,7 @@
 
 Reads populations.dat from successive analysis directories and plots how
 normalized populations evolve, separately for the relaxed (λ > 0.8) and
-strict (λ > 0.985) thresholds.  For multi-site systems, each site gets
+strict (λ > 0.97) thresholds.  For multi-site systems, each site gets
 its own plot with per-site normalization.
 """
 
@@ -102,7 +102,7 @@ def read_populations_from_runs(
         Dictionary with keys:
           - ``runs``: 1-D int array of run indices that had a valid file
           - ``hits_relaxed``: (n_runs, n_states) hit counts at λ > 0.8
-          - ``hits_strict``:  (n_runs, n_states) hit counts at λ > 0.985
+          - ``hits_strict``:  (n_runs, n_states) hit counts at λ > 0.97
     """
     runs: list[int] = []
     hits_relaxed_list: list[np.ndarray] = []
@@ -123,7 +123,7 @@ def read_populations_from_runs(
 
         # Column layout (0-indexed):
         #   0: State  1: Raw(>0.8)  2: Norm(>0.8)  3: Hits(>0.8)
-        #   4: Raw(>0.985)  5: Norm(>0.985)  6: Hits(>0.985)
+        #   4: Raw(>0.97)  5: Norm(>0.97)  6: Hits(>0.97)
         hits_relaxed_list.append(data[:, 3])
         hits_strict_list.append(data[:, 6])
         runs.append(run_idx)
@@ -335,7 +335,7 @@ def generate_population_plots(
 
     for thresh_key, thresh_label, site_pops_list in [
         ("relaxed", "λ > 0.8", relaxed_per_site),
-        ("strict", "λ > 0.985", strict_per_site),
+        ("strict", "λ > 0.97", strict_per_site),
     ]:
         for site_idx, site_pops in enumerate(site_pops_list):
             if multi_site:

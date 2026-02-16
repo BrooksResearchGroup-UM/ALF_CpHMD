@@ -191,7 +191,7 @@ def summarize_transitions(result: TransitionResult) -> str:
 def compute_transition_matrix(
     lambda_data: np.ndarray,
     nsubs: list[int],
-    threshold: float = 0.985,
+    threshold: float = 0.97,
 ) -> list[np.ndarray]:
     """Compute per-site transition count matrices from Lambda trajectories.
 

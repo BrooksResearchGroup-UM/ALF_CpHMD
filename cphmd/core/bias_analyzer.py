@@ -78,12 +78,15 @@ class BiasAnalyzer:
         Returns:
             nf: Number of frames for WHAM
         """
-        if phase == 1 or phase == 2:
-            im5 = max(run_idx - 5, 1)
+        if phase == 1:
+            im5 = max(run_idx - 7, 1)
+            skipE = 1
+        elif phase == 2:
+            im5 = max(run_idx - 3, 1)
             skipE = 1
         else:
-            im5 = max(run_idx - 5, 1)
-            skipE = 2
+            im5 = max(run_idx - 2, 1)
+            skipE = 1
 
         if self._nranks > 1 and self._comm is not None:
             from cphmd.core.alf_utils import compute_packed_wham_data_distributed
@@ -140,6 +143,7 @@ class BiasAnalyzer:
         phase2_start_run: int | None,
         alf_info: dict,
         input_folder: Path,
+        xs_enabled: bool = False,
     ) -> dict:
         """Compute cutoff parameters based on phase and run index.
 
@@ -150,12 +154,13 @@ class BiasAnalyzer:
             phase2_start_run: Run index when Phase 2 started
             alf_info: ALF info dict (for nsubs)
             input_folder: Path to input folder (for pop_strict files)
+            xs_enabled: Whether Phase 1 x/s coverage gate is satisfied
 
         Returns:
             dict of cutoff/calc parameters for get_free_energy5
         """
         if phase == 1:
-            return self._phase1_cutoffs(run_idx)
+            return self._phase1_cutoffs(run_idx, xs_enabled=xs_enabled)
         elif phase == 2:
             return self._phase2_cutoffs(run_idx, coupling_scale, phase2_start_run)
         else:
@@ -163,15 +168,20 @@ class BiasAnalyzer:
                 run_idx, coupling_scale, alf_info, input_folder
             )
 
-    def _phase1_cutoffs(self, run_idx: int) -> dict:
+    def _phase1_cutoffs(self, run_idx: int, xs_enabled: bool = False) -> dict:
         """Compute fixed staged cutoffs for Phase 1."""
         if run_idx < 20:
             cutb, cutc = 5.0, 20.0
         else:
             cutb, cutc = 2.5, 10.0
-        cutx, cuts = 0.0, 0.0
+        if xs_enabled:
+            cutx = self.config.phase1_xs_cutoff
+            cuts = self.config.phase1_xs_cutoff
+        else:
+            cutx, cuts = 0.0, 0.0
         cutt, cutu = 0.0, 0.0
-        print(f"  Phase 1 cutoffs: cutb={cutb:.1f} cutc={cutc:.1f} (fixed, run {run_idx})")
+        xs_tag = f" cutx=cuts={cutx:.1f}" if xs_enabled else ""
+        print(f"  Phase 1 cutoffs: cutb={cutb:.1f} cutc={cutc:.1f}{xs_tag} (fixed, run {run_idx})")
 
         cut_params = {
             "cutb": cutb, "cutc": cutc, "cutx": cutx, "cuts": cuts,
@@ -398,6 +408,7 @@ class BiasAnalyzer:
         nblocks = alf_info["nblocks"]
         ntriangle = self.config.ntriangle
         ew = ALFConfig.resolve_endpoint_weight(self.config.endpoint_weight, phase)
+        ed = ALFConfig.resolve_endpoint_weight(self.config.endpoint_decay, phase)
 
         wham_kwargs = {
             "nblocks": nblocks,
@@ -418,6 +429,7 @@ class BiasAnalyzer:
             "chi_offset_u": self.config.chi_offset_u,
             "ntriangle": ntriangle,
             "endpoint_weight": ew,
+            "endpoint_decay": ed,
         }
 
         if self._nranks > 1 and self._comm is not None and self._packed_D is not None:
@@ -490,6 +502,7 @@ class BiasAnalyzer:
                 chi_offset_u=self.config.chi_offset_u,
                 ntriangle=ntriangle,
                 endpoint_weight=ew,
+                endpoint_decay=ed,
             )
             get_free_energy5(alf_info, ms=ms, msprof=msprof, ntriangle=ntriangle, **cut_params)
 

@@ -266,7 +266,7 @@ def alf(
 @run_app.command("bias-search")
 def bias_search(
     input_folder: str = typer.Option(..., "-i", "--input", help="Input folder with analysis directories"),
-    cutoff: float = typer.Option(0.985, "-c", "--cutoff", help="Lambda cutoff for population counting"),
+    cutoff: float = typer.Option(0.97, "-c", "--cutoff", help="Lambda cutoff for population counting"),
     adjustment: str = typer.Option("0", "-a", "--adjust", help="Bias adjustment: + (positive), - (negative), 0 (none)"),
     temperature: float = typer.Option(298.15, "-t", "--temp", help="Temperature (K)"),
     alpha: float = typer.Option(10.0, "--alpha", help="Imbalance penalty factor"),

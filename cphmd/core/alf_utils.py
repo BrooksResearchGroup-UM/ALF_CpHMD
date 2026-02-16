@@ -1740,24 +1740,24 @@ def get_free_energy_lm(
     # Load LMALF output
     coeff = np.loadtxt("OUT.dat")
 
-    # Apply per-parameter clipping to prevent large changes
-    # This matches WHAM's behavior better than global scaling:
-    # - Global scaling: if ONE parameter is too large, ALL get reduced
-    # - Per-parameter clipping: each parameter is independently limited
-    #
-    # The cutoff acts as a "speed limit" for each parameter type,
-    # preventing oscillation from overcorrection.
-    n_clipped = 0
-    max_ratio = 0.0
-    for i in range(n0):
-        limit = 1.5 * cutlist[i]
-        ratio = abs(coeff[i] / cutlist[i]) if cutlist[i] > 0 else 0
-        max_ratio = max(max_ratio, ratio)
-        if abs(coeff[i]) > limit:
-            coeff[i] = np.clip(coeff[i], -limit, limit)
-            n_clipped += 1
+    # Global scaling: if the worst-case ratio |coeff[i]|/cutlist[i] exceeds
+    # 1.5, scale the ENTIRE correction vector down proportionally.  This
+    # preserves the optimizer's chosen proportions across all parameter
+    # types — unlike per-parameter clipping, which distorts the coupled
+    # LMALF solution and can trigger sign oscillation between iterations.
+    active_mask = cutlist[:n0] > 0
+    if np.any(active_mask):
+        active_ratios = np.abs(coeff[:n0][active_mask] / cutlist[:n0][active_mask])
+        max_ratio = float(np.max(active_ratios))
+    else:
+        max_ratio = 0.0
 
-    print(f"LMALF: max_ratio={max_ratio:.2f}, clipped {n_clipped}/{n0} parameters")
+    if max_ratio > 1.5:
+        scaling = 1.5 / max_ratio
+        coeff[:n0] *= scaling
+        print(f"LMALF: max_ratio={max_ratio:.2f}, global scaling={scaling:.4f}")
+    else:
+        print(f"LMALF: max_ratio={max_ratio:.2f}, no scaling needed")
 
     # Unpack coefficients into b/c/x/s matrices
     ind = 0

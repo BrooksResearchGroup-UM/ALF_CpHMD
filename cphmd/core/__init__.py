@@ -113,12 +113,19 @@ from .phase_switcher import (
     compute_replica_populations,
     compute_rms_changes,
     compute_spread,
+    count_transition_events,
+    enough_transitions,
     ewbs_bottleneck_type,
     fit_pka_from_replicas,
     load_lambda_data,
     load_lambda_data_per_replica,
     update_ewbs_state,
     write_populations_file,
+)
+from .replica_exchange import (
+    ExchangeState,
+    ReplicaExchangeConfig,
+    ReplicaExchanger,
 )
 from .restraints import (
     generate_noe_restraints,
@@ -197,6 +204,10 @@ __all__ = [
     "BlockConfig",
     "build_block_command",
     "read_variable_file",
+    # Replica Exchange
+    "ReplicaExchangeConfig",
+    "ExchangeState",
+    "ReplicaExchanger",
     # Restraints
     "generate_scat_restraints",
     "generate_noe_restraints",

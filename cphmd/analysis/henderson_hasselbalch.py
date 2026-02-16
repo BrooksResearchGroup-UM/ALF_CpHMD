@@ -52,6 +52,7 @@ class SubstatePopulation:
         pH_values: Array of pH values
         populations: Array of population fractions at each pH
         theoretical: Array of theoretical populations (from HH model)
+        repeat_indices: Array of repeat file indices (parallel to pH_values/populations)
     """
     state_idx: int
     select_name: str
@@ -60,6 +61,7 @@ class SubstatePopulation:
     pH_values: np.ndarray = field(default_factory=lambda: np.array([]))
     populations: np.ndarray = field(default_factory=lambda: np.array([]))
     theoretical: np.ndarray = field(default_factory=lambda: np.array([]))
+    repeat_indices: np.ndarray = field(default_factory=lambda: np.array([], dtype=int))
 
 
 @dataclass
@@ -582,9 +584,16 @@ def plot_site_substates(
         if sub.tag_type in ("UPOS", "UNEG"):
             _type_counts[sub.tag_type] = _type_counts.get(sub.tag_type, 0) + 1
 
+    # Discover unique repeat indices across all substates for marker assignment
+    all_repeats: set[int] = set()
+    for sub in site_result.substates:
+        if sub.repeat_indices.size > 0:
+            all_repeats.update(sub.repeat_indices.tolist())
+    sorted_repeats = sorted(all_repeats)
+    repeat_to_marker = {r: markers[i % len(markers)] for i, r in enumerate(sorted_repeats)}
+
     for idx, substate in enumerate(site_result.substates):
         color = colors[idx % len(colors)]
-        marker = markers[idx % len(markers)]
 
         # Theoretical curve (dashed)
         if substate.select_name in theo_dense:
@@ -601,7 +610,7 @@ def plot_site_substates(
         theo_pKa = substate.tag_pKa
         fitted_pKa = None
 
-        # Simulation data (scatter points only)
+        # Simulation data (scatter points, one marker per repeat)
         if len(substate.populations) > 0:
             # Fit sigmoid through this substate's simulation data (solid line)
             if len(substate.populations) >= 3:
@@ -622,18 +631,44 @@ def plot_site_substates(
             if pKa_parts:
                 label += f" ({', '.join(pKa_parts)})"
 
-            ax.scatter(
-                substate.pH_values,
-                substate.populations,
-                color=color,
-                marker=marker,
-                s=25,
-                edgecolors="black",
-                linewidths=0.3,
-                alpha=0.9,
-                label=label,
-                zorder=3,
-            )
+            # Scatter per repeat with distinct markers; only first gets the legend label
+            if substate.repeat_indices.size == len(substate.populations) and len(sorted_repeats) > 1:
+                for ri, rep_idx in enumerate(sorted_repeats):
+                    mask = substate.repeat_indices == rep_idx
+                    if not mask.any():
+                        continue
+                    ax.scatter(
+                        substate.pH_values[mask],
+                        substate.populations[mask],
+                        color=color,
+                        marker=repeat_to_marker[rep_idx],
+                        s=25,
+                        edgecolors="black",
+                        linewidths=0.3,
+                        alpha=0.9,
+                        label=label if ri == 0 else None,
+                        zorder=3,
+                    )
+            else:
+                # Single repeat or no repeat info — fall back to circles
+                ax.scatter(
+                    substate.pH_values,
+                    substate.populations,
+                    color=color,
+                    marker="o",
+                    s=25,
+                    edgecolors="black",
+                    linewidths=0.3,
+                    alpha=0.9,
+                    label=label,
+                    zorder=3,
+                )
+
+    # Add marker legend entries for repeats (gray, so they don't clash with state colors)
+    if len(sorted_repeats) > 1:
+        for rep_idx in sorted_repeats:
+            ax.plot([], [], marker=repeat_to_marker[rep_idx], color="gray",
+                    linestyle="none", markersize=5, label=f"Repeat {rep_idx}")
 
     site_label = f"{site_result.segid}:{site_result.resname}{site_result.resid}"
     ax.set_xlabel('pH')
@@ -705,7 +740,7 @@ def _load_run_populations(
     ncentral: int,
     lambda_threshold: float,
     nsubs: list[int] | None = None,
-) -> tuple[np.ndarray, dict[int, np.ndarray], int] | None:
+) -> tuple[np.ndarray, dict[int, np.ndarray], int, np.ndarray] | None:
     """Load one run's lambda data and compute per-state populations.
 
     Each repeat file within a replica becomes a separate data point at
@@ -727,8 +762,10 @@ def _load_run_populations(
             states as a single site.
 
     Returns:
-        (valid_pH_array, state_populations, n_states) or None if insufficient data.
+        (valid_pH_array, state_populations, n_states, repeat_indices) or None.
         state_populations maps global state_idx to array of populations (one per repeat).
+        repeat_indices is an int array parallel to valid_pH_array identifying
+        which repeat file each data point came from (from Lambda filename).
     """
     from cphmd.core.phase_switcher import _organize_by_replica
     from cphmd.utils.lambda_io import read_lambda_values
@@ -741,6 +778,7 @@ def _load_run_populations(
 
     # Build per-repeat data: each repeat file is a separate data point
     all_pH: list[float] = []
+    all_repeat_indices: list[int] = []
     all_repeat_data: list[np.ndarray] = []  # each entry is (frames, n_states)
     n_states = None
 
@@ -758,7 +796,11 @@ def _load_run_populations(
                     continue
                 if n_states is None:
                     n_states = data.shape[1]
+                # Extract repeat index from filename: Lambda.{repeat}.{replica}.ext
+                parts = fpath.stem.split(".")
+                repeat_idx = int(parts[1]) if len(parts) >= 3 else 0
                 all_pH.append(replica_pH)
+                all_repeat_indices.append(repeat_idx)
                 all_repeat_data.append(data)
             except Exception:
                 continue
@@ -800,7 +842,7 @@ def _load_run_populations(
             for j in range(end - start):
                 state_populations[start + j][repeat_idx] = site_hits[j] / total_hits
 
-    return valid_pH_array, state_populations, n_states
+    return valid_pH_array, state_populations, n_states, np.array(all_repeat_indices, dtype=int)
 
 
 def generate_hh_analysis(
@@ -869,7 +911,7 @@ def generate_hh_analysis(
         lambda_data, _ = load_lambda_data(data_dir)
         if lambda_data is None:
             return {}
-        pop_data = calculate_populations(lambda_data, thresholds=(lambda_threshold, 0.985))
+        pop_data = calculate_populations(lambda_data, thresholds=(lambda_threshold, 0.97))
         if not pop_data:
             return {}
 
@@ -895,7 +937,7 @@ def generate_hh_analysis(
                 )
         return results
 
-    valid_pH_array, state_populations, n_states = current_data
+    valid_pH_array, state_populations, n_states, repeat_indices = current_data
 
     # Process each titratable site
     if patch_info is None or "site" not in patch_info.columns:
@@ -958,6 +1000,7 @@ def generate_hh_analysis(
                 tag_pKa=tag_pKa,
                 pH_values=valid_pH_array.copy(),
                 populations=state_pops,
+                repeat_indices=repeat_indices.copy(),
             ))
 
         global_offset += len(site_patches)

@@ -132,7 +132,7 @@ class ConvergenceTracker:
             central_data = lambda_data  # single-replica fallback
 
         pop_data = calculate_populations(
-            central_data, thresholds=(0.8, 0.985), nsubs=nsubs,
+            central_data, thresholds=(0.8, 0.97), nsubs=nsubs,
         )
         write_populations_file(Path("populations.dat"), pop_data)
 
@@ -141,7 +141,7 @@ class ConvergenceTracker:
         if len(pop_strict) > 0:
             exp = self._get_expected_pops(nsubs)
             if nsubs is not None and len(nsubs) > 1:
-                print("Populations (λ>0.985):")
+                print("Populations (λ>0.97):")
                 site_diffs = []
                 for si, (start, end) in enumerate(_per_site_ranges(nsubs)):
                     s = pop_strict[start:end]
@@ -164,10 +164,10 @@ class ConvergenceTracker:
                 if exp is not None:
                     exp_str = ", ".join(f"{p:.1%}" for p in exp.per_state)
                     dev = max(abs(a - b) for a, b in zip(pop_strict, exp.per_state)) * 100
-                    print(f"Populations (λ>0.985): [{pop_str}] vs HH [{exp_str}] dev={dev:.1f}%")
+                    print(f"Populations (λ>0.97): [{pop_str}] vs HH [{exp_str}] dev={dev:.1f}%")
                 else:
                     frac_diff = (max(pop_strict) - min(pop_strict)) * 100
-                    print(f"Populations (λ>0.985): [{pop_str}] diff={frac_diff:.1f}%")
+                    print(f"Populations (λ>0.97): [{pop_str}] diff={frac_diff:.1f}%")
 
         return lambda_data, pop_data, pop_strict
 
@@ -304,6 +304,7 @@ class ConvergenceTracker:
                 self.state.phase2_start_run = run_idx
             old_phase = self.state.phase
             self.state.phase = new_phase
+            self.state.xs_coverage_count = 0
             regenerate_g_imp_fn(old_phase, new_phase)
         else:
             print(f"Phase check: {reason}")
@@ -316,11 +317,14 @@ class ConvergenceTracker:
         from .cphmd_params import get_delta_pKa_for_phase
         delta_pKa = get_delta_pKa_for_phase(self.state.phase)
 
-        # Pass patch_info for pKa convergence check (requires pH + multi-replica).
+        # Pass patch_info always (used for expected_pops and sign arrays).
+        # Pass pKa convergence kwargs only for Phase 2+ — in Phase 1, biases
+        # are too crude for multi-replica HH fitting to be meaningful.
         cphmd_kwargs = {}
         if self.state.patch_info is not None:
             cphmd_kwargs["patch_info"] = self.state.patch_info
-        if (self.config.pH and self.config.nreps > 3
+        if (self.state.phase >= 2
+                and self.config.pH and self.config.nreps > 3
                 and self.state.patch_info is not None):
             from .cphmd_params import compute_all_site_parameters
             cphmd_params = compute_all_site_parameters(
@@ -412,6 +416,7 @@ class ConvergenceTracker:
                 self.state.phase2_start_run = run_idx
             old_phase = self.state.phase
             self.state.phase = new_phase
+            self.state.xs_coverage_count = 0
             regenerate_g_imp_fn(old_phase, new_phase)
         else:
             print(f"Phase check: {reason}")
@@ -444,6 +449,7 @@ class ConvergenceTracker:
                 self.state.phase = 1
                 self.state.phase2_start_run = None
                 self.state.stuck_phase2_count = 0
+                self.state.xs_coverage_count = 0
                 if self.state.ewbs_state is not None:
                     self.state.ewbs_state = EWBSState()
                 regenerate_g_imp_fn(2, 1)
