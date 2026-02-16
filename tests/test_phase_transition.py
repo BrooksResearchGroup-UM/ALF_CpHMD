@@ -46,15 +46,32 @@ class TestPhase1To2:
         )
         assert new_phase == 1, f"Should stay phase 1: {reason}"
 
-    def test_too_few_samples_stays(self, two_state_nsubs):
-        """Even balanced data with too few frames should stay in Phase 1."""
-        data = generate_balanced_lambda(two_state_nsubs, n_frames=50, seed=12)
-        config = PhaseTransitionConfig(min_hits_1to2=100)
+    def test_too_few_transitions_stays(self, two_state_nsubs):
+        """Stuck data with too few transition events should stay in Phase 1.
+
+        Creates data where the system is trapped in state 0 for most frames,
+        with only a few brief excursions to state 1.  Raw hit count may be
+        sufficient but independent transition events are below threshold.
+        """
+        rng = np.random.default_rng(12)
+        n = 5000
+        data = np.zeros((n, 2))
+        # Stuck in state 0 except for 3 brief visits to state 1
+        for t in range(n):
+            data[t, 0] = rng.uniform(0.99, 1.0)
+            data[t, 1] = rng.uniform(0.0, 0.01)
+        # Insert 3 brief excursions to state 1 (3 transitions < 10)
+        for start in [500, 2000, 3500]:
+            for t in range(start, start + 50):
+                data[t, 0] = rng.uniform(0.0, 0.01)
+                data[t, 1] = rng.uniform(0.99, 1.0)
+
+        config = PhaseTransitionConfig(min_transitions_1to2=10)
 
         new_phase, reason = check_phase_transition(
             current_phase=1, lambda_data=data, config=config, nsubs=two_state_nsubs
         )
-        assert new_phase == 1
+        assert new_phase == 1, f"Should stay with few transitions: {reason}"
 
     def test_multisite_one_trapped_stays(self, multi_site_nsubs):
         """Multi-site: if one site is trapped, should stay in Phase 1."""
@@ -302,11 +319,14 @@ class TestPhase1To2VisitedStates:
         assert new_phase == 2, (
             f"Multi-site with all visits should advance: {reason}")
 
-    def test_concatenated_trapped_runs_pass_phase_check(self, three_state_nsubs):
-        """Concatenated trapped runs: each run in one state, but all states
-        represented across runs. check_phase_transition sees balanced data
-        and allows transition. (The alf_runner quality gate is the protection
-        against this scenario, not check_phase_transition itself.)
+    def test_concatenated_trapped_runs_blocked_by_transitions(self, three_state_nsubs):
+        """Concatenated trapped runs: each run stuck in one state.
+
+        Although raw frame counts and visited-state checks pass (balanced
+        across concatenated runs), the transition event count is low —
+        only ~6-7 edges per state at run boundaries. The transition gate
+        correctly blocks this scenario without needing a separate quality
+        gate in alf_runner.
         """
         rng = np.random.default_rng(55)
         n_frames_per_run = 25000
@@ -325,18 +345,17 @@ class TestPhase1To2VisitedStates:
 
         accumulated = np.vstack(chunks)
         config = PhaseTransitionConfig(
-            spread_1to2=0.5, min_hits_1to2=100,
+            spread_1to2=0.5, min_transitions_1to2=10,
         )
         new_phase, reason = check_phase_transition(
             current_phase=1, lambda_data=accumulated, config=config,
             nsubs=three_state_nsubs,
         )
-        # This SHOULD pass because all 3 states are visited with good balance.
-        # Protection against false positives is in alf_runner (quality gate),
-        # not in check_phase_transition.
-        assert new_phase == 2, (
-            f"Concatenated data with all states should pass phase check: {reason}"
+        # Transition counting blocks: ~6-7 transitions per state < 10 threshold.
+        assert new_phase == 1, (
+            f"Concatenated stuck runs should be blocked by transition count: {reason}"
         )
+        assert "min_trans" in reason
 
 
 # ---------------------------------------------------------------------------
@@ -659,3 +678,146 @@ class TestPhase2To1Regression:
         """After max_phase_regressions, no more regressions allowed."""
         config = PhaseTransitionConfig(max_phase_regressions=2)
         assert config.max_phase_regressions == 2
+
+
+# ---------------------------------------------------------------------------
+# Per-repeat health check
+# ---------------------------------------------------------------------------
+
+class TestCheckRepeatHealth:
+    """Tests for ConvergenceTracker.check_repeat_health()."""
+
+    def _make_tracker(self):
+        """Create a minimal ConvergenceTracker."""
+        from unittest.mock import MagicMock
+
+        from cphmd.core.convergence_tracker import ConvergenceTracker
+        config = MagicMock()
+        state = MagicMock()
+        return ConvergenceTracker(config, state)
+
+    def _write_parquet(self, data_dir, repeat, replica, data):
+        """Write lambda data as a parquet file."""
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        data_dir.mkdir(parents=True, exist_ok=True)
+        ncols = data.shape[1]
+        names = [f"s1s{i+1}" for i in range(ncols)]
+        table = pa.table({n: pa.array(data[:, i]) for i, n in enumerate(names)})
+        pq.write_table(table, str(data_dir / f"Lambda.{repeat}.{replica}.parquet"))
+
+    def test_healthy_repeats_no_stuck(self, tmp_path):
+        """Both repeats with balanced populations → no stuck flag."""
+        import os
+        data_dir = tmp_path / "data"
+        rng = np.random.default_rng(42)
+
+        for rep in range(2):
+            for replica in range(3):
+                data = rng.uniform(0.3, 0.7, (1000, 2))
+                self._write_parquet(data_dir, rep, replica, data)
+
+        tracker = self._make_tracker()
+        os.chdir(tmp_path)
+        try:
+            health = tracker.check_repeat_health(nsubs=[2])
+        finally:
+            os.chdir("/home/stanislc/projects/00_scripts/ALF_CpHMD")
+
+        assert health["stuck_repeats"] == []
+        assert 0 in health["per_repeat"]
+        assert 1 in health["per_repeat"]
+
+    def test_repeat0_stuck_flagged(self, tmp_path):
+        """Repeat 0 stuck at >0.95 for all replicas → flagged."""
+        import os
+        data_dir = tmp_path / "data"
+        rng = np.random.default_rng(43)
+
+        # Repeat 0: stuck in state 0 at all replicas
+        for replica in range(3):
+            data = np.column_stack([
+                rng.uniform(0.97, 1.0, 1000),
+                rng.uniform(0.0, 0.03, 1000),
+            ])
+            self._write_parquet(data_dir, 0, replica, data)
+
+        # Repeat 1: balanced at all replicas
+        for replica in range(3):
+            data = rng.uniform(0.3, 0.7, (1000, 2))
+            self._write_parquet(data_dir, 1, replica, data)
+
+        tracker = self._make_tracker()
+        os.chdir(tmp_path)
+        try:
+            health = tracker.check_repeat_health(nsubs=[2])
+        finally:
+            os.chdir("/home/stanislc/projects/00_scripts/ALF_CpHMD")
+
+        assert 0 in health["stuck_repeats"]
+        assert 1 not in health["stuck_repeats"]
+
+    def test_one_replica_balanced_saves_repeat(self, tmp_path):
+        """If even one replica is balanced, the repeat is NOT flagged."""
+        import os
+        data_dir = tmp_path / "data"
+        rng = np.random.default_rng(44)
+
+        # Repeat 0: stuck at replicas 0,1 but balanced at replica 2
+        for replica in range(2):
+            data = np.column_stack([
+                rng.uniform(0.97, 1.0, 1000),
+                rng.uniform(0.0, 0.03, 1000),
+            ])
+            self._write_parquet(data_dir, 0, replica, data)
+
+        # Replica 2 is balanced
+        data = rng.uniform(0.3, 0.7, (1000, 2))
+        self._write_parquet(data_dir, 0, 2, data)
+
+        tracker = self._make_tracker()
+        os.chdir(tmp_path)
+        try:
+            health = tracker.check_repeat_health(nsubs=[2])
+        finally:
+            os.chdir("/home/stanislc/projects/00_scripts/ALF_CpHMD")
+
+        assert 0 not in health["stuck_repeats"]
+
+    def test_no_data_returns_empty(self, tmp_path):
+        """No lambda files → empty result."""
+        import os
+        (tmp_path / "data").mkdir()
+
+        tracker = self._make_tracker()
+        os.chdir(tmp_path)
+        try:
+            health = tracker.check_repeat_health(nsubs=[2])
+        finally:
+            os.chdir("/home/stanislc/projects/00_scripts/ALF_CpHMD")
+
+        assert health["stuck_repeats"] == []
+        assert health["per_repeat"] == {}
+
+    def test_single_repeat_can_be_stuck(self, tmp_path):
+        """Single repeat (Phase 1-style) can be flagged if stuck."""
+        import os
+        data_dir = tmp_path / "data"
+        rng = np.random.default_rng(45)
+
+        for replica in range(3):
+            data = np.column_stack([
+                rng.uniform(0.98, 1.0, 1000),
+                rng.uniform(0.0, 0.02, 1000),
+            ])
+            self._write_parquet(data_dir, 0, replica, data)
+
+        tracker = self._make_tracker()
+        os.chdir(tmp_path)
+        try:
+            health = tracker.check_repeat_health(nsubs=[2])
+        finally:
+            os.chdir("/home/stanislc/projects/00_scripts/ALF_CpHMD")
+
+        assert 0 in health["stuck_repeats"]

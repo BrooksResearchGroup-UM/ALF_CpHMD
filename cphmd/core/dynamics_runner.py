@@ -466,7 +466,7 @@ class DynamicsRunner:
             nsavc = 0
             nsavl = 1
         elif self.state.phase == 2:
-            nsteps_eq = 10000
+            nsteps_eq = 0
             nsteps_prod = 500000
             nsavc = 0
             nsavl = 1
@@ -598,16 +598,16 @@ class DynamicsRunner:
         if nsteps_prod > 0:
             sim_type = "flat" if self.state.phase in (1, 2) else "prod"
 
-            rst_fn = str(res_dir / f"{name}_{sim_type}.{k}.{replica_idx}.rst")
-            lmd_fn = str(res_dir / f"{name}_{sim_type}.{k}.{replica_idx}.lmd")
+            rst_fn = str(res_dir / f"{sim_type}.{k}.{replica_idx}.rst")
+            lmd_fn = str(res_dir / f"{sim_type}.{k}.{replica_idx}.lmd")
 
             dyn_param.update({"start": False, "restart": True, "iunrea": rpr_unit})
 
             rpr_fn = None
             if sim_type == "flat":
                 candidates = [
-                    res_dir / f"{name}_eq.{k}.{replica_idx}.rst",
-                    res_dir / f"{name}_eq.rst",
+                    res_dir / f"eq.{k}.{replica_idx}.rst",
+                    res_dir / "eq.rst",
                 ]
             else:
                 candidates = []
@@ -615,12 +615,12 @@ class DynamicsRunner:
                 # (has CPT-evolved crystal params from this run's k=0).
                 if k > 0:
                     candidates.append(
-                        res_dir / f"{name}_prod.0.{replica_idx}.rst"
+                        res_dir / f"prod.0.{replica_idx}.rst"
                     )
                 restart_run = run_idx - 1
                 candidates.extend([
-                    self.config.input_folder / f"run{restart_run}" / "res" / f"{name}_prod.{k}.{replica_idx}.rst",
-                    self.config.input_folder / f"run{restart_run}" / "res" / f"{name}_flat.{k}.{replica_idx}.rst",
+                    self.config.input_folder / f"run{restart_run}" / "res" / f"prod.{k}.{replica_idx}.rst",
+                    self.config.input_folder / f"run{restart_run}" / "res" / f"flat.{k}.{replica_idx}.rst",
                 ])
 
             for candidate in candidates:
@@ -640,7 +640,7 @@ class DynamicsRunner:
 
             dcd = None
             if nsavc > 0:
-                dcd_fn = str(dcd_dir / f"{name}_{sim_type}.{k}.{replica_idx}.dcd")
+                dcd_fn = str(dcd_dir / f"{sim_type}.{k}.{replica_idx}.dcd")
                 dcd = pycharmm.CharmmFile(file_name=dcd_fn, file_unit=dcd_unit,
                                           read_only=False, formatted=False)
             rst = pycharmm.CharmmFile(file_name=rst_fn, file_unit=rst_unit,
@@ -675,7 +675,7 @@ class DynamicsRunner:
             nsteps_prod = 50000
             nsavl = 1
         elif self.state.phase == 2:
-            nsteps_eq = 10000
+            nsteps_eq = 0
             nsteps_prod = 500000
             nsavl = 1
         else:
@@ -726,7 +726,6 @@ class DynamicsRunner:
         lmd_unit = 53
         rpr_unit = 54
 
-        name = self.config.input_folder.name
         run_dir = self.config.input_folder / f"run{run_idx}"
         res_dir = run_dir / "res"
 
@@ -787,8 +786,8 @@ class DynamicsRunner:
         if use_restart:
             dyn_param["iunrea"] = rpr_unit
 
-        rst_fn = res_dir / f"{name}_eq.{k}.{replica_idx}.rst"
-        lmd_fn = res_dir / f"{name}_eq.{k}.{replica_idx}.lmd"
+        rst_fn = res_dir / f"eq.{k}.{replica_idx}.rst"
+        lmd_fn = res_dir / f"eq.{k}.{replica_idx}.lmd"
 
         rpr = None
         if use_restart:
@@ -861,15 +860,14 @@ class DynamicsRunner:
 
         _, _, nsavl, timestep = self.get_production_steps()
 
-        name = self.config.input_folder.name
         run_dir = self.config.input_folder / f"run{run_idx}"
         res_dir = run_dir / "res"
 
         sim_type = "flat" if self.state.phase in (1, 2) else "prod"
         seg_tag = f"seg{segment_idx:04d}"
 
-        rst_fn = res_dir / f"{name}_{sim_type}.{k}.{replica_idx}.{seg_tag}.rst"
-        lmd_fn = res_dir / f"{name}_{sim_type}.{k}.{replica_idx}.{seg_tag}.lmd"
+        rst_fn = res_dir / f"{sim_type}.{k}.{replica_idx}.{seg_tag}.rst"
+        lmd_fn = res_dir / f"{sim_type}.{k}.{replica_idx}.{seg_tag}.lmd"
 
         # Build base dynamics params (same as run_dynamics production section)
         import pycharmm.dynamics as dyn
@@ -939,7 +937,7 @@ class DynamicsRunner:
             )
         elif is_first_segment:
             # First segment of run: look for eq restart or previous run restart
-            rpr_fn = self._find_segment_restart(run_idx, k, replica_idx, name, res_dir)
+            rpr_fn = self._find_segment_restart(run_idx, k, replica_idx, res_dir)
             if rpr_fn is not None:
                 dyn_param["start"] = False
                 dyn_param["restart"] = True
@@ -983,7 +981,6 @@ class DynamicsRunner:
         run_idx: int,
         k: int,
         replica_idx: int,
-        name: str,
         res_dir: "Path",
     ) -> "str | None":
         """Find a restart file for the first segment of a run.
@@ -994,15 +991,15 @@ class DynamicsRunner:
 
         if sim_type == "flat":
             candidates = [
-                res_dir / f"{name}_eq.{k}.{replica_idx}.rst",
-                res_dir / f"{name}_eq.rst",
+                res_dir / f"eq.{k}.{replica_idx}.rst",
+                res_dir / "eq.rst",
             ]
         else:
             restart_run = run_idx - 1
             prev_res = self.config.input_folder / f"run{restart_run}" / "res"
             candidates = [
-                prev_res / f"{name}_prod.{k}.{replica_idx}.rst",
-                prev_res / f"{name}_flat.{k}.{replica_idx}.rst",
+                prev_res / f"prod.{k}.{replica_idx}.rst",
+                prev_res / f"flat.{k}.{replica_idx}.rst",
             ]
 
         for c in candidates:
