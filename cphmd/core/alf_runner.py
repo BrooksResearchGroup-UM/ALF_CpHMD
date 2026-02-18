@@ -119,6 +119,17 @@ class ALFConfig:
     min_xs_coverage_runs: int = 3  # consecutive covered runs before Phase 1 x/s enable
     phase1_xs_cutoff: float = 2.0  # cutx/cuts value when x/s enabled in Phase 1
 
+    # Manual cutoff overrides per phase (None = use adaptive defaults)
+    # Each is a dict with keys: cutb, cutc, cutx, cuts (all optional)
+    phase1_cutoffs: dict | None = None
+    phase2_cutoffs: dict | None = None
+    phase3_cutoffs: dict | None = None
+
+    # Number of repeats per run per phase (None = default: 1 for Phase 1, 2 for Phase 2+)
+    phase1_repeats: int | None = None
+    phase2_repeats: int | None = None
+    phase3_repeats: int | None = None
+
     # FNEX softmax constraint parameter (controls bias potential shape)
     fnex: float = 5.5
     # Optional overrides for bias potential shape constants (None = derive from fnex)
@@ -1173,8 +1184,12 @@ class ALFSimulation:
         # Broadcast current phase from rank 0
         self.state.phase = self._comm.bcast(self.state.phase, root=0)
 
-        # Determine number of repeats based on phase
-        repeats = 1 if self.state.phase == 1 else 2
+        # Determine number of repeats based on phase (config overrides defaults)
+        phase_repeats = {1: self.config.phase1_repeats,
+                         2: self.config.phase2_repeats,
+                         3: self.config.phase3_repeats}
+        override = phase_repeats.get(self.state.phase)
+        repeats = override if override is not None else (1 if self.state.phase == 1 else 2)
 
         for k in range(repeats):
             start_time = time.time()
