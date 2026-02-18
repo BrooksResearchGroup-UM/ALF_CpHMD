@@ -829,7 +829,7 @@ def _pack_wham_data(
     """Pack lambda trajectories and cross-energies into flat D_h layout for CUDA.
 
     Matches the readdata() packing in wham.cu (lines 420-456):
-    - D[t*ndim + 0]           = E_self (energy_matrix[nf-1][i] for sim i)
+    - D[t*ndim + 0]           = E_self (energy_matrix[i][i] for sim i)
     - D[t*ndim + 1..NL]       = lambda values
     - D[t*ndim + NL+1..NL+nf] = cross-energies (energy_matrix[j][i] for all j)
     - D[t*ndim + NL+nf+1]     = 0.0  (reserved bin_1D)
@@ -872,8 +872,11 @@ def _pack_wham_data(
         # sim_indices[offset:offset+n_i] = i
         sim_indices[offset:offset + n_i] = i
 
-        # Column 0: E_self = energy_matrix[nf-1][i][:, 0]
-        D_flat[idx * ndim] = energy_matrix[nf - 1][i][:n_i, 0]
+        # Column 0: E_self = energy_matrix[i][i] (self-energy, not last sim)
+        # Using self-energy ensures E_self + gshift gives a uniform target
+        # potential (dot(λ, -b_old)) for all replicas, avoiding a systematic
+        # offset of b_shift*(k_ref - ncentral) that occurs with nf-1.
+        D_flat[idx * ndim] = energy_matrix[i][i][:n_i, 0]
 
         # Columns 1..NL: lambda values
         for b in range(NL):

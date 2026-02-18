@@ -1264,9 +1264,12 @@ __global__ void get_lnZ(struct_data data, double beta,
         // Validate all components before computation
         if (isfinite(lnw) && isfinite(lnDenom))
         {
-          double vshift = gshift[sim_idx * data.Nblocks + block_off];
+          // Per-frame λ-dependent vshift: dot(gshift[sim], λ_n)
+          // Removes pH dependence exactly for any number of states.
+          double vshift = 0.0;
+          for (int j = 0; j < data.Nblocks; j++)
+              vshift += gshift[sim_idx * data.Nblocks + j] * data.D_d[i * data.Ndim + 1 + j];
           double contribution = lnw - lnDenom - beta * (E + vshift);
-          // Only check for reasonable range, no clamping
           if (isfinite(contribution))
           {
             atomic_logadd(&loc_lnZ[iB], contribution);
@@ -1326,7 +1329,10 @@ __global__ void get_dlnZ(struct_data data, int j1, double beta,
           double log_q = log(q);
           if (isfinite(log_q))
           {
-            double vshift = gshift[sim_idx * data.Nblocks + block_off];
+            // Per-frame λ-dependent vshift: dot(gshift[sim], λ_n)
+            double vshift = 0.0;
+            for (int j = 0; j < data.Nblocks; j++)
+                vshift += gshift[sim_idx * data.Nblocks + j] * data.D_d[i * data.Ndim + 1 + j];
             double contribution = lnw - lnDenom - beta * (E + vshift) + log_q;
             if (isfinite(contribution))
             {

@@ -159,14 +159,28 @@ class BiasAnalyzer:
         Returns:
             dict of cutoff/calc parameters for get_free_energy5
         """
+        # Check for manual per-phase cutoff overrides
+        override = {1: self.config.phase1_cutoffs,
+                    2: self.config.phase2_cutoffs,
+                    3: self.config.phase3_cutoffs}.get(phase)
+
         if phase == 1:
-            return self._phase1_cutoffs(run_idx, xs_enabled=xs_enabled)
+            cut_params = self._phase1_cutoffs(run_idx, xs_enabled=xs_enabled)
         elif phase == 2:
-            return self._phase2_cutoffs(run_idx, coupling_scale, phase2_start_run)
+            cut_params = self._phase2_cutoffs(run_idx, coupling_scale, phase2_start_run)
         else:
-            return self._phase3_cutoffs(
+            cut_params = self._phase3_cutoffs(
                 run_idx, coupling_scale, alf_info, input_folder
             )
+
+        if override:
+            for key in ("cutb", "cutc", "cutx", "cuts"):
+                if key in override:
+                    cut_params[key] = float(override[key])
+            print(f"  Manual cutoff overrides applied for Phase {phase}: "
+                  + ", ".join(f"{k}={v}" for k, v in override.items()))
+
+        return cut_params
 
     def _phase1_cutoffs(self, run_idx: int, xs_enabled: bool = False) -> dict:
         """Compute fixed staged cutoffs for Phase 1."""
@@ -714,9 +728,11 @@ class BiasAnalyzer:
 
     @staticmethod
     def is_output_invalid(analysis_dir: Path, cut_params: dict | None = None) -> bool:
-        """Check for invalid WHAM output (all-zero, NaN, or Inf).
+        """Check for invalid WHAM output (NaN, Inf, or all biases zero).
 
-        Only checks files whose parameter types are active (non-zero cutoff).
+        Individual files can legitimately be all-zeros (e.g. x.dat in Phase 1).
+        Only flags failure when ALL active bias files are zeros combined —
+        meaning WHAM produced no useful updates at all.
         """
         file_cut_map = {
             'b.dat': 'cutb', 'c.dat': 'cutc',
@@ -726,6 +742,8 @@ class BiasAnalyzer:
             't.dat': 'cutt', 'u.dat': 'cutu',
             't_sum.dat': 'cutt', 'u_sum.dat': 'cutu',
         }
+        all_zero = True  # Track whether ALL active files are zeros
+        checked_any = False
         for fname, cut_key in file_cut_map.items():
             if cut_params and cut_params.get(cut_key, 1.0) == 0:
                 continue
@@ -737,18 +755,21 @@ class BiasAnalyzer:
                 if data.size == 0:
                     print(f"WHAM validation: {fname} is empty")
                     return True
-                if np.all(data == 0):
-                    print(f"WHAM validation: {fname} contains all zeros")
-                    return True
                 if np.any(np.isnan(data)):
                     print(f"WHAM validation: {fname} contains NaN")
                     return True
                 if np.any(np.isinf(data)):
                     print(f"WHAM validation: {fname} contains Inf")
                     return True
+                checked_any = True
+                if not np.all(data == 0):
+                    all_zero = False
             except Exception as e:
                 print(f"WHAM validation: error reading {fname}: {e}")
                 return True
+        if checked_any and all_zero:
+            print("WHAM validation: all bias files contain zeros (no updates)")
+            return True
         return False
 
     @staticmethod

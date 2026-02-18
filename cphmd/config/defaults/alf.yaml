@@ -24,6 +24,24 @@ hmr: true
 cleanup: false
 coupling: 0
 # bias_guess: true  # Run solvated-vacuum bias guessing on first run
+
+# Repeats per run per phase (default: 1 for Phase 1, 2 for Phase 2+)
+# phase1_repeats: 1
+# phase2_repeats: 2
+# phase3_repeats: 2
+
+# Manual cutoff overrides per phase (omit to use adaptive defaults)
+# phase1_cutoffs:
+#   cutb: 5.0
+#   cutc: 20.0
+#   cutx: 0.0
+#   cuts: 0.0
+# phase2_cutoffs:
+#   cutb: 0.5
+#   cutc: 2.0
+# phase3_cutoffs:
+#   cutb: 0.05
+#   cutc: 0.5
 # min_xs_coverage_runs: 3  # Consecutive covered runs before Phase 1 x/s enable
 # phase1_xs_cutoff: 2.0    # cutx/cuts when x/s enabled in Phase 1
 

@@ -929,7 +929,7 @@ def get_energy_from_analysis_dir(
     os.makedirs("Energy", exist_ok=True)
 
     for i in range(nf):
-        Ei = energy_matrix[nf - 1][i]
+        Ei = energy_matrix[i][i]
         for j in range(nf):
             Ei = np.concatenate((Ei, energy_matrix[j][i]), axis=1)
         np.savetxt(f"Energy/ESim{i + 1}.dat", Ei, fmt="%12.5f")
@@ -1167,8 +1167,14 @@ def compute_packed_wham_data(
         offset += n_j
         # Lj goes out of scope — memory freed
 
-    # E_self column = cross-energy under the last simulation's biases
-    D[:, 0] = D[:, NL + 1 + (nf - 1)]
+    # E_self column = self-energy (each sim's frames under its OWN biases).
+    # Combined with per-replica gshift, this gives a uniform target potential
+    # dot(λ, -b_old) for all frames, avoiding a systematic offset.
+    offset = 0
+    for j in range(nf):
+        n_j = frame_counts[j]
+        D[offset : offset + n_j, 0] = D[offset : offset + n_j, NL + 1 + j]
+        offset += n_j
 
     gshift_data = _compute_gshift_data(
         jk_map, start_cycle, alf_info.nblocks, alf_info.ncentral,
@@ -1276,8 +1282,14 @@ def compute_packed_wham_data_distributed(
                 comm.Recv(recv_buf, source=src_rank, tag=i)
                 D[:, NL + 1 + i] = recv_buf
 
-        # E_self column
-        D[:, 0] = D[:, NL + 1 + (nf - 1)]
+        # E_self column = self-energy (each sim's frames under its OWN biases).
+        # Combined with per-replica gshift, this gives a uniform target potential
+        # dot(λ, -b_old) for all frames, avoiding a systematic offset.
+        offset = 0
+        for j in range(nf):
+            n_j = frame_counts[j]
+            D[offset : offset + n_j, 0] = D[offset : offset + n_j, NL + 1 + j]
+            offset += n_j
 
         gshift_data = _compute_gshift_data(
             jk_map, start_cycle, alf_info.nblocks, alf_info.ncentral,
