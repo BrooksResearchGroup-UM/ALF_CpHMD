@@ -1,0 +1,55 @@
+# Folate (FOL) Two-Site CpHMD Configuration
+# nsubs=[3,3] — two independent MSLD sites with cross-site x/s coupling
+#
+# Site 1 (alpha-carboxyl): C, O, OXT — proton HXT, pKa ~3.5
+#   Reference = protonated, FOLA_W = tautomer, FOLA_U = deprotonated
+# Site 2 (gamma-carboxyl): CD, OE1, OE2 — proton HE2, pKa ~4.6
+#   Reference = protonated, FOLG_W = tautomer, FOLG_U = deprotonated
+#
+# Common core: pteridine ring, bridge atoms (CA, CB, CG, C14, N, H)
+# Dummy protons HE1 and HO (charge 0) in the reference RESI are activated
+# in tautomer states via per-site patches.
+
+solvation:
+  input_file: pdb/folpp
+  output_dir: solvated
+  crystal_type: OCTAHEDRAL
+  padding: 10.0
+  salt_concentration: 0.10
+  extra_files:
+    - toppar/folpp.cgenff.rtf
+    - toppar/folpp.cgenff.prm
+
+patch:
+  input_folder: solvated
+  output_folder: solvated/prep
+  structure_file: solvated
+  hmr: true
+  selected_residues: []
+  extra_files:
+    - toppar/folpp.cgenff.rtf
+    - toppar/folpp.cgenff.prm
+    - toppar/fol_titratable.str
+  ligand_patches:
+    - resname: FOL
+      patch_file: toppar/fol_titratable.str
+      sites:
+        - patches: [FOLA_W, FOLA_U]
+          pka_values: {FOLA_U: 3.5}
+          reference_patch: FOLA_U
+        - patches: [FOLG_W, FOLG_U]
+          pka_values: {FOLG_U: 4.6}
+          reference_patch: FOLG_U
+
+alf:
+  input_folder: solvated
+  temperature: 298.15
+  hmr: true
+  auto_phase_switch: true
+  auto_stop: true
+  cleanup: false
+  no_pka_bias: true
+  extra_files:
+    - toppar/folpp.cgenff.rtf
+    - toppar/folpp.cgenff.prm
+    - toppar/fol_titratable.str
