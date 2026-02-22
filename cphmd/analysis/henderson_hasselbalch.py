@@ -77,6 +77,7 @@ class SiteHHResult:
         substates: List of SubstatePopulation for each microstate
         pH_values: Combined pH array used for analysis
         total_populations: Site-level total populations (charged states summed)
+        pka_shift: Per-site pKa shift applied to theoretical curves (effective_pH - pH0)
     """
     site_id: str
     segid: str
@@ -86,6 +87,7 @@ class SiteHHResult:
     substates: list[SubstatePopulation] = field(default_factory=list)
     pH_values: np.ndarray = field(default_factory=lambda: np.array([]))
     total_populations: np.ndarray = field(default_factory=lambda: np.array([]))
+    pka_shift: float = 0.0
 
 
 def logistic(pH: np.ndarray, pKa: float, s: int, P: float = 1.0) -> np.ndarray:
@@ -322,6 +324,7 @@ def plot_hh_curves(
     populations_data: dict[str, tuple[np.ndarray, np.ndarray]],
     output_path: Path,
     run_idx: int,
+    use_delta_ph: bool = False,
 ) -> None:
     """Generate publication-quality HH curve plots.
 
@@ -331,6 +334,7 @@ def plot_hh_curves(
         populations_data: Dict mapping residue name to (pH_values, populations)
         output_path: Directory for output files
         run_idx: Current run number for labeling
+        use_delta_ph: If True, label x-axis as "pH shift (ΔpKₐ)" instead of "pH"
     """
     try:
         import matplotlib.pyplot as plt
@@ -370,7 +374,7 @@ def plot_hh_curves(
 
         ax.plot(pH_fit, y_fit, 'r-', linewidth=2, label=label)
 
-        ax.set_xlabel('pH')
+        ax.set_xlabel('pH shift (\u0394pK\u2090)' if use_delta_ph else 'pH')
         ax.set_ylabel('Population')
         ax.set_title(f'{resname} \u2014 Run {run_idx}', fontweight='bold')
         ax.set_xlim(pH_range)
@@ -536,6 +540,8 @@ def plot_site_substates(
     pH_range: tuple[float, float],
     output_path: Path,
     run_idx: int,
+    pka_shift: float = 0.0,
+    use_delta_ph: bool = False,
 ) -> None:
     """Generate plot showing all substates for a single site.
 
@@ -547,6 +553,8 @@ def plot_site_substates(
         pH_range: (min_pH, max_pH) for plotting
         output_path: Directory for output files
         run_idx: Current run number for labeling
+        pka_shift: Shift applied to TAG pKa for theoretical curves
+        use_delta_ph: If True, label x-axis as "pH shift (ΔpKₐ)"
     """
     try:
         import matplotlib.pyplot as plt
@@ -575,7 +583,10 @@ def plot_site_substates(
             mtype = "UPOS"
         elif sub.tag_type == "UNEG":
             mtype = "UNEG"
-        microstates_for_theo.append((sub.select_name, mtype, sub.tag_pKa))
+        shifted_pKa = sub.tag_pKa
+        if pka_shift != 0.0 and sub.tag_pKa is not None:
+            shifted_pKa = sub.tag_pKa + pka_shift
+        microstates_for_theo.append((sub.select_name, mtype, shifted_pKa))
     theo_dense = compute_theoretical_populations(pH_fit, microstates_for_theo)
 
     # Count titratable states per type (for upper asymptote constraint in sigmoid fit)
@@ -671,7 +682,7 @@ def plot_site_substates(
                     linestyle="none", markersize=5, label=f"Repeat {rep_idx}")
 
     site_label = f"{site_result.segid}:{site_result.resname}{site_result.resid}"
-    ax.set_xlabel('pH')
+    ax.set_xlabel('pH shift (\u0394pK\u2090)' if use_delta_ph else 'pH')
     ax.set_ylabel('Population')
     ax.set_title(f'{site_label} \u2014 Run {run_idx}', fontweight='bold')
     ax.set_xlim(pH_range)
@@ -856,6 +867,7 @@ def generate_hh_analysis(
     ncentral: int | None = None,
     lambda_threshold: float = 0.8,
     nsubs: list[int] | None = None,
+    pka_shift: dict[str, float] | None = None,
 ) -> dict[str, SiteHHResult]:
     """Main entry point for HH curve analysis with multi-replica pH.
 
@@ -880,6 +892,8 @@ def generate_hh_analysis(
         lambda_threshold: Threshold for state occupancy (default 0.8)
         nsubs: Substates per site (e.g. [3, 2]). Derived from
             patch_info if not provided.
+        pka_shift: Per-site pKa shift (site_id → shift) for aligning
+            theoretical curves to the simulation pH axis.
 
     Returns:
         Dict mapping site IDs to SiteHHResult with full analysis
@@ -986,7 +1000,13 @@ def generate_hh_analysis(
                 mtype = "UNEG"
                 charged_state_indices.append(global_idx)
 
-            microstates.append((select_name, mtype, tag_pKa))
+            # Apply pka_shift for theoretical curves (keep original in SubstatePopulation)
+            site_id_str = str(site_id)
+            shifted_pKa = tag_pKa
+            if pka_shift and site_id_str in pka_shift and tag_pKa is not None:
+                shifted_pKa = tag_pKa + pka_shift[site_id_str]
+
+            microstates.append((select_name, mtype, shifted_pKa))
 
             # Get simulation populations for this state (global index!)
             state_pops = state_populations.get(
@@ -1049,6 +1069,7 @@ def generate_hh_analysis(
         )
 
         # Create site result
+        site_shift = pka_shift.get(str(site_id), 0.0) if pka_shift else 0.0
         site_result = SiteHHResult(
             site_id=str(site_id),
             segid=segid,
@@ -1058,6 +1079,7 @@ def generate_hh_analysis(
             substates=substates,
             pH_values=valid_pH_array.copy(),
             total_populations=total_charged_pop,
+            pka_shift=site_shift,
         )
         results[str(site_id)] = site_result
 
@@ -1069,9 +1091,20 @@ def generate_hh_analysis(
     hh_dir = Path(output_dir) / "hh_plots"
     pH_range = (valid_pH_array.min() - 0.5, valid_pH_array.max() + 0.5)
 
+    # Determine if we're on a delta-pKa axis (multi-site with effective_pH=0)
+    use_delta_ph = (
+        pH == 0.0
+        and pka_shift is not None
+        and any(v != 0.0 for v in pka_shift.values())
+    )
+
     # Per-site substate plots
     for site_result in results.values():
-        plot_site_substates(site_result, pH_range, hh_dir, run_idx)
+        plot_site_substates(
+            site_result, pH_range, hh_dir, run_idx,
+            pka_shift=site_result.pka_shift,
+            use_delta_ph=use_delta_ph,
+        )
 
     # CSV export
     write_hh_csv(results, hh_dir, run_idx)

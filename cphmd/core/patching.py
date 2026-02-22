@@ -52,6 +52,30 @@ class LigandPatchDef:
 
     resname: str
     patch_file: str | Path
+    patches: list[str] = field(default_factory=list)
+    pka_values: dict[str, float] = field(default_factory=dict)
+    reference_patch: str | None = None
+    sites: list[LigandSiteDef] | None = None
+
+    def __post_init__(self):
+        if self.sites:
+            self.sites = [
+                LigandSiteDef(**s) if isinstance(s, dict) else s for s in self.sites
+            ]
+
+
+@dataclass
+class LigandSiteDef:
+    """Definition of a single titratable site within a multi-site ligand.
+
+    Attributes:
+        patches: List of patch names for this site (e.g., ["FOLA_W", "FOLA_U"]).
+        pka_values: Dict mapping patch name to pKa value for this site.
+        reference_patch: Patch that becomes the NONE reference state. When set,
+            the original state and tautomers get UNEG with this patch's pKa,
+            matching the ASP/GLU convention (deprotonated = reference).
+    """
+
     patches: list[str]
     pka_values: dict[str, float] = field(default_factory=dict)
     reference_patch: str | None = None
@@ -159,9 +183,9 @@ class PatchConfig:
                 raise FileNotFoundError(
                     f"Ligand patch file not found: {patch_file}"
                 )
-            if not ligand_def.patches:
+            if not ligand_def.patches and not ligand_def.sites:
                 raise ValueError(
-                    f"Ligand {ligand_def.resname}: must specify at least one patch"
+                    f"Ligand {ligand_def.resname}: must specify patches or sites"
                 )
 
 
@@ -192,6 +216,8 @@ class PatchParser:
         self.default_patches: list[str] = []
         # Maps resname -> reference_patch name (None means use default RESNAME+"O")
         self.reference_patches: dict[str, str | None] = {}
+        # Maps resname -> list of site_keys for multi-site ligands
+        self.site_keys: dict[str, list[str]] = {}
 
         self._load_patches()
         self._load_topology()
@@ -314,24 +340,87 @@ class PatchParser:
         This allows adding titratable ligands with custom patch files
         to the patching workflow.
 
-        The function automatically detects atoms that are deleted by patches
-        (e.g., DELETE ATOM H36) and includes them in the REPLICATE selection
-        so they exist in the reference state.
+        Supports two modes:
+        - Single-site: ligand_def.patches lists all patches for one MSLD site.
+        - Multi-site: ligand_def.sites defines independent titratable sites,
+          each registered under a site_key (e.g., "FOL_1", "FOL_2").
 
         Args:
-            ligand_def: LigandPatchDef containing resname, patch_file, and patches.
+            ligand_def: LigandPatchDef containing resname, patch_file, and patches/sites.
         """
         resname = ligand_def.resname.upper()
         patch_file = Path(ligand_def.patch_file)
 
+        # Add to residues list (for structure search)
+        if resname not in self.residues:
+            self.residues.append(resname)
+
+        if ligand_def.sites:
+            self._register_multisite_ligand(resname, patch_file, ligand_def)
+        else:
+            self._register_singlesite_ligand(resname, patch_file, ligand_def)
+
+    def _register_multisite_ligand(
+        self, resname: str, patch_file: Path, ligand_def: LigandPatchDef
+    ) -> None:
+        """Register a multi-site ligand with independent titratable sites.
+
+        Each site gets a site_key (e.g., "FOL_1", "FOL_2") used as the
+        resname in titratable_list. Patches and atom_groups are registered
+        per site_key so _apply_patches() can process each site independently.
+        """
+        site_key_list: list[str] = []
+
+        for i, site in enumerate(ligand_def.sites):
+            site_key = f"{resname}_{i + 1}"
+            site_key_list.append(site_key)
+
+            # Parse atoms from patch file for this site's patches
+            all_patches = list(site.patches)
+            patch_atoms, patch_pka, deleted_atoms = self._parse_ligand_patch_file(
+                patch_file, all_patches
+            )
+
+            # Register patches under site_key
+            self.patches[site_key] = [p.upper() for p in site.patches]
+
+            # Collect all atoms for this site's REPLICATE selection
+            all_atoms: set[str] = set()
+
+            for patch in site.patches:
+                patch_upper = patch.upper()
+                atoms = patch_atoms.get(patch_upper, [])
+                self.atom_groups[patch_upper] = atoms
+                all_atoms.update(atoms)
+
+                del_atoms = deleted_atoms.get(patch_upper, [])
+                all_atoms.update(del_atoms)
+
+                # Set pKa (user-provided takes precedence over auto-detected)
+                if patch in site.pka_values:
+                    self.pka[patch_upper] = str(site.pka_values[patch])
+                elif patch_upper in patch_pka:
+                    self.pka[patch_upper] = patch_pka[patch_upper]
+
+            self.atom_groups[site_key] = list(all_atoms)
+
+            if site.reference_patch:
+                self.reference_patches[site_key] = site.reference_patch.upper()
+
+            print(f"Registered site {site_key} with patches: {self.patches[site_key]}")
+            print(f"  Atoms for REPLICATE: {self.atom_groups[site_key]}")
+
+        self.site_keys[resname] = site_key_list
+        print(f"Multi-site ligand {resname}: {len(site_key_list)} sites registered")
+
+    def _register_singlesite_ligand(
+        self, resname: str, patch_file: Path, ligand_def: LigandPatchDef
+    ) -> None:
+        """Register a single-site ligand (original behavior)."""
         # Parse all patches to get atoms, pKa values, and deleted atoms
         patch_atoms, patch_pka, deleted_atoms = self._parse_ligand_patch_file(
             patch_file, list(ligand_def.patches)
         )
-
-        # Add to residues list
-        if resname not in self.residues:
-            self.residues.append(resname)
 
         # Set patches for this residue (only alternates, reference is auto-generated)
         self.patches[resname] = [patch.upper() for patch in ligand_def.patches]
@@ -347,7 +436,6 @@ class PatchParser:
             all_atoms.update(atoms)
 
             # Include deleted atoms in the reference state
-            # These must exist for the DELETE command to work
             del_atoms = deleted_atoms.get(patch_upper, [])
             all_atoms.update(del_atoms)
 
@@ -752,7 +840,13 @@ def patch_system(config: PatchConfig) -> Path:
         if resname == "CYS":
             residues, _ = _detect_disulfide_bonds(uni, residues)
 
-        titratable_list.extend(residues)
+        # Expand multi-site ligands into separate entries per site
+        if resname in patches_topology.site_keys:
+            for seg_id, resid, _ in residues:
+                for site_key in patches_topology.site_keys[resname]:
+                    titratable_list.append((seg_id, resid, site_key))
+        else:
+            titratable_list.extend(residues)
 
     # Process segments
     seg_ids = uni.universe["seg_id"].unique().tolist()
@@ -888,7 +982,12 @@ def _apply_patches(
     pycharmm.charmm_script("AUTO NOPAtch")
     idx = start_idx
 
-    for residue in titratable_list:
+    # Track patches processed at each (seg_id, resid) for multi-site ligands.
+    # When processing site 2+, these must be excluded from AUTO ANGLES to prevent
+    # re-creating cross-block angles for earlier sites whose REPLICATE was reset.
+    processed_patches: dict[tuple[str, int], list[str]] = {}
+
+    for res_idx, residue in enumerate(titratable_list):
         seg_id, resid, resname = residue
         idx += 1
 
@@ -913,6 +1012,25 @@ def _apply_patches(
         pycharmm.charmm_script(f"DELEte ATOMs {select_cmd}")
 
         # Process each patch
+        # Check if a reference_patch is defined (ligand with explicit reference state)
+        ref_patch = patches_topology.reference_patches.get(resname)
+        ref_pka = patches_topology.pka.get(ref_patch) if ref_patch else None
+
+        # Compute micro-pKa for UNEG states sharing ref_pka.
+        # User-provided pKa is the macro-pKa; when n tautomers share it,
+        # each micro-pKa = macro - log10(n) so the Boltzmann model
+        # reproduces the correct macro midpoint.
+        ref_micro_pka = ref_pka
+        if ref_patch and ref_pka:
+            import math
+
+            n_uneg = 1  # original state always gets UNEG
+            for p in patches_topology.patches[resname]:
+                if p.upper() != ref_patch and p not in patches_topology.pka:
+                    n_uneg += 1
+            if n_uneg > 1:
+                ref_micro_pka = f"{float(ref_pka) - math.log10(n_uneg):.2f}"
+
         j = 1
         for patch in [resname + "O"] + patches_topology.patches[resname]:
             cmd = f"! Working on {patch} {seg_id}:{resid}{j}:{resid}\n"
@@ -921,32 +1039,58 @@ def _apply_patches(
                 cmd += f"PATCH {patch} {resid}{j} {resid} SETUP\n"
 
                 atoms_str = " ".join(patches_topology.atom_groups[patch])
-                if len(patches_topology.atom_groups[patch]) - len(patches_topology.atom_groups[resname]) > 0:
+                if ref_patch and patch.upper() == ref_patch:
+                    # Explicit reference patch → NONE
+                    f.write(f"{seg_id},{resid},{patch},s{idx}s{j},{atoms_str},NONE\n")
+                elif patch not in patches_topology.pka:
+                    if ref_patch and ref_micro_pka:
+                        # Tautomer without pKa, but reference is defined → UNEG
+                        f.write(f"{seg_id},{resid},{patch},s{idx}s{j},{atoms_str},UNEG {ref_micro_pka}\n")
+                    else:
+                        f.write(f"{seg_id},{resid},{patch},s{idx}s{j},{atoms_str},NONE\n")
+                elif len(patches_topology.atom_groups[patch]) - len(patches_topology.atom_groups[resname]) > 0:
                     f.write(f"{seg_id},{resid},{patch},s{idx}s{j},{atoms_str},UNEG {patches_topology.pka[patch]}\n")
                 else:
                     f.write(f"{seg_id},{resid},{patch},s{idx}s{j},{atoms_str},UPOS {patches_topology.pka[patch]}\n")
             else:
                 atoms_str = " ".join(patches_topology.atom_groups[patch[:-1]])
-                f.write(f"{seg_id},{resid},{patch},s{idx}s{j},{atoms_str},NONE\n")
+                if ref_patch and ref_micro_pka:
+                    # Original state with reference defined → UNEG
+                    f.write(f"{seg_id},{resid},{patch},s{idx}s{j},{atoms_str},UNEG {ref_micro_pka}\n")
+                else:
+                    f.write(f"{seg_id},{resid},{patch},s{idx}s{j},{atoms_str},NONE\n")
 
             cmd += f"RENAMe RESName {patch} SELE segid {resid}{j} END\n"
             cmd += f"JOIN {seg_id} {resid}{j}\n"
             j += 1
             pycharmm.charmm_script(cmd)
 
-        # Finalize residue
-        pycharmm.charmm_script(f"AUTO ANGLES DIHEDRALS sele segid {seg_id} .and. resid {resid} end")
-        pycharmm.charmm_script(f"IC PARAM sele segid {seg_id} .and. resid {resid} end")
-        pycharmm.charmm_script(f"IC FILL PRESERVE sele segid {seg_id} .and. resid {resid} end")
+        # Build AUTO ANGLES selection, excluding patches from previously processed
+        # sites at the same (seg_id, resid). Without exclusion, AUTO ANGLES
+        # re-creates cross-block angles for earlier sites whose REPLICATE was reset.
+        key = (seg_id, resid)
+        prev_patches = processed_patches.get(key, [])
+        if prev_patches:
+            exclude = " .or. ".join([f"resname {p}" for p in prev_patches])
+            auto_sel = f"sele segid {seg_id} .and. resid {resid} .and. .not. ({exclude}) end"
+        else:
+            auto_sel = f"sele segid {seg_id} .and. resid {resid} end"
+
+        pycharmm.charmm_script(f"AUTO ANGLES DIHEDRALS {auto_sel}")
+        pycharmm.charmm_script(f"IC PARAM {auto_sel}")
+        pycharmm.charmm_script(f"IC FILL PRESERVE {auto_sel}")
         pycharmm.charmm_script("REPLIcate RESEt")
 
-        # Delete connections between different patches
+        # Delete connections between different patches within this site
         patches = [resname + "O"] + patches_topology.patches[resname]
         for pair in itertools.combinations(patches, 2):
             pycharmm.charmm_script(
                 f"DELETE CONN ATOMs SELEct segid {seg_id} .and. resid {resid} .and. resname {pair[0]} END "
                 f"SELEct segid {seg_id} .and. resid {resid} .and. resname {pair[1]} END"
             )
+
+        # Track this site's patches for future exclusion
+        processed_patches.setdefault(key, []).extend(patches)
 
     return idx
 

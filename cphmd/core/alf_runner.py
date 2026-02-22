@@ -1909,6 +1909,12 @@ class ALFSimulation:
                     self.config.temperature,
                 )
 
+                # Compute per-site pKa shift for theoretical HH curves
+                hh_pka_shift = {
+                    site_id: cphmd_params.effective_pH - site_params.pH0
+                    for site_id, site_params in cphmd_params.sites.items()
+                }
+
                 generate_hh_analysis(
                     run_idx=run_idx,
                     data_dir=Path("data"),
@@ -1918,6 +1924,7 @@ class ALFSimulation:
                     nreps=self.config.nreps,
                     output_dir=Path(self.config.input_folder) / "plots",
                     ncentral=self.state.alf_info.get("ncentral", self.config.nreps // 2),
+                    pka_shift=hh_pka_shift,
                 )
 
             if not confirmation:

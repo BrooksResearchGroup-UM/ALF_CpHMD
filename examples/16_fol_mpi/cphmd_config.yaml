@@ -1,0 +1,85 @@
+# Folate (FOL) Two-Site CpHMD Configuration — MPI Multi-GPU
+#
+# Same system as 15_fol_water but launched with mpirun for multi-GPU
+# parallel replica simulation with CpHMD pH coupling enabled.
+# Each MPI rank runs one replica on its own GPU; nreps is auto-detected
+# from the MPI communicator size.
+#
+# nsubs=[3,3] — two independent MSLD sites with cross-site x/s coupling
+#
+# Site 1 (alpha-carboxyl): C, O, OXT — proton HXT, pKa ~3.5
+#   Reference = protonated, FOLA_W = tautomer, FOLA_U = deprotonated
+# Site 2 (gamma-carboxyl): CD, OE1, OE2 — proton HE2, pKa ~4.6
+#   Reference = protonated, FOLG_W = tautomer, FOLG_U = deprotonated
+
+solvation:
+  input_file: pdb/folpp
+  output_dir: solvated
+  crystal_type: OCTAHEDRAL
+  padding: 10.0
+  salt_concentration: 0.10
+  extra_files:
+    - toppar/folpp.cgenff.rtf
+    - toppar/folpp.cgenff.prm
+
+patch:
+  input_folder: solvated
+  output_folder: solvated/prep
+  structure_file: solvated
+  hmr: true
+  selected_residues: []
+  extra_files:
+    - toppar/folpp.cgenff.rtf
+    - toppar/folpp.cgenff.prm
+    - toppar/fol_titratable.str
+  ligand_patches:
+    - resname: FOL
+      patch_file: toppar/fol_titratable.str
+      sites:
+        - patches: [FOLA_W, FOLA_U]
+          pka_values: {FOLA_U: 3.5}
+          reference_patch: FOLA_U
+        - patches: [FOLG_W, FOLG_U]
+          pka_values: {FOLG_U: 4.6}
+          reference_patch: FOLG_U
+
+alf:
+  input_folder: solvated
+  temperature: 298.15
+  hmr: true
+  pH: true
+  start: 1
+  end: 200
+  lambda_mass: 7
+  lambda_fbeta: 7
+  use_gshift: true
+  bias_guess: true
+  use_presets: false
+  auto_phase_switch: true
+  auto_stop: true
+  restrain_hydrogens: false
+  cleanup: false
+  g_imp_bins: [20, 32, 32]
+  extra_files:
+    - toppar/folpp.cgenff.rtf
+    - toppar/folpp.cgenff.prm
+    - toppar/fol_titratable.str
+  replica_exchange:
+    enabled: true
+    exchange_freq: 1000
+  phase1_cutoffs:
+    cutb: 5.0
+    cutc: 20.0
+    cutx: 1.0
+    cuts: 0.5
+  phase2_cutoffs:
+    cutb: 2.0
+    cutc: 8.0
+    cutx: 2.0
+    cuts: 1.0
+  phase3_cutoffs:
+    cutb: 0.1
+    cutc: 0.5
+    cutx: 0.2
+    cuts: 0.1
+  phase2_repeats: 1
