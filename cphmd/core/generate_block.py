@@ -41,9 +41,12 @@ class BlockGeneratorConfig:
     include_hydrogens: bool = False
     electrostatics: str = "pmeex"
     temperature: float = 298.15
+    pH: float = 7.0
     variables_dir: str = "variables"
     lambda_mass: float = 12.0    # Lambda mass in amu·Å² (BIMLAM)
     lambda_fbeta: float = 5.0    # Lambda Langevin friction in ps⁻¹ (BIBLAM)
+    chi_offset: float | None = None   # Sigmoid offset for LDBV class 8
+    omega_decay: float | None = None  # Exponential decay for LDBV class 10
 
     def __post_init__(self):
         self.input_folder = Path(self.input_folder)
@@ -133,6 +136,7 @@ def _generate_block_str(
     lambda_fbeta: float = 5.0,
     chi_offset: float | None = None,
     omega_decay: float | None = None,
+    pH: float = 7.0,
 ) -> str:
     """Generate MSLD BLOCK command string."""
     from .bias_constants import derive_bias_constants
@@ -199,19 +203,14 @@ def _generate_block_str(
 
             # LDIN statement
             patch_num = patch_idx + 1
-            lam_key = f"lams1s{patch_num}"
+            lam_key = f"lams{site_counter}s{patch_num}"
             lam_bias = var_df.get(lam_key, 0.0)
 
-            if patch_idx == 0:
-                ldin_lines.append(
-                    f"LDIN {block_count:<6} {round(1/num_patches, 2):<6} {0.0:<6} "
-                    f"{lambda_mass:<7} {lam_bias:>8} {lambda_fbeta:>7} {'NONE':>12}"
-                )
-            else:
-                ldin_lines.append(
-                    f"LDIN {block_count:<6} {round(1/num_patches, 2):<6} {0.0:<6} "
-                    f"{lambda_mass:<7} {lam_bias:>8} {lambda_fbeta:>7} {utag:>12}"
-                )
+            tag = utag if patch_idx > 0 else row.get("TAG", "NONE")
+            ldin_lines.append(
+                f"LDIN {block_count:<6} {round(1/num_patches, 2):<6} {0.0:<6} "
+                f"{lambda_mass:<7} {lam_bias:>8} {lambda_fbeta:>7} {tag:>12}"
+            )
 
         # Generate exclusions for this site
         site_blocks = list(range(site_start_block, block_count + 1))
@@ -305,7 +304,7 @@ def _generate_block_str(
     output.append("!------------------------------------------")
     output.append("!Setup initial pH from PHMD")
     output.append("!------------------------------------------\n")
-    output.append("phmd pH 7\n")
+    output.append(f"phmd pH {pH}\n")
 
     output.append("!------------------------------------------")
     output.append("!Soft Core Potential")
@@ -495,6 +494,9 @@ def generate_block_files(config: BlockGeneratorConfig) -> BlockGeneratorResult:
         config.electrostatics,
         lambda_mass=config.lambda_mass,
         lambda_fbeta=config.lambda_fbeta,
+        chi_offset=config.chi_offset,
+        omega_decay=config.omega_decay,
+        pH=config.pH,
     )
 
     block_file = config.input_folder / "prep" / "block.str"
@@ -555,6 +557,14 @@ def main():
     parser.add_argument(
         "-v", "--variables-dir", default="variables", help="Variables directory"
     )
+    parser.add_argument(
+        "--chi-offset", type=float, default=None,
+        help="Sigmoid offset for LDBV class 8 REF (default: derived from fnex)"
+    )
+    parser.add_argument(
+        "--omega-decay", type=float, default=None,
+        help="Exponential decay for LDBV class 10 REF (default: derived from fnex)"
+    )
 
     args = parser.parse_args()
 
@@ -566,6 +576,8 @@ def main():
             electrostatics=args.electrostatics,
             temperature=args.temperature,
             variables_dir=args.variables_dir,
+            chi_offset=args.chi_offset,
+            omega_decay=args.omega_decay,
         )
 
         result = generate_block_files(config)

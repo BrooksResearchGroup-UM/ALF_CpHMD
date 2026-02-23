@@ -326,6 +326,12 @@ class BiasAnalyzer:
                 if is_distributed:
                     # Distributed: ALL ranks must enter _run_wham together
                     # (MPI collectives inside require all ranks to participate).
+                    # Only WHAM supports distributed mode; warn if user expected otherwise.
+                    if method != "wham" and is_rank0:
+                        logger.warning(
+                            "analysis_method='%s' is not supported in distributed MPI mode; "
+                            "falling back to WHAM", method
+                        )
                     # Log redirect must not prevent entry — open log defensively.
                     _log_f = None
                     _redirect_ctx = None

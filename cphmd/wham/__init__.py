@@ -1548,12 +1548,9 @@ def run_wham_distributed_from_packed(
     C_local = C_out[: dim * dim].copy()
     V_local = V_out[:dim].copy()
 
-    if rank == 0:
-        C_global = np.zeros_like(C_local)
-        V_global = np.zeros_like(V_local)
-    else:
-        C_global = None
-        V_global = None
+    # Use empty arrays (not None) on non-root for portability across mpi4py versions
+    C_global = np.zeros_like(C_local) if rank == 0 else np.empty_like(C_local)
+    V_global = np.zeros_like(V_local) if rank == 0 else np.empty_like(V_local)
 
     comm.Reduce(C_local, C_global, op=MPI.SUM, root=0)
     comm.Reduce(V_local, V_global, op=MPI.SUM, root=0)
@@ -2239,6 +2236,7 @@ def run_lmalf_from_memory(
         ens_ptr = ctypes.POINTER(ctypes.c_double)()  # NULL
 
     # Previous coupling parameters
+    nblocks_sq = 0
     if x_prev is not None:
         x_flat = np.ascontiguousarray(x_prev.ravel(), dtype=np.float64)
         x_ptr = x_flat.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
@@ -2246,11 +2244,12 @@ def run_lmalf_from_memory(
     else:
         x_flat = None  # noqa: F841
         x_ptr = ctypes.POINTER(ctypes.c_double)()  # NULL
-        nblocks_sq = 0
 
     if s_prev is not None:
         s_flat = np.ascontiguousarray(s_prev.ravel(), dtype=np.float64)
         s_ptr = s_flat.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+        if nblocks_sq == 0:
+            nblocks_sq = s_flat.size
     else:
         s_flat = None  # noqa: F841
         s_ptr = ctypes.POINTER(ctypes.c_double)()  # NULL

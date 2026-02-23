@@ -1275,7 +1275,12 @@ class ALFSimulation:
 
                 # Redirect output to log file for confirmation repeat
                 self._redirect_output(run_idx, k, replica_idx)
-                self._run_dynamics(run_idx, letter, k, replica_idx)
+                # Use exchange dynamics when exchanger is active so that
+                # confirmation produces seg*.lmd files matching _alf_analysis glob
+                if self._exchanger is not None:
+                    self._run_dynamics_with_exchange(run_idx, letter, k, replica_idx)
+                else:
+                    self._run_dynamics(run_idx, letter, k, replica_idx)
                 self._return_output()
 
             self._comm.Barrier()
@@ -1455,16 +1460,23 @@ class ALFSimulation:
         prev_res = self.config.input_folder / f"run{prev_run}" / "res"
         sim_type = "flat" if self.state.phase in (1, 2) else "prod"
 
-        # Look for segmented restart files from source_k of previous run
-        seg_pattern = str(prev_res / f"{sim_type}.{source_k}.{replica_idx}.seg*.rst")
-        seg_files = sorted(glob_mod.glob(seg_pattern))
-        if seg_files:
-            return Path(seg_files[-1])
+        # Try preferred pattern first, then alternate for phase transitions
+        # (e.g., Phase 2→3: current phase=3→"prod", but prev run used "flat")
+        sim_types = [sim_type]
+        if sim_type == "prod":
+            sim_types.append("flat")
 
-        # Fallback: non-segmented restart
-        non_seg = prev_res / f"{sim_type}.{source_k}.{replica_idx}.rst"
-        if non_seg.exists():
-            return non_seg
+        for stype in sim_types:
+            # Look for segmented restart files from source_k of previous run
+            seg_pattern = str(prev_res / f"{stype}.{source_k}.{replica_idx}.seg*.rst")
+            seg_files = sorted(glob_mod.glob(seg_pattern))
+            if seg_files:
+                return Path(seg_files[-1])
+
+            # Fallback: non-segmented restart
+            non_seg = prev_res / f"{stype}.{source_k}.{replica_idx}.rst"
+            if non_seg.exists():
+                return non_seg
 
         return None
 

@@ -53,6 +53,8 @@ class BiasSearchConfig:
     verbose: bool = False
     plot: bool = True
     output_dir: str = "variables"
+    min_run: int | None = None  # Only consider analysis folders >= this run number
+    max_run: int | None = None  # Only consider analysis folders <= this run number
 
     def __post_init__(self):
         self.input_folder = Path(self.input_folder)
@@ -85,13 +87,28 @@ class BiasSearchResult:
     all_populations: np.ndarray
 
 
-def _find_analysis_folders(input_folder: Path) -> list[str]:
-    """Find valid analysis folders with data."""
+def _find_analysis_folders(
+    input_folder: Path,
+    min_run: int | None = None,
+    max_run: int | None = None,
+) -> list[str]:
+    """Find valid analysis folders with data.
+
+    Args:
+        input_folder: Path to simulation directory
+        min_run: Only include folders with run number >= min_run
+        max_run: Only include folders with run number <= max_run
+    """
     folders = []
     for f in os.listdir(input_folder):
         if "analysis" in f:
             suffix = f.split("analysis")[1]
             if suffix.isdigit():
+                run_num = int(suffix)
+                if min_run is not None and run_num < min_run:
+                    continue
+                if max_run is not None and run_num > max_run:
+                    continue
                 folder_path = input_folder / f
                 if (folder_path / "data").exists():
                     folders.append(f)
@@ -200,25 +217,21 @@ def _update_variables_file(
 ) -> None:
     """Update variables file with bias adjustments."""
     new_lines = []
+    adj_idx = 0
 
     with open(src_file, "r") as f:
         for line in f:
-            if "lams1" in line:
-                match = re.match(
-                    r"^set\s+(lams1s\d+)\s*=\s*([-+]?\d*\.?\d+)", line.strip()
-                )
-                if match:
-                    var_name, number = match.groups()
-                    # Extract index from variable name (lams1s1 -> 0, lams1s2 -> 1, etc.)
-                    try:
-                        index = int(var_name.replace("lams1s", "")) - 1
-                        if 0 <= index < len(adjustments):
-                            old_val = float(number)
-                            new_val = np.round(old_val + adjustments[index], 3)
-                            new_lines.append(f"set {var_name} = {new_val:>8.3f}\n")
-                            continue
-                    except (ValueError, IndexError):
-                        pass
+            match = re.match(
+                r"^set\s+(lams\d+s\d+)\s*=\s*([-+]?\d*\.?\d+)", line.strip()
+            )
+            if match:
+                var_name, number = match.groups()
+                if adj_idx < len(adjustments):
+                    old_val = float(number)
+                    new_val = np.round(old_val + adjustments[adj_idx], 3)
+                    new_lines.append(f"set {var_name} = {new_val:>8.3f}\n")
+                    adj_idx += 1
+                    continue
             new_lines.append(line)
 
     with open(dst_file, "w") as f:
@@ -287,7 +300,7 @@ def run_bias_search(config: BiasSearchConfig) -> BiasSearchResult:
     input_folder = config.input_folder
 
     # Find analysis folders
-    folders = _find_analysis_folders(input_folder)
+    folders = _find_analysis_folders(input_folder, config.min_run, config.max_run)
     if not folders:
         raise ValueError(
             f"No valid analysis folders found in {input_folder}. "
@@ -457,6 +470,18 @@ def main():
         default="variables",
         help="Output directory for variables file (default: variables)",
     )
+    parser.add_argument(
+        "--min-run",
+        type=int,
+        default=None,
+        help="Only consider analysis folders with run number >= this value",
+    )
+    parser.add_argument(
+        "--max-run",
+        type=int,
+        default=None,
+        help="Only consider analysis folders with run number <= this value",
+    )
 
     args = parser.parse_args()
 
@@ -482,6 +507,8 @@ def main():
             verbose=args.verbose,
             plot=not args.no_plot,
             output_dir=args.output_dir,
+            min_run=args.min_run,
+            max_run=args.max_run,
         )
 
         result = run_bias_search(config)

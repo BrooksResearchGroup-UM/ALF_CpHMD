@@ -713,7 +713,7 @@ def _compute_free_energy(
     # krest/cutlist^2 acts as a harmonic restraint against zero change,
     # preventing ill-conditioning and bounding the solution magnitude.
     for i in range(n0):
-        if param_active[i]:
+        if param_active[i] and cutlist[i] != 0.0:
             C[i, i] += krest * cutlist[i] ** -2
 
     # Ensure no zero diagonal elements (for profile terms beyond n0)
@@ -723,7 +723,7 @@ def _compute_free_energy(
 
     # Add harmonic restraint to x and s cross terms (active params only)
     for i in range(n0):
-        if param_active[i]:
+        if param_active[i] and cutlist[i] != 0.0:
             V[i] += (krest * cutlist[i] ** -2) * reglist[i]
 
     # Solve linear system: C @ coeff = V
