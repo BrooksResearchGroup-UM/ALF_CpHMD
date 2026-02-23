@@ -113,7 +113,18 @@ class DynamicsRunner:
                 read.psf_card(str(psf_file))
             settings.set_bomb_level(0)
 
-            if self.state.patch_info is not None:
+            # Pre-initialize BLOCK so CHARMM sets qmld=true before MAKINB runs.
+            # Without this, IATMXB defaults to 8 and systems with many MSLD
+            # substates overflow the per-atom bond array (e.g. nsubs=[9] gives
+            # 11 bonds on connecting atoms).  The real BLOCK setup happens later
+            # in build_block_commands().
+            nblocks = self.state.alf_info.get("nblocks", 0) if self.state.alf_info else 0
+            if nblocks > 0:
+                import pycharmm.lingo as lingo
+                lingo.charmm_script(f"BLOCK {nblocks + 1}\nEND")  # +1 for environment block
+
+            if (self.state.patch_info is not None
+                    and self.config.elec_type == "pmeex"):
                 define_selections(self.state.patch_info)
 
             self.state.structure_loaded = True
@@ -127,7 +138,7 @@ class DynamicsRunner:
         if run_idx > 5:
             self.state.restart_run = random.randint(run_idx - 5, run_idx - 1)
         else:
-            self.state.restart_run = 1
+            self.state.restart_run = 0
 
         box_params = BoxParameters.from_file(prep_dir / "box.dat")
         self.state.crystal_type = box_params.crystal_type
@@ -143,7 +154,7 @@ class DynamicsRunner:
 
         read.coor_card(str(crd_file))
 
-        if self.state.restart_run != 1:
+        if self.state.restart_run > 0:
             restart_candidates = [
                 f"run{self.state.restart_run}/prod.{k}.{replica_idx}.crd",
                 f"run{self.state.restart_run}/prod.crd{letter}",
@@ -207,7 +218,7 @@ class DynamicsRunner:
         if run_idx > 5:
             self.state.restart_run = random.randint(run_idx - 5, run_idx - 1)
         else:
-            self.state.restart_run = 1
+            self.state.restart_run = 0
 
         var_file = self.config.input_folder / f"variables{run_idx}.inp"
         if not var_file.exists():
@@ -246,7 +257,7 @@ class DynamicsRunner:
         if min_crd.exists():
             pycharmm_read.coor_card(str(min_crd))
 
-        if self.state.restart_run and self.state.restart_run != 1:
+        if self.state.restart_run and self.state.restart_run > 0:
             restart_candidates = [
                 f"run{self.state.restart_run}/prod.{k}.{replica_idx}.crd",
                 f"run{self.state.restart_run}/prod.crd{letter}",

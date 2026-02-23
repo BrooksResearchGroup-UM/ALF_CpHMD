@@ -122,7 +122,7 @@ def read_lambda_binary(filepath: str | Path) -> tuple[np.ndarray, LambdaFileMeta
         Lambda = np.zeros((0, nblocks - 1))
 
     # Calculate timestamps
-    timestart = npriv * delta_t * nsavl
+    timestart = npriv * delta_t
     timestep = nsavl * delta_t
     timestamps = timestart + np.arange(len(Lambda)) * timestep
 

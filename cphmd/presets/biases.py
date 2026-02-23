@@ -530,7 +530,7 @@ def write_preset_variables(
 
     # Metadata
     lines.extend([
-        f'set sysname = "{residue.lower()}',
+        f'set sysname = "{residue.lower()}"',
         "trim sysname from 2",
         "set nnodes = 1",
         f"set nreps = {nreps}",

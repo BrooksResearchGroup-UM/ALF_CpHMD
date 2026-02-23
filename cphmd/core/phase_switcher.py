@@ -1319,7 +1319,6 @@ def check_phase_transition(
     mask = lambda_data > config.lambda_threshold
     col_fracs = mask.mean(axis=0)
     spread = float(np.max(col_fracs) - np.min(col_fracs))
-    min_sample_count = int(mask.sum(axis=0).min())
 
     # Check if CpHMD parameters provided for pKa convergence
     cphmd_params_available = all([

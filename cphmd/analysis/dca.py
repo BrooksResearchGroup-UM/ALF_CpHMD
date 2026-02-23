@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from cphmd.core.bias_constants import OMEGA_DECAY, CHI_OFFSET
+from cphmd.core.bias_constants import CHI_OFFSET, OMEGA_DECAY
 
 if TYPE_CHECKING:
     from cphmd.core.alf_utils import ALFInfo
@@ -447,12 +447,12 @@ def _compute_bootstrap_moments(
     alf_info = ensure_alf_info(alf_info)
     nsubs = np.array(alf_info.nsubs) + 0  # Copy
 
-    # Add gap states
-    nsubs = nsubs + 1
-    nblocks = int(np.sum(nsubs))
+    # Compute nblocks BEFORE adding gap states (matches _compute_variance_dca)
+    nblocks = int(np.sum(nsubs)) + len(nsubs)
     nsites = len(nsubs)
 
-    nblocks += nsites
+    # Add gap states
+    nsubs = nsubs + 1
 
     # Load moment files for each trial
     m1 = np.zeros((1, nblocks, nf))
