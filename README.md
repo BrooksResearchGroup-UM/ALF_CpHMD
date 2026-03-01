@@ -1,5 +1,6 @@
 # CpHMD - Constant pH Molecular Dynamics with ALF
-** ARTICLE IN PREPARATION**
+**ARTICLE IN PREPARATION**
+
 A self-contained Python package for Constant pH Molecular Dynamics (CpHMD) using
 Adaptive Landscape Flattening (ALF) with pyCHARMM and BLaDE GPU acceleration.
 
