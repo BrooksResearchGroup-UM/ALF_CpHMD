@@ -47,12 +47,14 @@ class BiasAnalyzer:
         self._comm = None
         self._rank = 0
         self._nranks = 1
+        self._gpu_id = 0
 
-    def set_mpi(self, comm, rank: int, nranks: int) -> None:
+    def set_mpi(self, comm, rank: int, nranks: int, gpu_id: int = 0) -> None:
         """Set MPI communicator for distributed WHAM analysis."""
         self._comm = comm
         self._rank = rank
         self._nranks = nranks
+        self._gpu_id = gpu_id
 
     # ------------------------------------------------------------------
     # Data preparation
@@ -78,15 +80,22 @@ class BiasAnalyzer:
         Returns:
             nf: Number of frames for WHAM
         """
-        if phase == 1:
-            im5 = max(run_idx - 7, 1)
-            skipE = 1
-        elif phase == 2:
-            im5 = max(run_idx - 3, 1)
-            skipE = 1
+        # Number of analysis windows: config override or phase defaults (8, 4, 3)
+        defaults = {1: 8, 2: 4, 3: 3}
+        aw = getattr(self.config, "analysis_window", None)
+        if aw is None:
+            n_win = defaults[phase]
+        elif isinstance(aw, list):
+            n_win = aw[phase - 1]  # [phase1, phase2, phase3]
         else:
-            im5 = max(run_idx - 2, 1)
-            skipE = 1
+            n_win = int(aw)
+
+        im5 = max(run_idx - (n_win - 1), 1)
+        ask = getattr(self.config, "analysis_skip", 1)
+        if isinstance(ask, list):
+            skipE = ask[phase - 1]
+        else:
+            skipE = int(ask) if ask else 1
 
         if self._nranks > 1 and self._comm is not None:
             from cphmd.core.alf_utils import compute_packed_wham_data_distributed
@@ -179,6 +188,7 @@ class BiasAnalyzer:
                     cut_params[key] = float(override[key])
             print(f"  Manual cutoff overrides applied for Phase {phase}: "
                   + ", ".join(f"{k}={v}" for k, v in override.items()))
+
 
         return cut_params
 
@@ -431,6 +441,7 @@ class BiasAnalyzer:
         ed = ALFConfig.resolve_endpoint_weight(self.config.endpoint_decay, phase)
 
         wham_kwargs = {
+            "gpu_id": self._gpu_id,
             "nblocks": nblocks,
             "nf": nf,
             "temp": self.config.temperature,
@@ -523,6 +534,7 @@ class BiasAnalyzer:
                 ntriangle=ntriangle,
                 endpoint_weight=ew,
                 endpoint_decay=ed,
+                gpu_id=self._gpu_id,
             )
             get_free_energy5(alf_info, ms=ms, msprof=msprof, ntriangle=ntriangle, **cut_params)
 
@@ -581,6 +593,7 @@ class BiasAnalyzer:
             chi_offset_t=self.config.chi_offset_t,
             chi_offset_u=self.config.chi_offset_u,
             ntriangle=ntriangle,
+            gpu_id=self._gpu_id,
         )
         return True
 
@@ -667,6 +680,7 @@ class BiasAnalyzer:
             chi_offset_t=self.config.chi_offset_t,
             chi_offset_u=self.config.chi_offset_u,
             ntriangle=ntriangle,
+            gpu_id=self._gpu_id,
         )
         return True
 

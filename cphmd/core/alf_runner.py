@@ -42,6 +42,7 @@ from cphmd.core.phase_switcher import (
     PhaseTransitionConfig,
     load_lambda_data,
 )
+from cphmd.utils.charmm_path import qpath
 
 # Type aliases
 RestrainType = Literal["SCAT", "NOE"]
@@ -129,6 +130,16 @@ class ALFConfig:
     phase1_repeats: int | None = None
     phase2_repeats: int | None = None
     phase3_repeats: int | None = None
+
+    # Number of previous analysis windows to include in WHAM
+    # int = same for all phases; list[int] = per-phase [phase1, phase2, phase3]
+    # Default: Phase 1=8, Phase 2=4, Phase 3=3
+    analysis_window: int | list[int] | None = None
+
+    # Lambda frame subsampling for WHAM analysis (every Nth frame)
+    # int = same for all phases; list[int] = per-phase [phase1, phase2, phase3]
+    # Default 1 = all frames. Use 10 to reduce memory 10x for large windows.
+    analysis_skip: int | list[int] = 1
 
     # FNEX softmax constraint parameter (controls bias potential shape)
     fnex: float = 5.5
@@ -599,11 +610,11 @@ class ALFSimulation:
 
             suffix = file_path.suffix.lower()
             if suffix == ".rtf":
-                read.rtf(str(file_path), append=True)
+                read.rtf(qpath(file_path), append=True)
             elif suffix == ".prm":
-                read.prm(str(file_path), flex=True, append=True)
+                read.prm(qpath(file_path), flex=True, append=True)
             elif suffix == ".str":
-                lingo.charmm_script(f"stream {file_path}")
+                lingo.charmm_script(f"stream {qpath(file_path)}")
             else:
                 raise ValueError(f"Unknown file type: {file_path}")
 
@@ -950,7 +961,9 @@ class ALFSimulation:
         """Perform full initialization sequence."""
         self._init_mpi()
         # Wire MPI into bias analyzer for distributed WHAM
-        self._bias_analyzer.set_mpi(self._comm, self.state.rank, self.state.size)
+        self._bias_analyzer.set_mpi(
+            self._comm, self.state.rank, self.state.size, self.state.gpuid
+        )
         self._redirect_python_output()
 
         # Save real stderr for error reporting (sys.stdout is now redirected)

@@ -103,6 +103,7 @@ __device__ int g_2d_bins_y = 32; // Will be updated at runtime
 
 // Function declarations
 void auto_detect_profile_dimensions(struct_data *data);
+void validate_and_setup_gpu(int gpu_id);
 void update_device_dimensions(int bins_1d, int bins_2d_x, int bins_2d_y);
 
 // G_imp cache: read a file once, return cached data on subsequent lookups
@@ -245,8 +246,11 @@ __global__ void test_atomic_wrapper(double *ptr)
 }
 
 // GPU device validation and setup
-void validate_and_setup_gpu()
+void validate_and_setup_gpu(int gpu_id)
 {
+  // Explicitly select the requested GPU before any other CUDA call
+  CUDA_CHECK(cudaSetDevice(gpu_id));
+
   int deviceCount = 0;
   CUDA_CHECK(cudaGetDeviceCount(&deviceCount));
 
@@ -256,14 +260,14 @@ void validate_and_setup_gpu()
     exit(EXIT_FAILURE);
   }
 
-  // Get current device
+  // Verify device selection
   int device;
   CUDA_CHECK(cudaGetDevice(&device));
 
   cudaDeviceProp prop;
   CUDA_CHECK(cudaGetDeviceProperties(&prop, device));
 
-  fprintf(stderr, "Using GPU: %s (Device %d)\n", prop.name, device);
+  fprintf(stderr, "Using GPU: %s (Device %d, requested %d)\n", prop.name, device, gpu_id);
   fprintf(stderr, "Compute capability: %d.%d\n", prop.major, prop.minor);
   fprintf(stderr, "Memory: %.1f GB\n", prop.totalGlobalMem / (1024.0 * 1024.0 * 1024.0));
 
@@ -273,8 +277,7 @@ void validate_and_setup_gpu()
     fprintf(stderr, "Warning: GPU may not support double-precision atomics properly\n");
   }
 
-  // Set device flags for better reliability
-  CUDA_CHECK(cudaSetDeviceFlags(cudaDeviceScheduleBlockingSync));
+  // Note: cudaSetDeviceFlags removed — incompatible with BLaDE's pre-existing CUDA context
 
   // Test atomic operations
   double *test_ptr;
@@ -2195,6 +2198,7 @@ static struct_data *readdata_from_memory(
  * reads all data from host pointers instead of files.
  */
 extern "C" int wham_from_memory(
+    int gpu_id,
     int nf, double temp, int nts0, int nts1, int use_gshift,
     int *nsubs, int nsites, const char *g_imp_path,
     double chi_offset, double omega_scale, double cutlsum,
@@ -2203,7 +2207,7 @@ extern "C" int wham_from_memory(
     double *D_flat, int *sim_indices, int *frame_counts,
     int total_frames, double *gshift_flat)
 {
-  validate_and_setup_gpu();
+  validate_and_setup_gpu(gpu_id);
 
   struct_data *data = readdata_from_memory(
       nf, temp, nts0, nts1, use_gshift,
@@ -2241,7 +2245,7 @@ extern "C" int wham_from_memory(
   free(data->gimp_cache);
   free(data->profiles);
   free(data->params);
-  CUDA_CHECK(cudaDeviceReset());
+  CUDA_CHECK(cudaDeviceSynchronize());
 
   return 0;
 }
@@ -2257,6 +2261,7 @@ extern "C" int wham_from_memory(
  * @param nf_out  Output: number of f-values written (== nf == NF).
  */
 extern "C" int wham_iterate_from_memory(
+    int gpu_id,
     int nf, double temp, int nts0, int nts1, int use_gshift,
     int *nsubs, int nsites, const char *g_imp_path,
     double chi_offset, double omega_scale, double cutlsum,
@@ -2266,7 +2271,7 @@ extern "C" int wham_iterate_from_memory(
     int total_frames, double *gshift_flat,
     double *f_out, int *nf_out)
 {
-  validate_and_setup_gpu();
+  validate_and_setup_gpu(gpu_id);
 
   struct_data *data = readdata_from_memory(
       nf, temp, nts0, nts1, use_gshift,
@@ -2305,7 +2310,7 @@ extern "C" int wham_iterate_from_memory(
   free(data->gimp_cache);
   free(data->profiles);
   free(data->params);
-  CUDA_CHECK(cudaDeviceReset());
+  CUDA_CHECK(cudaDeviceSynchronize());
 
   return 0;
 }
@@ -2326,6 +2331,7 @@ extern "C" int wham_iterate_from_memory(
  * @param dim_out        Output: dimension of C/V (jN + iN)
  */
 extern "C" int wham_profiles_from_memory(
+    int gpu_id,
     int nf, double temp, int nts0, int nts1, int use_gshift,
     int *nsubs, int nsites, const char *g_imp_path,
     double chi_offset, double omega_scale, double cutlsum,
@@ -2337,7 +2343,7 @@ extern "C" int wham_profiles_from_memory(
     int profile_start, int profile_end,
     double *C_out, double *V_out, int *dim_out)
 {
-  validate_and_setup_gpu();
+  validate_and_setup_gpu(gpu_id);
 
   struct_data *data = readdata_from_memory(
       nf, temp, nts0, nts1, use_gshift,
@@ -2363,7 +2369,7 @@ extern "C" int wham_profiles_from_memory(
   if (f_size != data->NF)
   {
     fprintf(stderr, "Error: f_size=%d but NF=%d\n", f_size, data->NF);
-    CUDA_CHECK(cudaDeviceReset());
+    CUDA_CHECK(cudaDeviceSynchronize());
     return -2;
   }
 
@@ -2396,7 +2402,7 @@ extern "C" int wham_profiles_from_memory(
   free(data->gimp_cache);
   free(data->profiles);
   free(data->params);
-  CUDA_CHECK(cudaDeviceReset());
+  CUDA_CHECK(cudaDeviceSynchronize());
 
   return 0;
 }
@@ -2415,6 +2421,7 @@ extern "C" int wham_profiles_from_memory(
  * @param lnDenom_in     Pre-computed log-denominators [total_frames]
  */
 extern "C" int wham_profiles_slim_from_memory(
+    int gpu_id,
     int nf, double temp, int nts0, int nts1, int use_gshift,
     int *nsubs, int nsites, const char *g_imp_path,
     double chi_offset, double omega_scale, double cutlsum,
@@ -2428,7 +2435,7 @@ extern "C" int wham_profiles_slim_from_memory(
     int profile_start, int profile_end,
     double *C_out, double *V_out, int *dim_out)
 {
-  validate_and_setup_gpu();
+  validate_and_setup_gpu(gpu_id);
 
   struct_data *data = readdata_from_memory(
       nf, temp, nts0, nts1, use_gshift,
@@ -2453,7 +2460,7 @@ extern "C" int wham_profiles_slim_from_memory(
   if (f_size != data->NF)
   {
     fprintf(stderr, "Error: f_size=%d but NF=%d\n", f_size, data->NF);
-    CUDA_CHECK(cudaDeviceReset());
+    CUDA_CHECK(cudaDeviceSynchronize());
     return -2;
   }
 
@@ -2489,19 +2496,20 @@ extern "C" int wham_profiles_slim_from_memory(
   free(data->gimp_cache);
   free(data->profiles);
   free(data->params);
-  CUDA_CHECK(cudaDeviceReset());
+  CUDA_CHECK(cudaDeviceSynchronize());
 
   return 0;
 }
 
-extern "C" int wham(int arg1, double arg2, int arg3, int arg4, int use_gshift,
+extern "C" int wham(int gpu_id,
+                   int arg1, double arg2, int arg3, int arg4, int use_gshift,
                    int *nsubs, int nsites, const char *g_imp_path,
                    double chi_offset, double omega_scale, double cutlsum,
                    double chi_offset_t, double chi_offset_u, int ntriangle,
                    double endpoint_weight, double endpoint_decay)
 {
   // Initialize and validate GPU
-  validate_and_setup_gpu();
+  validate_and_setup_gpu(gpu_id);
 
   struct_data *data = readdata(arg1, arg2, arg3, arg4, use_gshift, nsubs, nsites, g_imp_path, ntriangle);
   if (data) {
@@ -2539,7 +2547,7 @@ extern "C" int wham(int arg1, double arg2, int arg3, int arg4, int use_gshift,
   free(data->gimp_cache);
   free(data->profiles);
   free(data->params);
-  CUDA_CHECK(cudaDeviceReset());
+  CUDA_CHECK(cudaDeviceSynchronize());
 
   return 0;
 }
@@ -3877,7 +3885,8 @@ void lmalf_finish(struct_lmalf *lm)
  * Output:
  *   - OUT.dat: Optimized bias parameters
  */
-extern "C" int lmalf(int nf, double temp, int ms, int msprof, int max_iter, double tolerance,
+extern "C" int lmalf(int gpu_id,
+                     int nf, double temp, int ms, int msprof, int max_iter, double tolerance,
                      int *nsubs, int nsites, const char *g_imp_path,
                      double fnex, double chi_offset, double omega_scale,
                      double chi_offset_t, double chi_offset_u, int ntriangle)
@@ -3889,7 +3898,7 @@ extern "C" int lmalf(int nf, double temp, int ms, int msprof, int max_iter, doub
   fprintf(stdout, "  chi_offset_t=%.6f, chi_offset_u=%.6f, ntriangle=%d\n", chi_offset_t, chi_offset_u, ntriangle);
 
   // Initialize and validate GPU
-  validate_and_setup_gpu();
+  validate_and_setup_gpu(gpu_id);
 
   struct_lmalf *lm = lmalf_setup(nf, temp, ms, msprof, nsubs, nsites, g_imp_path, ntriangle);
   if (lm) {
@@ -3920,7 +3929,7 @@ extern "C" int lmalf(int nf, double temp, int ms, int msprof, int max_iter, doub
   lmalf_finish(lm);
 
   CUDA_CHECK(cudaDeviceSynchronize());
-  CUDA_CHECK(cudaDeviceReset());
+  CUDA_CHECK(cudaDeviceSynchronize());
 
   return 0;
 }
@@ -4235,6 +4244,7 @@ static struct_lmalf *lmalf_setup_from_memory(
  * reads all data from host pointers instead of files.
  */
 extern "C" int lmalf_from_memory(
+    int gpu_id,
     int nf, double temp, int ms, int msprof, int max_iter, double tolerance,
     int *nsubs, int nsites, const char *g_imp_path,
     double fnex, double chi_offset, double omega_scale,
@@ -4249,7 +4259,7 @@ extern "C" int lmalf_from_memory(
   fprintf(stdout, "  chi_offset_t=%.6f, chi_offset_u=%.6f, ntriangle=%d\n", chi_offset_t, chi_offset_u, ntriangle);
   fprintf(stdout, "  n_frames=%d, nblocks_sq=%d\n", n_frames, nblocks_sq);
 
-  validate_and_setup_gpu();
+  validate_and_setup_gpu(gpu_id);
 
   struct_lmalf *lm = lmalf_setup_from_memory(
       nf, temp, ms, msprof,
@@ -4284,7 +4294,7 @@ extern "C" int lmalf_from_memory(
   lmalf_finish(lm);
 
   CUDA_CHECK(cudaDeviceSynchronize());
-  CUDA_CHECK(cudaDeviceReset());
+  CUDA_CHECK(cudaDeviceSynchronize());
 
   return 0;
 }
@@ -4295,6 +4305,7 @@ extern "C" int lmalf_from_memory(
  * Reuses lmalf_setup_from_memory + lmalf_run + lmalf_finish.
  */
 extern "C" int nonlinear_from_memory(
+    int gpu_id,
     int nf, double temp, int ms, int msprof, int max_iter, double tolerance,
     int *nsubs, int nsites,
     double fnex, double chi_offset, double omega_scale,
@@ -4310,7 +4321,7 @@ extern "C" int nonlinear_from_memory(
           chi_offset_t, chi_offset_u, ntriangle);
   fprintf(stdout, "  n_frames=%d, nblocks_sq=%d\n", n_frames, nblocks_sq);
 
-  validate_and_setup_gpu();
+  validate_and_setup_gpu(gpu_id);
 
   struct_lmalf *lm = lmalf_setup_from_memory(
       nf, temp, ms, msprof,
@@ -4342,7 +4353,7 @@ extern "C" int nonlinear_from_memory(
   lmalf_finish(lm);
 
   CUDA_CHECK(cudaDeviceSynchronize());
-  CUDA_CHECK(cudaDeviceReset());
+  CUDA_CHECK(cudaDeviceSynchronize());
 
   return 0;
 }
@@ -4387,6 +4398,7 @@ __global__ void compute_wham_weights(
  * @return 0 on success, negative on error
  */
 extern "C" int wham_compute_weights_from_memory(
+    int gpu_id,
     int nf, double temp, int nts0, int nts1, int use_gshift,
     int *nsubs, int nsites, const char *g_imp_path,
     double chi_offset, double omega_scale, double cutlsum,
@@ -4398,7 +4410,7 @@ extern "C" int wham_compute_weights_from_memory(
     double *f_out,
     int *nf_out)
 {
-  validate_and_setup_gpu();
+  validate_and_setup_gpu(gpu_id);
 
   struct_data *data = readdata_from_memory(
       nf, temp, nts0, nts1, use_gshift,
@@ -4453,7 +4465,7 @@ extern "C" int wham_compute_weights_from_memory(
   free(data->gimp_cache);
   free(data->profiles);
   free(data->params);
-  CUDA_CHECK(cudaDeviceReset());
+  CUDA_CHECK(cudaDeviceSynchronize());
 
   return 0;
 }

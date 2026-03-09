@@ -81,6 +81,7 @@ def _get_wham_lib() -> ctypes.CDLL:
 
     # Configure wham() function signature once
     lib.wham.argtypes = [
+        ctypes.c_int,                   # gpu_id
         ctypes.c_int,                   # nf
         ctypes.c_double,                # temp
         ctypes.c_int,                   # nts0
@@ -102,6 +103,7 @@ def _get_wham_lib() -> ctypes.CDLL:
 
     # Configure lmalf() function signature once
     lib.lmalf.argtypes = [
+        ctypes.c_int,                   # gpu_id
         ctypes.c_int,                   # nf
         ctypes.c_double,                # temp
         ctypes.c_int,                   # ms
@@ -122,6 +124,7 @@ def _get_wham_lib() -> ctypes.CDLL:
 
     # Configure wham_from_memory() function signature
     lib.wham_from_memory.argtypes = [
+        ctypes.c_int,                         # gpu_id
         ctypes.c_int,                         # nf
         ctypes.c_double,                      # temp
         ctypes.c_int,                         # nts0
@@ -148,6 +151,7 @@ def _get_wham_lib() -> ctypes.CDLL:
 
     # Configure wham_iterate_from_memory() function signature (Phase A: f-convergence)
     lib.wham_iterate_from_memory.argtypes = [
+        ctypes.c_int,                         # gpu_id
         ctypes.c_int,                         # nf
         ctypes.c_double,                      # temp
         ctypes.c_int,                         # nts0
@@ -176,6 +180,7 @@ def _get_wham_lib() -> ctypes.CDLL:
 
     # Configure wham_profiles_from_memory() function signature (Phase B: profile subset)
     lib.wham_profiles_from_memory.argtypes = [
+        ctypes.c_int,                         # gpu_id
         ctypes.c_int,                         # nf
         ctypes.c_double,                      # temp
         ctypes.c_int,                         # nts0
@@ -209,6 +214,7 @@ def _get_wham_lib() -> ctypes.CDLL:
 
     # Configure wham_profiles_slim_from_memory() (Phase B with slim D + pre-computed lnDenom)
     lib.wham_profiles_slim_from_memory.argtypes = [
+        ctypes.c_int,                         # gpu_id
         ctypes.c_int,                         # nf
         ctypes.c_double,                      # temp
         ctypes.c_int,                         # nts0
@@ -244,6 +250,7 @@ def _get_wham_lib() -> ctypes.CDLL:
 
     # Configure lmalf_from_memory() function signature
     lib.lmalf_from_memory.argtypes = [
+        ctypes.c_int,                         # gpu_id
         ctypes.c_int,                         # nf
         ctypes.c_double,                      # temp
         ctypes.c_int,                         # ms
@@ -270,6 +277,7 @@ def _get_wham_lib() -> ctypes.CDLL:
 
     # Configure nonlinear_from_memory() function signature (L-BFGS without profiles)
     lib.nonlinear_from_memory.argtypes = [
+        ctypes.c_int,                         # gpu_id
         ctypes.c_int,                         # nf
         ctypes.c_double,                      # temp
         ctypes.c_int,                         # ms
@@ -295,6 +303,7 @@ def _get_wham_lib() -> ctypes.CDLL:
 
     # Configure wham_compute_weights_from_memory() function signature
     lib.wham_compute_weights_from_memory.argtypes = [
+        ctypes.c_int,                         # gpu_id
         ctypes.c_int,                         # nf
         ctypes.c_double,                      # temp
         ctypes.c_int,                         # nts0
@@ -425,6 +434,7 @@ def run_wham(
     ntriangle: int = 5,
     endpoint_weight: float = 100.0,
     endpoint_decay: float = 2.0,
+    gpu_id: int = 0,
 ) -> None:
     """Run WHAM analysis using bundled GPU-accelerated library.
 
@@ -502,6 +512,7 @@ def run_wham(
     with _chdir_context(analysis_dir):
         with _redirect_c_output(log_path):
             result = lib.wham(
+                gpu_id,
                 nf, temp, nts0, nts1, int(use_gshift),
                 nsubs_ptr, nsites, g_imp_path_bytes,
                 constants.chi_offset, constants.omega_scale, cutlsum,
@@ -656,6 +667,7 @@ def run_wham_with_g_imp(
     nts1: int = 1,
     use_gshift: bool = False,
     force_recompute_g_imp: bool = False,
+    gpu_id: int = 0,
 ) -> None:
     """Run WHAM analysis with automatic G_imp preparation.
 
@@ -702,6 +714,7 @@ def run_wham_with_g_imp(
         g_imp_path=g_imp_dir,
         fnex=alf_info.fnex,
         cutlsum=alf_info.cutlsum,
+        gpu_id=gpu_id,
     )
 
 
@@ -722,6 +735,7 @@ def run_lmalf(
     chi_offset_t: float = 0.012,
     chi_offset_u: float = 0.012,
     ntriangle: int = 5,
+    gpu_id: int = 0,
 ) -> None:
     """Run LMALF (Likelihood Maximization ALF) analysis.
 
@@ -795,6 +809,7 @@ def run_lmalf(
     with _chdir_context(analysis_dir):
         with _redirect_c_output(log_path):
             result = lib.lmalf(
+                gpu_id,
                 nf, temp, ms, msprof, max_iter, tolerance,
                 nsubs_ptr, nsites, g_imp_path_bytes,
                 constants.fnex, constants.chi_offset, constants.omega_scale,
@@ -916,6 +931,7 @@ def run_wham_from_memory(
     ntriangle: int = 5,
     endpoint_weight: float = 100.0,
     endpoint_decay: float = 2.0,
+    gpu_id: int = 0,
 ) -> None:
     """Run WHAM analysis from in-memory numpy arrays (no file I/O for input).
 
@@ -996,6 +1012,7 @@ def run_wham_from_memory(
     with _chdir_context(out_path):
         with _redirect_c_output(log_path):
             result = lib.wham_from_memory(
+                gpu_id,
                 nf, temp, nts0, nts1, int(use_gshift),
                 nsubs_ptr, nsites, g_imp_path_bytes,
                 constants.chi_offset, constants.omega_scale, cutlsum,
@@ -1035,6 +1052,7 @@ def run_wham_from_packed(
     ntriangle: int = 5,
     endpoint_weight: float = 100.0,
     endpoint_decay: float = 2.0,
+    gpu_id: int = 0,
 ) -> None:
     """Run WHAM from pre-packed D_h data (no intermediate energy_matrix).
 
@@ -1094,6 +1112,7 @@ def run_wham_from_packed(
     with _chdir_context(out_path):
         with _redirect_c_output(log_path):
             result = lib.wham_from_memory(
+                gpu_id,
                 nf, temp, nts0, nts1, int(use_gshift),
                 nsubs_ptr, nsites, g_imp_path_bytes,
                 constants.chi_offset, constants.omega_scale, cutlsum,
@@ -1133,6 +1152,7 @@ def compute_weights_from_packed(
     ntriangle: int = 5,
     endpoint_weight: float = 100.0,
     endpoint_decay: float = 2.0,
+    gpu_id: int = 0,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Compute WHAM per-frame weights from pre-packed D_h data (GPU).
 
@@ -1203,6 +1223,7 @@ def compute_weights_from_packed(
     with _chdir_context(out_path):
         with _redirect_c_output(log_path):
             result = lib.wham_compute_weights_from_memory(
+                gpu_id,
                 nf, temp, nts0, nts1, int(use_gshift),
                 nsubs_ptr, nsites, g_imp_path_bytes,
                 constants.chi_offset, constants.omega_scale, cutlsum,
@@ -1293,6 +1314,7 @@ def run_wham_distributed_from_packed(
     ntriangle: int = 5,
     endpoint_weight: float = 100.0,
     endpoint_decay: float = 2.0,
+    gpu_id: int = 0,
 ) -> None:
     """Run distributed WHAM from pre-packed D_h data.
 
@@ -1331,6 +1353,7 @@ def run_wham_distributed_from_packed(
                 ntriangle=ntriangle,
                 endpoint_weight=endpoint_weight,
                 endpoint_decay=endpoint_decay,
+                gpu_id=gpu_id,
             )
         return
 
@@ -1381,6 +1404,7 @@ def run_wham_distributed_from_packed(
             with _chdir_context(out_path):
                 with _redirect_c_output(log_path):
                     result = lib.wham_iterate_from_memory(
+                        gpu_id,
                         nf, temp, nts0, nts1, int(use_gshift),
                         nsubs_ptr, nsites, g_imp_path_bytes,
                         constants.chi_offset, constants.omega_scale, cutlsum,
@@ -1514,6 +1538,7 @@ def run_wham_distributed_from_packed(
             with _chdir_context(out_path):
                 with _redirect_c_output(log_path):
                     result = lib.wham_profiles_slim_from_memory(
+                        gpu_id,
                         nf, temp, nts0, nts1, int(use_gshift),
                         nsubs_ptr, nsites, g_imp_path_bytes,
                         constants.chi_offset, constants.omega_scale, cutlsum,
@@ -1579,6 +1604,7 @@ def _prepare_wham_common_args(
     chi_offset_t: float,
     chi_offset_u: float,
     ntriangle: int,
+    gpu_id: int = 0,
 ) -> dict:
     """Prepare common arguments for distributed WHAM calls.
 
@@ -1623,6 +1649,7 @@ def _prepare_wham_common_args(
         "chi_offset_u": chi_offset_u,
         "ntriangle": ntriangle,
         "cutlsum": cutlsum,
+        "gpu_id": gpu_id,
     }
 
 
@@ -1649,6 +1676,7 @@ def run_wham_iterate(
     ntriangle: int = 5,
     endpoint_weight: float = 100.0,
     endpoint_decay: float = 2.0,
+    gpu_id: int = 0,
 ) -> np.ndarray:
     """Run WHAM Phase A: f-value convergence only.
 
@@ -1662,6 +1690,7 @@ def run_wham_iterate(
         lambda_arrays, energy_matrix, nblocks, nf, temp, nts0, nts1,
         use_gshift, nsubs, g_imp_path, gshift_data,
         fnex, cutlsum, chi_offset, omega_decay, chi_offset_t, chi_offset_u, ntriangle,
+        gpu_id=gpu_id,
     )
 
     # Prepare output directory (for f.dat written by iteratedata)
@@ -1689,6 +1718,7 @@ def run_wham_iterate(
     with _chdir_context(out_path):
         with _redirect_c_output(log_path):
             result = args["lib"].wham_iterate_from_memory(
+                args["gpu_id"],
                 nf, temp, nts0, nts1, int(use_gshift),
                 args["nsubs_ptr"], args["nsites"], args["g_imp_path_bytes"],
                 args["constants"].chi_offset, args["constants"].omega_scale, cutlsum,
@@ -1732,6 +1762,7 @@ def run_wham_profiles(
     ntriangle: int = 5,
     endpoint_weight: float = 100.0,
     endpoint_decay: float = 2.0,
+    gpu_id: int = 0,
 ) -> tuple[np.ndarray, np.ndarray, int]:
     """Run WHAM Phase B: compute profiles for a subset.
 
@@ -1752,6 +1783,7 @@ def run_wham_profiles(
         lambda_arrays, energy_matrix, nblocks, nf, temp, nts0, nts1,
         use_gshift, nsubs, g_imp_path, gshift_data,
         fnex, cutlsum, chi_offset, omega_decay, chi_offset_t, chi_offset_u, ntriangle,
+        gpu_id=gpu_id,
     )
 
     if output_dir is not None:
@@ -1790,6 +1822,7 @@ def run_wham_profiles(
     with _chdir_context(out_path):
         with _redirect_c_output(log_path):
             result = args["lib"].wham_profiles_from_memory(
+                args["gpu_id"],
                 nf, temp, nts0, nts1, int(use_gshift),
                 args["nsubs_ptr"], args["nsites"], args["g_imp_path_bytes"],
                 args["constants"].chi_offset, args["constants"].omega_scale, cutlsum,
@@ -1891,6 +1924,7 @@ def run_wham_distributed(
     ntriangle: int = 5,
     endpoint_weight: float = 100.0,
     endpoint_decay: float = 2.0,
+    gpu_id: int = 0,
 ) -> None:
     """Run WHAM with profile computation distributed across MPI ranks.
 
@@ -1939,6 +1973,7 @@ def run_wham_distributed(
                 ntriangle=ntriangle,
                 endpoint_weight=endpoint_weight,
                 endpoint_decay=endpoint_decay,
+                gpu_id=gpu_id,
             )
         return
 
@@ -1962,6 +1997,7 @@ def run_wham_distributed(
                 use_gshift, nsubs, g_imp_path, gshift_data,
                 fnex, cutlsum, chi_offset, omega_decay,
                 chi_offset_t, chi_offset_u, ntriangle,
+                gpu_id=gpu_id,
             )
 
             D_flat = packed["D_flat"]
@@ -1987,6 +2023,7 @@ def run_wham_distributed(
             with _chdir_context(out_path):
                 with _redirect_c_output(log_path):
                     result = packed["lib"].wham_iterate_from_memory(
+                        packed["gpu_id"],
                         nf, temp, nts0, nts1, int(use_gshift),
                         packed["nsubs_ptr"], packed["nsites"],
                         packed["g_imp_path_bytes"],
@@ -2122,6 +2159,7 @@ def run_wham_distributed(
             with _chdir_context(out_path):
                 with _redirect_c_output(log_path):
                     result = lib.wham_profiles_slim_from_memory(
+                        gpu_id,
                         nf, temp, nts0, nts1, int(use_gshift),
                         nsubs_ptr, nsites, g_imp_path_bytes,
                         constants.chi_offset, constants.omega_scale, cutlsum,
@@ -2188,6 +2226,7 @@ def run_lmalf_from_memory(
     output_dir: str | Path | None = None,
     log_file: str | Path | None = None,
     fnex: float = 5.5,
+    gpu_id: int = 0,
     chi_offset: float | None = None,
     omega_decay: float | None = None,
     chi_offset_t: float = 0.012,
@@ -2282,6 +2321,7 @@ def run_lmalf_from_memory(
     with _chdir_context(out_path):
         with _redirect_c_output(log_path):
             result = lib.lmalf_from_memory(
+                gpu_id,
                 nf, temp, ms, msprof, max_iter, tolerance,
                 nsubs_ptr, nsites, g_imp_path_bytes,
                 constants.fnex, constants.chi_offset, constants.omega_scale,
@@ -2320,6 +2360,7 @@ def run_nonlinear_from_memory(
     chi_offset_t: float = 0.012,
     chi_offset_u: float = 0.012,
     ntriangle: int = 5,
+    gpu_id: int = 0,
 ) -> None:
     """Run nonlinear L-BFGS analysis from in-memory numpy arrays.
 
@@ -2398,6 +2439,7 @@ def run_nonlinear_from_memory(
     with _chdir_context(out_path):
         with _redirect_c_output(log_path):
             result = lib.nonlinear_from_memory(
+                gpu_id,
                 nf, temp, ms, msprof, max_iter, tolerance,
                 nsubs_ptr, nsites,
                 constants.fnex, constants.chi_offset, constants.omega_scale,

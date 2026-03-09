@@ -235,6 +235,7 @@ extern "C" {
 #endif
 
 int wham_from_memory(
+    int gpu_id,
     int nf, double temp, int nts0, int nts1, int use_gshift,
     int *nsubs, int nsites, const char *g_imp_path,
     double chi_offset, double omega_scale, double cutlsum,
@@ -245,6 +246,7 @@ int wham_from_memory(
 
 // Distributed WHAM: Phase A — f-value convergence only (rank 0)
 int wham_iterate_from_memory(
+    int gpu_id,
     int nf, double temp, int nts0, int nts1, int use_gshift,
     int *nsubs, int nsites, const char *g_imp_path,
     double chi_offset, double omega_scale, double cutlsum,
@@ -256,6 +258,7 @@ int wham_iterate_from_memory(
 
 // Distributed WHAM: Phase B — profile computation for a subset (all ranks)
 int wham_profiles_from_memory(
+    int gpu_id,
     int nf, double temp, int nts0, int nts1, int use_gshift,
     int *nsubs, int nsites, const char *g_imp_path,
     double chi_offset, double omega_scale, double cutlsum,
@@ -269,6 +272,7 @@ int wham_profiles_from_memory(
 
 // Distributed WHAM: Phase B with slim D (no cross-energies, pre-computed lnDenom)
 int wham_profiles_slim_from_memory(
+    int gpu_id,
     int nf, double temp, int nts0, int nts1, int use_gshift,
     int *nsubs, int nsites, const char *g_imp_path,
     double chi_offset, double omega_scale, double cutlsum,
@@ -283,6 +287,7 @@ int wham_profiles_slim_from_memory(
     double *C_out, double *V_out, int *dim_out);
 
 int lmalf_from_memory(
+    int gpu_id,
     int nf, double temp, int ms, int msprof, int max_iter, double tolerance,
     int *nsubs, int nsites, const char *g_imp_path,
     double fnex, double chi_offset, double omega_scale,
@@ -291,6 +296,7 @@ int lmalf_from_memory(
     double *x_prev_flat, double *s_prev_flat, int nblocks_sq);
 
 int wham_compute_weights_from_memory(
+    int gpu_id,
     int nf, double temp, int nts0, int nts1, int use_gshift,
     int *nsubs, int nsites, const char *g_imp_path,
     double chi_offset, double omega_scale, double cutlsum,
@@ -303,6 +309,7 @@ int wham_compute_weights_from_memory(
     int *nf_out);
 
 int nonlinear_from_memory(
+    int gpu_id,
     int nf, double temp, int ms, int msprof, int max_iter, double tolerance,
     int *nsubs, int nsites,
     double fnex, double chi_offset, double omega_scale,
