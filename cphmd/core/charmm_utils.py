@@ -16,6 +16,7 @@ from pathlib import Path
 import pandas as pd
 
 from cphmd.core import ElecType, VdwType
+from cphmd.utils.charmm_path import qpath
 
 # pyCHARMM imports are deferred to function bodies so that mpi4py can
 # initialize MPI first (pyCHARMM also calls MPI_Init on import).
@@ -199,19 +200,19 @@ def read_topology_files(
 
     # Load RTF files
     if rtf_files:
-        read.rtf(str(toppar_dir / rtf_files[0]))
+        read.rtf(qpath(toppar_dir / rtf_files[0]))
         for f in rtf_files[1:]:
-            read.rtf(str(toppar_dir / f), append=True)
+            read.rtf(qpath(toppar_dir / f), append=True)
 
     # Load PRM files
     if prm_files:
-        read.prm(str(toppar_dir / prm_files[0]), flex=True)
+        read.prm(qpath(toppar_dir / prm_files[0]), flex=True)
         for f in prm_files[1:]:
-            read.prm(str(toppar_dir / f), flex=True, append=True)
+            read.prm(qpath(toppar_dir / f), flex=True, append=True)
 
     # Stream STR files
     for f in str_files:
-        lingo.charmm_script(f"stream {toppar_dir / f}")
+        lingo.charmm_script(f"stream {qpath(toppar_dir / f)}")
 
     # Restore settings
     settings.set_warn_level(5)
@@ -233,8 +234,8 @@ def read_structure(
         crd_file: Path to CRD file
     """
     import pycharmm.read as read
-    read.psf_card(str(psf_file))
-    read.coor_card(str(crd_file))
+    read.psf_card(qpath(psf_file))
+    read.coor_card(qpath(crd_file))
 
 
 def setup_crystal(

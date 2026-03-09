@@ -203,7 +203,7 @@ def _generate_block_str(
 
             # LDIN statement
             patch_num = patch_idx + 1
-            lam_key = f"lams{site_counter}s{patch_num}"
+            lam_key = f"lams1s{patch_num}"
             lam_bias = var_df.get(lam_key, 0.0)
 
             tag = utag if patch_idx > 0 else row.get("TAG", "NONE")

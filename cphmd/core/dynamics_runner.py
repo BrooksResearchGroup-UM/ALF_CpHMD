@@ -12,6 +12,8 @@ from pathlib import Path
 
 import numpy as np
 
+from cphmd.utils.charmm_path import qpath
+
 
 class DynamicsRunner:
     """Executes molecular dynamics using pyCHARMM with BLADE GPU acceleration.
@@ -45,7 +47,7 @@ class DynamicsRunner:
         log_path = run_dir / f"log.{k}.{replica_idx}.out"
 
         self._log_file = pycharmm.CharmmFile(
-            file_name=str(log_path),
+            file_name=qpath(log_path),
             file_unit=self.LOG_UNIT,
             read_only=False,
             formatted=True,
@@ -103,14 +105,14 @@ class DynamicsRunner:
                 psf_file = prep_dir / "system_hmr.psf"
                 if not psf_file.exists():
                     psf_file = prep_dir / "system.psf"
-                    read.psf_card(str(psf_file))
+                    read.psf_card(qpath(psf_file))
                     import pycharmm.psf as pycharmm_psf
                     pycharmm_psf.hmr(newpsf=str(prep_dir / "system_hmr.psf"))
                 else:
-                    read.psf_card(str(psf_file))
+                    read.psf_card(qpath(psf_file))
             else:
                 psf_file = prep_dir / "system.psf"
-                read.psf_card(str(psf_file))
+                read.psf_card(qpath(psf_file))
             settings.set_bomb_level(0)
 
             # Pre-initialize BLOCK so CHARMM sets qmld=true before MAKINB runs.
@@ -152,7 +154,7 @@ class DynamicsRunner:
         else:
             crd_file = prep_dir / "system.crd"
 
-        read.coor_card(str(crd_file))
+        read.coor_card(qpath(crd_file))
 
         if self.state.restart_run > 0:
             restart_candidates = [
@@ -163,7 +165,7 @@ class DynamicsRunner:
             for crd_name in restart_candidates:
                 crd_path = self.config.input_folder / crd_name
                 if crd_path.exists():
-                    read.coor_card(str(crd_path))
+                    read.coor_card(qpath(crd_path))
                     break
 
         fft_params = FFTParameters.from_file(prep_dir / "fft.dat")
@@ -223,7 +225,7 @@ class DynamicsRunner:
         var_file = self.config.input_folder / f"variables{run_idx}.inp"
         if not var_file.exists():
             raise FileNotFoundError(f"Variables file not found: {var_file}")
-        lingo.charmm_script(f"stream {var_file}")
+        lingo.charmm_script(f"stream {qpath(var_file)}")
 
         setup_script = prep_dir / self.config.legacy_setup_script
         script_text = setup_script.read_text()
@@ -244,7 +246,7 @@ class DynamicsRunner:
         processed_script.write_text(script_text)
 
         settings.set_bomb_level(-2)
-        lingo.charmm_script(f"stream {processed_script}")
+        lingo.charmm_script(f"stream {qpath(processed_script)}")
         settings.set_bomb_level(0)
 
         processed_script.unlink(missing_ok=True)
@@ -255,7 +257,7 @@ class DynamicsRunner:
 
         min_crd = prep_dir / "system_min.crd"
         if min_crd.exists():
-            pycharmm_read.coor_card(str(min_crd))
+            pycharmm_read.coor_card(qpath(min_crd))
 
         if self.state.restart_run and self.state.restart_run > 0:
             restart_candidates = [
@@ -266,7 +268,7 @@ class DynamicsRunner:
             for crd_name in restart_candidates:
                 crd_path = self.config.input_folder / crd_name
                 if crd_path.exists():
-                    pycharmm_read.coor_card(str(crd_path))
+                    pycharmm_read.coor_card(qpath(crd_path))
                     break
 
         nb_config = NonBondedConfig(
@@ -289,7 +291,7 @@ class DynamicsRunner:
         restraint_file = prep_dir / "restrains.str"
 
         if restraint_file.exists():
-            lingo.charmm_script(f"stream {restraint_file}")
+            lingo.charmm_script(f"stream {qpath(restraint_file)}")
             return
 
         if self.config.restrains:
@@ -569,11 +571,11 @@ class DynamicsRunner:
             dcd = None
             if nsavc > 0:
                 dcd_fn = str(dcd_dir / f"eq.{k}.{replica_idx}.dcd")
-                dcd = pycharmm.CharmmFile(file_name=dcd_fn, file_unit=dcd_unit,
+                dcd = pycharmm.CharmmFile(file_name=qpath(dcd_fn), file_unit=dcd_unit,
                                           read_only=False, formatted=False)
-            rst = pycharmm.CharmmFile(file_name=rst_fn, file_unit=rst_unit,
+            rst = pycharmm.CharmmFile(file_name=qpath(rst_fn), file_unit=rst_unit,
                                       read_only=False, formatted=True)
-            lmd = pycharmm.CharmmFile(file_name=lmd_fn, file_unit=lmd_unit,
+            lmd = pycharmm.CharmmFile(file_name=qpath(lmd_fn), file_unit=lmd_unit,
                                       read_only=False, formatted=False)
 
             # For k>0, restart from k=0's production restart to get
@@ -589,7 +591,7 @@ class DynamicsRunner:
                     dyn_param.update({"start": False, "restart": True,
                                       "iunrea": rpr_unit})
                     rpr = pycharmm.CharmmFile(
-                        file_name=str(k0_rst), file_unit=rpr_unit,
+                        file_name=qpath(k0_rst), file_unit=rpr_unit,
                         read_only=True, formatted=True,
                     )
 
@@ -646,17 +648,17 @@ class DynamicsRunner:
             elif rpr_fn is None:
                 raise RuntimeError(f"No restart file found for production run {run_idx}")
             else:
-                rpr = pycharmm.CharmmFile(file_name=rpr_fn, file_unit=rpr_unit,
+                rpr = pycharmm.CharmmFile(file_name=qpath(rpr_fn), file_unit=rpr_unit,
                                           read_only=True, formatted=True)
 
             dcd = None
             if nsavc > 0:
                 dcd_fn = str(dcd_dir / f"{sim_type}.{k}.{replica_idx}.dcd")
-                dcd = pycharmm.CharmmFile(file_name=dcd_fn, file_unit=dcd_unit,
+                dcd = pycharmm.CharmmFile(file_name=qpath(dcd_fn), file_unit=dcd_unit,
                                           read_only=False, formatted=False)
-            rst = pycharmm.CharmmFile(file_name=rst_fn, file_unit=rst_unit,
+            rst = pycharmm.CharmmFile(file_name=qpath(rst_fn), file_unit=rst_unit,
                                       read_only=False, formatted=True)
-            lmd = pycharmm.CharmmFile(file_name=lmd_fn, file_unit=lmd_unit,
+            lmd = pycharmm.CharmmFile(file_name=qpath(lmd_fn), file_unit=lmd_unit,
                                       read_only=False, formatted=False)
 
             dyn_param.update({"nstep": nsteps_prod, "isvfrq": nsteps_prod})
@@ -803,16 +805,16 @@ class DynamicsRunner:
         rpr = None
         if use_restart:
             rpr = pycharmm.CharmmFile(
-                file_name=str(restart_from), file_unit=rpr_unit,
+                file_name=qpath(restart_from), file_unit=rpr_unit,
                 read_only=True, formatted=True,
             )
 
         rst = pycharmm.CharmmFile(
-            file_name=str(rst_fn), file_unit=rst_unit,
+            file_name=qpath(rst_fn), file_unit=rst_unit,
             read_only=False, formatted=True,
         )
         lmd = pycharmm.CharmmFile(
-            file_name=str(lmd_fn), file_unit=lmd_unit,
+            file_name=qpath(lmd_fn), file_unit=lmd_unit,
             read_only=False, formatted=False,
         )
 
@@ -941,7 +943,7 @@ class DynamicsRunner:
             dyn_param["restart"] = True
             dyn_param["iunrea"] = rpr_unit
             rpr = pycharmm.CharmmFile(
-                file_name=str(restart_from),
+                file_name=qpath(restart_from),
                 file_unit=rpr_unit,
                 read_only=True,
                 formatted=True,
@@ -954,7 +956,7 @@ class DynamicsRunner:
                 dyn_param["restart"] = True
                 dyn_param["iunrea"] = rpr_unit
                 rpr = pycharmm.CharmmFile(
-                    file_name=str(rpr_fn),
+                    file_name=qpath(rpr_fn),
                     file_unit=rpr_unit,
                     read_only=True,
                     formatted=True,
@@ -970,11 +972,11 @@ class DynamicsRunner:
             )
 
         rst = pycharmm.CharmmFile(
-            file_name=str(rst_fn), file_unit=rst_unit,
+            file_name=qpath(rst_fn), file_unit=rst_unit,
             read_only=False, formatted=True,
         )
         lmd = pycharmm.CharmmFile(
-            file_name=str(lmd_fn), file_unit=lmd_unit,
+            file_name=qpath(lmd_fn), file_unit=lmd_unit,
             read_only=False, formatted=False,
         )
 

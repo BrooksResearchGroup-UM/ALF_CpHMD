@@ -30,6 +30,13 @@ coupling: 0
 # phase2_repeats: 2
 # phase3_repeats: 2
 
+# Number of previous analysis windows for WHAM (int or phase1,phase2,phase3)
+# Default: Phase 1=8, Phase 2=4, Phase 3=3
+# analysis_window: 5        # same for all phases
+# analysis_window: 8,4,3    # per-phase
+# analysis_skip: 1           # subsample every Nth lambda frame (reduces WHAM memory)
+# analysis_skip: 1,1,10     # per-phase: all frames in Phase 1-2, every 10th in Phase 3
+
 # Manual cutoff overrides per phase (omit to use adaptive defaults)
 # phase1_cutoffs:
 #   cutb: 5.0

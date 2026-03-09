@@ -25,6 +25,7 @@ import pycharmm.settings as settings
 import pycharmm.write as write
 
 from cphmd import TOPPAR_DIR
+from cphmd.utils.charmm_path import qpath
 
 
 @dataclass
@@ -632,17 +633,17 @@ def _read_topology_files(config: PatchConfig, verbose: bool = True) -> None:
     settings.set_warn_level(-1)
 
     if rtf_files:
-        read.rtf(str(toppar_dir / rtf_files[0]))
+        read.rtf(qpath(toppar_dir / rtf_files[0]))
         for f in rtf_files[1:]:
-            read.rtf(str(toppar_dir / f), append=True)
+            read.rtf(qpath(toppar_dir / f), append=True)
 
     if prm_files:
-        read.prm(str(toppar_dir / prm_files[0]), flex=True)
+        read.prm(qpath(toppar_dir / prm_files[0]), flex=True)
         for f in prm_files[1:]:
-            read.prm(str(toppar_dir / f), flex=True, append=True)
+            read.prm(qpath(toppar_dir / f), flex=True, append=True)
 
     for f in str_files:
-        lingo.charmm_script(f"stream {toppar_dir / f}")
+        lingo.charmm_script(f"stream {qpath(toppar_dir / f)}")
 
     # Load extra files (absolute paths for custom residues/parameters)
     for extra_file in config.extra_files:
@@ -652,26 +653,26 @@ def _read_topology_files(config: PatchConfig, verbose: bool = True) -> None:
 
         suffix = extra_path.suffix.lower()
         if suffix == ".rtf":
-            read.rtf(str(extra_path), append=True)
+            read.rtf(qpath(extra_path), append=True)
         elif suffix == ".prm":
-            read.prm(str(extra_path), flex=True, append=True)
+            read.prm(qpath(extra_path), flex=True, append=True)
         elif suffix == ".str":
-            lingo.charmm_script(f"stream {extra_path}")
+            lingo.charmm_script(f"stream {qpath(extra_path)}")
         else:
             # Try streaming unknown file types
-            lingo.charmm_script(f"stream {extra_path}")
+            lingo.charmm_script(f"stream {qpath(extra_path)}")
 
     # Load ligand patch files
     for ligand_def in config.ligand_patches:
         patch_path = Path(ligand_def.patch_file)
         suffix = patch_path.suffix.lower()
         if suffix == ".rtf":
-            read.rtf(str(patch_path), append=True)
+            read.rtf(qpath(patch_path), append=True)
         elif suffix == ".str":
-            lingo.charmm_script(f"stream {patch_path}")
+            lingo.charmm_script(f"stream {qpath(patch_path)}")
         else:
             # Try reading as RTF for unknown patch file types
-            read.rtf(str(patch_path), append=True)
+            read.rtf(qpath(patch_path), append=True)
         print(f"Loaded ligand patch file: {patch_path}")
 
     settings.set_warn_level(5)
@@ -811,8 +812,8 @@ def patch_system(config: PatchConfig) -> Path:
     lingo.charmm_script("IOFOrmat EXTEnded")
 
     # Load structure
-    read.psf_card(str(psf_path))
-    read.coor_card(str(crd_path))
+    read.psf_card(qpath(psf_path))
+    read.coor_card(qpath(crd_path))
 
     uni = Universe()
     patches_topology = PatchParser(
@@ -858,8 +859,8 @@ def patch_system(config: PatchConfig) -> Path:
     for seg_id in seg_ids:
         if seg_id != seg_ids[0]:
             psf.delete_atoms(pycharmm.SelectAtoms().all_atoms())
-            read.psf_card(str(psf_path))
-            read.coor_card(str(crd_path))
+            read.psf_card(qpath(psf_path))
+            read.coor_card(qpath(crd_path))
 
         if len(seg_ids) > 1:
             lingo.charmm_script(f"DELEte ATOMs SELEct .not. segid {seg_id} END")
@@ -912,8 +913,8 @@ def patch_system(config: PatchConfig) -> Path:
     for seg_id in seg_ids:
         with open(patches_file, "a") as f:
             psf.delete_atoms(pycharmm.SelectAtoms().all_atoms())
-            read.psf_card(str(tmp_dir / f"{seg_id}.psf"))
-            read.coor_card(str(tmp_dir / f"{seg_id}.crd"))
+            read.psf_card(qpath(tmp_dir / f"{seg_id}.psf"))
+            read.coor_card(qpath(tmp_dir / f"{seg_id}.crd"))
 
             sublist = [res for res in titratable_list if res[0] == seg_id]
             print(f"Patching segment {seg_id}: {sublist}")
@@ -933,11 +934,11 @@ def patch_system(config: PatchConfig) -> Path:
     psf.delete_atoms(pycharmm.SelectAtoms().all_atoms())
     for i, seg_id in enumerate(seg_ids):
         if i == 0:
-            read.psf_card(str(tmp_dir / f"{seg_id}.psf"))
-            read.coor_card(str(tmp_dir / f"{seg_id}.crd"))
+            read.psf_card(qpath(tmp_dir / f"{seg_id}.psf"))
+            read.coor_card(qpath(tmp_dir / f"{seg_id}.crd"))
         else:
-            read.psf_card(str(tmp_dir / f"{seg_id}.psf"), append=True)
-            read.coor_card(str(tmp_dir / f"{seg_id}.crd"), append=True)
+            read.psf_card(qpath(tmp_dir / f"{seg_id}.psf"), append=True)
+            read.coor_card(qpath(tmp_dir / f"{seg_id}.crd"), append=True)
 
     # Reset bomblevel after all patching is complete
     pycharmm.charmm_script("bomblevel 0")
@@ -993,8 +994,8 @@ def _apply_patches(
 
         # Check if first occurrence of this segment
         if [res[0] for res in titratable_list].index(seg_id) == titratable_list.index(residue):
-            read.psf_card(str(input_folder / "tmp" / f"{seg_id}.psf"))
-            read.coor_card(str(input_folder / "tmp" / f"{seg_id}.crd"))
+            read.psf_card(qpath(input_folder / "tmp" / f"{seg_id}.psf"))
+            read.coor_card(qpath(input_folder / "tmp" / f"{seg_id}.crd"))
 
         # Build REPLICATE command
         n_rep = len(patches_topology.patches[resname]) + 1
