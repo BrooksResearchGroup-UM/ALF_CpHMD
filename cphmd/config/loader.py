@@ -185,6 +185,22 @@ def config_to_alf(
         else:
             cfg["endpoint_weight"] = float(ew)
 
+    # Handle analysis_window string parsing (int or per-phase list[int])
+    aw = cfg.get("analysis_window")
+    if isinstance(aw, str):
+        if "," in aw:
+            cfg["analysis_window"] = [int(x.strip()) for x in aw.split(",")]
+        else:
+            cfg["analysis_window"] = int(aw)
+
+    # Handle analysis_skip string parsing (int or per-phase list[int])
+    ask = cfg.get("analysis_skip")
+    if isinstance(ask, str):
+        if "," in ask:
+            cfg["analysis_skip"] = [int(x.strip()) for x in ask.split(",")]
+        else:
+            cfg["analysis_skip"] = int(ask)
+
     # Handle endpoint_decay string parsing (same per-phase pattern)
     ed = cfg.get("endpoint_decay")
     if isinstance(ed, str):

@@ -6,6 +6,7 @@ Provides utilities for:
 - File operations
 """
 
+from .charmm_path import qpath
 from .lambda_io import (
     LambdaFileMetadata,
     concatenate_lambda_files,
@@ -20,6 +21,8 @@ from .lambda_io import (
 )
 
 __all__ = [
+    # CHARMM path quoting
+    "qpath",
     # Lambda I/O
     "LambdaFileMetadata",
     "read_lambda",

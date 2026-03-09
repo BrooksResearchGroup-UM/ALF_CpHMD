@@ -157,7 +157,7 @@ from .variance import (
 
 # Lazy-loaded names from .patching (has top-level pyCHARMM imports)
 _PATCHING_NAMES = {
-    "LigandPatchDef", "PatchConfig", "PatchParser", "patch_system",
+    "LigandPatchDef", "LigandSiteDef", "PatchConfig", "PatchParser", "patch_system",
 }
 
 
@@ -177,6 +177,7 @@ __all__ = [
     "VdwType",
     # Patching (lazy)
     "LigandPatchDef",
+    "LigandSiteDef",
     "PatchConfig",
     "PatchParser",
     "patch_system",
