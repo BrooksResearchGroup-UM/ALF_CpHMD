@@ -1885,10 +1885,11 @@ class ALFSimulation:
             )
 
             # Free analysis data to reduce memory between runs
+            self._bias_analyzer._wham_lambda = None  # views — must free before _packed_D
+            self._bias_analyzer._D_2d_ref = None
             self._bias_analyzer._packed_D = None
             self._bias_analyzer._packed_sim_indices = None
             self._bias_analyzer._packed_frame_counts = None
-            self._bias_analyzer._wham_lambda = None
 
             # === Non-rank-0 returns after WHAM ===
             if not is_rank0:

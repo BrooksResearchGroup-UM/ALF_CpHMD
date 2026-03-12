@@ -1145,7 +1145,23 @@ def compute_packed_wham_data(
     )
     total_frames = int(frame_counts.sum())
 
-    D = np.zeros((total_frames, ndim), dtype=np.float64)
+    # Use disk-backed memmap for D when it would exceed 512 MB in RAM.
+    # Sequential write + sequential CUDA read is the ideal memmap access pattern.
+    # Below threshold, plain numpy avoids filesystem overhead.
+    d_bytes = total_frames * ndim * 8
+    _MEMMAP_THRESHOLD = 512 * 1024 * 1024  # 512 MB
+    if d_bytes > _MEMMAP_THRESHOLD:
+        import tempfile
+        _d_tmpfile = tempfile.NamedTemporaryFile(suffix=".mmap", delete=True)
+        D = np.memmap(_d_tmpfile, dtype=np.float64, mode="w+",
+                      shape=(total_frames, ndim))
+        logger.info(
+            f"D matrix using memmap ({d_bytes / 1e9:.1f} GB): {_d_tmpfile.name}"
+        )
+    else:
+        _d_tmpfile = None
+        D = np.zeros((total_frames, ndim), dtype=np.float64)
+
     sim_indices = np.empty(total_frames, dtype=np.int32)
 
     # Stream one lambda file at a time (j-outer loop)
@@ -1180,7 +1196,19 @@ def compute_packed_wham_data(
         jk_map, start_cycle, alf_info.nblocks, alf_info.ncentral,
     )
 
-    return D.ravel(), sim_indices, frame_counts, gshift_data, nf, total_frames
+    # For memmap: flush so CUDA reads see all written data.
+    # ravel() of a memmap stays disk-backed, so peak RSS remains low
+    # while cudaMemcpy pages data in sequentially.
+    if _d_tmpfile is not None:
+        D.flush()
+        D_flat = D.ravel()
+        # Keep tmpfile alive — NamedTemporaryFile deletes on close.
+        # memmap (ndarray subclass) accepts arbitrary attributes.
+        D_flat._memmap_tmpfile = _d_tmpfile
+    else:
+        D_flat = D.ravel()
+
+    return D_flat, sim_indices, frame_counts, gshift_data, nf, total_frames
 
 
 def compute_packed_wham_data_distributed(
@@ -1245,6 +1273,28 @@ def compute_packed_wham_data_distributed(
     # Each rank computes its assigned cross-energy rows by streaming lambda
     local_rows: dict[int, np.ndarray] = {i: np.empty(total_frames, dtype=np.float64) for i in my_rows}
 
+    # Rank 0: pre-allocate D and fill lambda columns during the SAME pass
+    # that computes cross-energies — avoids reading lambda files twice.
+    if rank == 0:
+        d_bytes = total_frames * ndim * 8
+        _MEMMAP_THRESHOLD = 512 * 1024 * 1024  # 512 MB
+        if d_bytes > _MEMMAP_THRESHOLD:
+            import tempfile
+            _d_tmpfile = tempfile.NamedTemporaryFile(suffix=".mmap", delete=True)
+            D = np.memmap(_d_tmpfile, dtype=np.float64, mode="w+",
+                          shape=(total_frames, ndim))
+            logger.info(
+                f"D matrix using memmap ({d_bytes / 1e9:.1f} GB): {_d_tmpfile.name}"
+            )
+        else:
+            _d_tmpfile = None
+            D = np.zeros((total_frames, ndim), dtype=np.float64)
+        sim_indices = np.empty(total_frames, dtype=np.int32)
+    else:
+        D = None
+        sim_indices = None
+        _d_tmpfile = None
+
     offset = 0
     for j in range(nf):
         Lj = read_lambda_values(lambda_files[j])[(skipE - 1) :: skipE, :]
@@ -1253,23 +1303,14 @@ def compute_packed_wham_data_distributed(
             local_rows[i][offset : offset + n_j] = _cross_energy_vec(
                 Lj[:n_j], b_list[i], c_list[i], x_list[i], s_list[i],
             )
+        # Rank 0: fill lambda columns and sim indices in same pass (no second read)
+        if rank == 0:
+            D[offset : offset + n_j, 1 : 1 + NL] = Lj[:n_j]
+            sim_indices[offset : offset + n_j] = j
         offset += n_j
         # Lj goes out of scope — memory freed
 
     if rank == 0:
-        # Pre-allocate D on rank 0
-        D = np.zeros((total_frames, ndim), dtype=np.float64)
-        sim_indices = np.empty(total_frames, dtype=np.int32)
-
-        # Fill lambda columns and sim indices by streaming again
-        offset = 0
-        for j in range(nf):
-            Lj = read_lambda_values(lambda_files[j])[(skipE - 1) :: skipE, :]
-            n_j = frame_counts[j]
-            D[offset : offset + n_j, 1 : 1 + NL] = Lj[:n_j]
-            sim_indices[offset : offset + n_j] = j
-            offset += n_j
-
         # Copy own rows into D
         for i, row in local_rows.items():
             D[:, NL + 1 + i] = row
@@ -1283,8 +1324,6 @@ def compute_packed_wham_data_distributed(
                 D[:, NL + 1 + i] = recv_buf
 
         # E_self column = self-energy (each sim's frames under its OWN biases).
-        # Combined with per-replica gshift, this gives a uniform target potential
-        # dot(λ, -b_old) for all frames, avoiding a systematic offset.
         offset = 0
         for j in range(nf):
             n_j = frame_counts[j]
@@ -1295,7 +1334,14 @@ def compute_packed_wham_data_distributed(
             jk_map, start_cycle, alf_info.nblocks, alf_info.ncentral,
         )
 
-        return D.ravel(), sim_indices, frame_counts, gshift_data, nf, total_frames
+        if _d_tmpfile is not None:
+            D.flush()
+            D_flat = D.ravel()
+            D_flat._memmap_tmpfile = _d_tmpfile
+        else:
+            D_flat = D.ravel()
+
+        return D_flat, sim_indices, frame_counts, gshift_data, nf, total_frames
     else:
         # Send own rows to rank 0
         for i, row in local_rows.items():
