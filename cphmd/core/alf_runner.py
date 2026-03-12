@@ -517,32 +517,38 @@ class ALFSimulation:
         self.state.gpuid = self._get_gpu_id()
 
     def _get_gpu_id(self) -> int:
-        """Determine GPU ID based on local MPI rank and CUDA_VISIBLE_DEVICES."""
-        # Try various MPI implementations for local rank
-        local_rank = None
+        """Return the CUDA virtual device index for this MPI rank.
 
-        env_vars = [
+        CUDA always remaps CUDA_VISIBLE_DEVICES to 0-based virtual indices:
+          CUDA_VISIBLE_DEVICES="3,5,7" → virtual 0=phys3, 1=phys5, 2=phys7
+        So cudaSetDevice() and ``blade on gpuid`` both take the virtual index,
+        which equals local_rank modulo the number of visible GPUs.
+
+        Multi-node example (2 GPUs from node A, 3 from node B):
+          Node A ranks 0,1: CUDA_VISIBLE_DEVICES="3,5" → gpuid 0,1
+          Node B ranks 2,3,4: CUDA_VISIBLE_DEVICES="1,4,7" → gpuid 0,1,2
+        """
+        local_rank = None
+        for env_var in [
             "OMPI_COMM_WORLD_LOCAL_RANK",  # OpenMPI
             "SLURM_LOCALID",               # SLURM
             "MPI_LOCALRANKID",             # Intel MPI
             "PMI_LOCAL_RANK",              # MPICH
-        ]
-
-        for env_var in env_vars:
+        ]:
             if env_var in os.environ:
                 local_rank = int(os.environ[env_var])
                 break
 
         if local_rank is None:
-            # Fallback: use global rank modulo assumed GPUs per node
-            local_rank = self.state.rank % 4
+            local_rank = self.state.rank
 
-        # Check CUDA_VISIBLE_DEVICES
+        # When CUDA_VISIBLE_DEVICES is set, CUDA remaps to 0-based virtual IDs.
+        # Use local_rank modulo visible GPU count to get the correct virtual index.
         cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES", "")
         if cuda_visible:
-            available_gpus = [int(g.strip()) for g in cuda_visible.split(",") if g.strip()]
-            if local_rank < len(available_gpus):
-                return available_gpus[local_rank]
+            n_visible = len([g for g in cuda_visible.split(",") if g.strip()])
+            if n_visible > 0:
+                return local_rank % n_visible
 
         return local_rank
 
@@ -1922,7 +1928,7 @@ class ALFSimulation:
 
             if (self.config.generate_hh_plots and
                 self.config.pH and
-                self.config.nreps > 3 and
+                self.config.nreps >= 3 and
                 self.state.patch_info is not None):
                 from cphmd.analysis.henderson_hasselbalch import generate_hh_analysis
 

@@ -506,8 +506,7 @@ class DynamicsRunner:
         shake.on(fast=True, bonh=True, param=True, tol=1e-7)
         lingo.charmm_script("faster on")
 
-        gpuid = replica_idx % 8
-        lingo.charmm_script(f"blade on gpuid {gpuid}")
+        lingo.charmm_script(f"blade on gpuid {self.state.gpuid}")
 
         dyn.set_fbetas(np.full(psf.get_natom(), self.config.gscale, dtype=float))
 
@@ -745,8 +744,7 @@ class DynamicsRunner:
         shake.on(fast=True, bonh=True, param=True, tol=1e-7)
         lingo.charmm_script("faster on")
 
-        gpuid = replica_idx % 8
-        lingo.charmm_script(f"blade on gpuid {gpuid}")
+        lingo.charmm_script(f"blade on gpuid {self.state.gpuid}")
 
         dyn.set_fbetas(np.full(psf.get_natom(), self.config.gscale, dtype=float))
         lingo.charmm_script("energy blade")
@@ -890,8 +888,7 @@ class DynamicsRunner:
             shake.on(fast=True, bonh=True, param=True, tol=1e-7)
             lingo.charmm_script("faster on")
 
-            gpuid = replica_idx % 8
-            lingo.charmm_script(f"blade on gpuid {gpuid}")
+            lingo.charmm_script(f"blade on gpuid {self.state.gpuid}")
 
             dyn.set_fbetas(np.full(psf.get_natom(), self.config.gscale, dtype=float))
             lingo.charmm_script("energy blade")

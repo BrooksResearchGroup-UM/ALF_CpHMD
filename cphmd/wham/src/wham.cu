@@ -92,8 +92,8 @@ __device__ int g_2d_bins_y = 32; // Will be updated at runtime
     if (err != cudaSuccess)                                                                       \
     {                                                                                             \
       fprintf(stderr, "CUDA error at %s:%d - %s\n", __FILE__, __LINE__, cudaGetErrorString(err)); \
-      cudaDeviceReset();                                                                          \
-      exit(EXIT_FAILURE);                                                                         \
+      fflush(stderr);                                                                             \
+      abort();                                                                                    \
     }                                                                                             \
   } while (0)
 
@@ -312,8 +312,17 @@ struct_data *readdata(int arg1, double arg2, int arg3, int arg4, int use_gshift,
   char fnm[MAXLENGTH], line[MAXLENGTH], *linebuffer;
   int ibuffer, n;
   double E, q;
-  struct_data *data = (struct_data *)malloc(sizeof(struct_data));
-  data->gimp_cache = (struct_gimp_cache *)malloc(sizeof(struct_gimp_cache));
+  struct_data *data = (struct_data *)calloc(1, sizeof(struct_data));
+  if (!data) {
+    fprintf(stderr, "FATAL: calloc failed for struct_data\n");
+    return NULL;
+  }
+  data->gimp_cache = (struct_gimp_cache *)calloc(1, sizeof(struct_gimp_cache));
+  if (!data->gimp_cache) {
+    fprintf(stderr, "FATAL: calloc failed for gimp_cache\n");
+    free(data);
+    return NULL;
+  }
   gimp_cache_init(data->gimp_cache);
 
   data->ntriangle = ntriangle_in;
@@ -987,6 +996,12 @@ void iteratedata(struct_data *data)
   // justified here since f-weight uncertainties are not used downstream.
 
   fp = fopen("f.dat", "w");
+  if (!fp)
+  {
+    fprintf(stderr, "Warning: Cannot open f.dat for writing\n");
+    free(f_prev);
+    return;
+  }
   for (int i = 0; i < data->NF; i++)
     fprintf(fp, " %18.12f", data->f_h[i]); // Increased precision for high-precision lambda data
   fclose(fp);
@@ -1788,11 +1803,16 @@ static void compute_profiles_range(
     {
       sprintf(fnm, "multisite/G%d.dat", i + 1);
       fp = fopen(fnm, "w");
-      for (k = 0; k < B_N; k++)
+      if (fp)
       {
-        fprintf(fp, "%.12g\n", (-data->lnZ_h[k] - data->Gimp_h[k]) / data->beta_t);
+        for (k = 0; k < B_N; k++)
+          fprintf(fp, "%.12g\n", (-data->lnZ_h[k] - data->Gimp_h[k]) / data->beta_t);
+        fclose(fp);
       }
-      fclose(fp);
+      else
+      {
+        fprintf(stderr, "Warning: Cannot open %s for writing\n", fnm);
+      }
     }
 
     for (k = 0; k < B_N; k++)
@@ -1932,6 +1952,14 @@ void getfofq(struct_data *data, double beta)
 
   fpC = fopen("multisite/C.dat", "w");
   fpV = fopen("multisite/V.dat", "w");
+  if (!fpC || !fpV)
+  {
+    fprintf(stderr, "FATAL: Cannot open multisite/C.dat or V.dat for writing\n");
+    if (fpC) fclose(fpC);
+    if (fpV) fclose(fpV);
+    free(C); free(V);
+    return;
+  }
   for (j1 = 0; j1 < dim; j1++)
   {
     for (j2 = 0; j2 < dim; j2++)
@@ -1944,6 +1972,80 @@ void getfofq(struct_data *data, double beta)
 
   free(C);
   free(V);
+}
+
+// ============================================================================
+// WHAM struct_data cleanup — free ALL host + device allocations
+// ============================================================================
+
+/**
+ * free_wham_data: release every allocation made by readdata / readdata_from_memory.
+ *
+ * Previously cudaDeviceReset() implicitly freed all device memory, but that
+ * also destroyed BLaDE's CUDA context.  Now we use explicit cudaFree for each
+ * device pointer and free() for each host pointer, then cudaDeviceSynchronize().
+ */
+static void free_wham_data(struct_data *data)
+{
+  if (!data) return;
+
+  int j;
+
+  // --- Device memory ---
+  cudaFree(data->beta_d);
+  cudaFree(data->n_d);
+  cudaFree(data->D_d);
+  cudaFree(data->i_d);
+  cudaFree(data->lnw_d);
+  cudaFree(data->lnDenom_d);
+  cudaFree(data->f_d);
+  cudaFree(data->lnZ_d);
+  cudaFree(data->dlnZ_d);
+  cudaFree(data->dlnZ_dN);
+  cudaFree(data->Gimp_d);
+  cudaFree(data->C_d);
+  cudaFree(data->CV_d);
+  cudaFree(data->CC_d);
+  cudaFree(data->gshift_d);
+
+  // --- Host memory ---
+  free(data->Nsubs);
+  free(data->block0);
+  free(data->T_h);
+  free(data->beta_h);
+  free(data->n_h);
+  free(data->D_h);
+  free(data->i_h);
+  free(data->lnw_h);
+  free(data->lnDenom_h);
+  free(data->f_h);
+  free(data->lnZ_h);
+
+  // dlnZ_hN is an array of jN pointers, each malloc'd separately
+  if (data->dlnZ_hN)
+  {
+    for (j = 0; j < data->jN; j++)
+      free(data->dlnZ_hN[j]);
+    free(data->dlnZ_hN);
+  }
+
+  free(data->Gimp_h);
+  free(data->C_h);
+  free(data->CV_h);
+  free(data->CC_h);
+  free(data->gshift_h);
+
+  // G_imp cache, profile/param descriptors
+  if (data->gimp_cache)
+  {
+    gimp_cache_free(data->gimp_cache);
+    free(data->gimp_cache);
+  }
+  free(data->profiles);
+  free(data->params);
+
+  // The struct itself
+  free(data);
 }
 
 // ============================================================================
@@ -1983,9 +2085,13 @@ static struct_data *readdata_from_memory(
     int ndim_override)
 {
   int i, s1, s2, j, jN, iN;
-  struct_data *data = (struct_data *)malloc(sizeof(struct_data));
+  struct_data *data = (struct_data *)calloc(1, sizeof(struct_data));
   if (!data) return NULL;
-  data->gimp_cache = (struct_gimp_cache *)malloc(sizeof(struct_gimp_cache));
+  data->gimp_cache = (struct_gimp_cache *)calloc(1, sizeof(struct_gimp_cache));
+  if (!data->gimp_cache) {
+    free(data);
+    return NULL;
+  }
   gimp_cache_init(data->gimp_cache);
 
   data->ntriangle = ntriangle_in;
@@ -2240,11 +2346,7 @@ extern "C" int wham_from_memory(
 
   getfofq(data, data->beta_t);
 
-  CUDA_CHECK(cudaDeviceSynchronize());
-  gimp_cache_free(data->gimp_cache);
-  free(data->gimp_cache);
-  free(data->profiles);
-  free(data->params);
+  free_wham_data(data);
   CUDA_CHECK(cudaDeviceSynchronize());
 
   return 0;
@@ -2306,10 +2408,7 @@ extern "C" int wham_iterate_from_memory(
   memcpy(f_out, data->f_h, data->NF * sizeof(double));
   *nf_out = data->NF;
 
-  gimp_cache_free(data->gimp_cache);
-  free(data->gimp_cache);
-  free(data->profiles);
-  free(data->params);
+  free_wham_data(data);
   CUDA_CHECK(cudaDeviceSynchronize());
 
   return 0;
@@ -2369,6 +2468,7 @@ extern "C" int wham_profiles_from_memory(
   if (f_size != data->NF)
   {
     fprintf(stderr, "Error: f_size=%d but NF=%d\n", f_size, data->NF);
+    free_wham_data(data);
     CUDA_CHECK(cudaDeviceSynchronize());
     return -2;
   }
@@ -2396,12 +2496,7 @@ extern "C" int wham_profiles_from_memory(
   // Compute profiles for assigned range — each rank writes its own G files
   compute_profiles_range(data, data->beta_t, profile_start, profile_end, C_out, V_out, 1, 0);
 
-  CUDA_CHECK(cudaDeviceSynchronize());
-
-  gimp_cache_free(data->gimp_cache);
-  free(data->gimp_cache);
-  free(data->profiles);
-  free(data->params);
+  free_wham_data(data);
   CUDA_CHECK(cudaDeviceSynchronize());
 
   return 0;
@@ -2460,6 +2555,7 @@ extern "C" int wham_profiles_slim_from_memory(
   if (f_size != data->NF)
   {
     fprintf(stderr, "Error: f_size=%d but NF=%d\n", f_size, data->NF);
+    free_wham_data(data);
     CUDA_CHECK(cudaDeviceSynchronize());
     return -2;
   }
@@ -2490,12 +2586,7 @@ extern "C" int wham_profiles_slim_from_memory(
   // skip_sumdenom=1: lnDenom already on GPU
   compute_profiles_range(data, data->beta_t, profile_start, profile_end, C_out, V_out, 1, 1);
 
-  CUDA_CHECK(cudaDeviceSynchronize());
-
-  gimp_cache_free(data->gimp_cache);
-  free(data->gimp_cache);
-  free(data->profiles);
-  free(data->params);
+  free_wham_data(data);
   CUDA_CHECK(cudaDeviceSynchronize());
 
   return 0;
@@ -2541,12 +2632,8 @@ extern "C" int wham(int gpu_id,
 
   getfofq(data, data->beta_t);
 
-  // Final synchronization and cleanup
-  CUDA_CHECK(cudaDeviceSynchronize());
-  gimp_cache_free(data->gimp_cache);
-  free(data->gimp_cache);
-  free(data->profiles);
-  free(data->params);
+  // Free all host + device allocations
+  free_wham_data(data);
   CUDA_CHECK(cudaDeviceSynchronize());
 
   return 0;
@@ -3034,9 +3121,10 @@ static void lmalf_monte_carlo_Z(struct_lmalf *lm)
 // Setup LMALF data structure
 struct_lmalf *lmalf_setup(int nf, double temp, int ms, int msprof,
                           int *nsubs_in, int nsites_in, const char *g_imp_path,
-                          int ntriangle_in)
+                          double fnex, int ntriangle_in)
 {
-  struct_lmalf *lm = (struct_lmalf *)malloc(sizeof(struct_lmalf));
+  struct_lmalf *lm = (struct_lmalf *)calloc(1, sizeof(struct_lmalf));
+  if (!lm) return NULL;
   FILE *fp;
   char line[MAXLENGTH];
   int i, j, k, si, sj;
@@ -3163,6 +3251,7 @@ struct_lmalf *lmalf_setup(int nf, double temp, int ms, int msprof,
     fclose(fp);
   }
 
+  // fnex was set by caller (passed as parameter) — required before MC reference
   // Generate Monte Carlo reference distribution using Metropolis sampling
   // This provides the reference distribution for computing meaningful gradients
   lmalf_monte_carlo_Z(lm);
@@ -3805,11 +3894,16 @@ void lmalf_finish(struct_lmalf *lm)
 
   // Write optimized parameters
   fp = fopen("OUT.dat", "w");
-  for (i = 0; i < lm->nx; i++)
+  if (!fp)
   {
-    fprintf(fp, " %lg", lm->x_h[i]);
+    fprintf(stderr, "FATAL: Cannot open OUT.dat for writing\n");
   }
-  fclose(fp);
+  else
+  {
+    for (i = 0; i < lm->nx; i++)
+      fprintf(fp, " %lg", lm->x_h[i]);
+    fclose(fp);
+  }
 
   fprintf(stdout, "LMALF results written to OUT.dat\n");
 
@@ -3900,9 +3994,8 @@ extern "C" int lmalf(int gpu_id,
   // Initialize and validate GPU
   validate_and_setup_gpu(gpu_id);
 
-  struct_lmalf *lm = lmalf_setup(nf, temp, ms, msprof, nsubs, nsites, g_imp_path, ntriangle);
+  struct_lmalf *lm = lmalf_setup(nf, temp, ms, msprof, nsubs, nsites, g_imp_path, fnex, ntriangle);
   if (lm) {
-    lm->fnex = fnex;
     lm->chi_offset = chi_offset;
     lm->omega_scale = omega_scale;
     lm->chi_offset_t = chi_offset_t;
@@ -4461,10 +4554,7 @@ extern "C" int wham_compute_weights_from_memory(
 
   // Cleanup
   cudaFree(weights_d);
-  gimp_cache_free(data->gimp_cache);
-  free(data->gimp_cache);
-  free(data->profiles);
-  free(data->params);
+  free_wham_data(data);
   CUDA_CHECK(cudaDeviceSynchronize());
 
   return 0;
