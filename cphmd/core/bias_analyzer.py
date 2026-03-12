@@ -124,7 +124,9 @@ class BiasAnalyzer:
         self._packed_nf = nf
         self._wham_energy = None  # No longer stored
 
-        # Extract lambda arrays from packed D for LMALF path (np.vstack at line ~448)
+        # Extract lambda views from packed D for LMALF path (np.vstack at line ~448).
+        # Views instead of .copy() — avoids duplicating total_frames × NL × 8 bytes.
+        # Safe because _packed_D and _wham_lambda are freed together (alf_runner line ~1888).
         if nf > 0 and self._packed_D.size > 0:
             NL = alf_info["nblocks"]
             ndim = NL + nf + 3
@@ -133,10 +135,12 @@ class BiasAnalyzer:
             offset = 0
             for i in range(nf):
                 n_i = self._packed_frame_counts[i]
-                self._wham_lambda.append(D_2d[offset:offset + n_i, 1:1 + NL].copy())
+                self._wham_lambda.append(D_2d[offset:offset + n_i, 1:1 + NL])
                 offset += n_i
+            self._D_2d_ref = D_2d  # prevent reshape view from being GC'd
         else:
             self._wham_lambda = None
+            self._D_2d_ref = None
 
         return nf
 
