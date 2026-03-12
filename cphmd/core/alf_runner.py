@@ -1028,7 +1028,28 @@ class ALFSimulation:
         2. Run dynamics for each iteration (start → end)
         3. Perform ALF analysis between iterations
         4. Generate Henderson-Hasselbalch curves
+
+        Wraps the entire simulation in an MPI safety net: any unhandled
+        exception triggers MPI_Abort so that sibling ranks are killed
+        immediately instead of deadlocking on the next collective.
         """
+        try:
+            self._run_impl()
+        except BaseException:
+            # Print traceback to real stderr (sys.stdout may be redirected)
+            import traceback
+            print(
+                f"\n[RANK {self.state.rank}] FATAL — aborting MPI:\n"
+                f"{traceback.format_exc()}",
+                file=sys.__stderr__,
+                flush=True,
+            )
+            if self._comm is not None:
+                self._comm.Abort(1)
+            raise
+
+    def _run_impl(self):
+        """Inner simulation loop (separated for MPI_Abort safety wrapper)."""
         if not self._initialized:
             self.initialize()
 
