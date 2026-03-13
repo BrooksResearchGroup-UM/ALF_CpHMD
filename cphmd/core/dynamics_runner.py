@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import re
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -84,13 +85,9 @@ class DynamicsRunner:
 
         from .charmm_utils import (
             BoxParameters,
-            FFTParameters,
-            NonBondedConfig,
             clear_block,
             clear_crystal,
             define_selections,
-            setup_crystal,
-            setup_nonbonded,
         )
 
         prep_dir = self.config.input_folder / "prep"
@@ -114,16 +111,6 @@ class DynamicsRunner:
                 psf_file = prep_dir / "system.psf"
                 read.psf_card(qpath(psf_file))
             settings.set_bomb_level(0)
-
-            # Pre-initialize BLOCK so CHARMM sets qmld=true before MAKINB runs.
-            # Without this, IATMXB defaults to 8 and systems with many MSLD
-            # substates overflow the per-atom bond array (e.g. nsubs=[9] gives
-            # 11 bonds on connecting atoms).  The real BLOCK setup happens later
-            # in build_block_commands().
-            nblocks = self.state.alf_info.get("nblocks", 0) if self.state.alf_info else 0
-            if nblocks > 0:
-                import pycharmm.lingo as lingo
-                lingo.charmm_script(f"BLOCK {nblocks + 1}\nEND")  # +1 for environment block
 
             if (self.state.patch_info is not None
                     and self.config.elec_type == "pmeex"):
@@ -168,6 +155,26 @@ class DynamicsRunner:
                     read.coor_card(qpath(crd_path))
                     break
 
+    def setup_crystal_nonbonded(self, run_idx: int, letter: str, k: int,
+                                replica_idx: int, force: bool = False):
+        """Set up crystal symmetry and nonbonded parameters.
+
+        Called after BLOCK/MSLD setup so CHARMM knows the block count
+        and allocates sufficient per-atom bond arrays in MAKINB.
+        """
+        from .charmm_utils import (
+            BoxParameters,
+            FFTParameters,
+            NonBondedConfig,
+            setup_crystal,
+            setup_nonbonded,
+        )
+
+        if k > 0 and not force:
+            return
+
+        prep_dir = self.config.input_folder / "prep"
+        box_params = BoxParameters.from_file(prep_dir / "box.dat")
         fft_params = FFTParameters.from_file(prep_dir / "fft.dat")
 
         nb_config = NonBondedConfig(
@@ -415,6 +422,9 @@ class DynamicsRunner:
         if k > 0 and not force:
             return
 
+        if self.config.restrains == "none":
+            return
+
         if self.state.patch_info is None:
             raise ValueError("patch_info not loaded")
 
@@ -426,7 +436,8 @@ class DynamicsRunner:
             )
         else:
             restraint_cmd = generate_scat_restraints(
-                self.state.patch_info, include_hydrogen
+                self.state.patch_info, include_hydrogen,
+                force_constant=self.config.scat_force_constant,
             )
 
         restraint_file = self.config.input_folder / "prep" / "restrains.str"
@@ -439,24 +450,68 @@ class DynamicsRunner:
     # ------------------------------------------------------------------
 
     def run_minimization(self, run_idx: int, replica_idx: int):
-        """Run energy minimization before dynamics."""
-        import pycharmm.energy as energy
+        """Run short CPU minimization before BLaDE (bonded terms only).
+
+        In MPI mode, only rank 0 minimizes; others wait at the barrier.
+        """
         import pycharmm.minimize as minimize
         import pycharmm.shake as shake
-        import pycharmm.write as write
 
         min_crd = self.config.input_folder / "prep" / "system_min.crd"
         if min_crd.exists():
             return
 
-        print(f"Running minimization for run {run_idx}...")
+        if self.state.rank == 0:
+            print(f"Running CPU pre-minimization (100 steps) for run {run_idx}...")
+            sys.stdout.flush()
 
-        shake.on(fast=True, bonh=True, param=True, tol=1e-7)
-        minimize.run_sd(nstep=250, nprint=50, step=0.005, tolenr=1e-3, tolgrd=1e-3)
-        write.coor_card(str(min_crd))
-        print(f"Minimized coordinates saved to {min_crd}")
+            shake.on(fast=True, bonh=True, param=True, tol=1e-7)
+            minimize.run_sd(nstep=100, nprint=50, step=0.005, tolenr=1e-3, tolgrd=1e-3)
 
-        energy.show()
+    def run_blade_minimization(self, run_idx: int, replica_idx: int):
+        """Run BLaDE GPU minimization (includes EXTERN VDW/ELEC).
+
+        Rank 0 minimizes for 2000 steps and saves system_min.crd.
+        All other ranks (and subsequent runs) read the saved coordinates.
+        In MPI mode, a barrier ensures the file is written before others read it.
+        """
+        import pycharmm.energy as energy
+        import pycharmm.minimize as minimize
+        import pycharmm.read as read
+        import pycharmm.write as write
+
+        from .charmm_utils import qpath
+
+        min_crd = self.config.input_folder / "prep" / "system_min.crd"
+        if min_crd.exists():
+            print(f"Reading minimized coordinates from {min_crd}")
+            read.coor_card(qpath(min_crd))
+            sys.stdout.flush()
+            return
+
+        if self.state.rank == 0:
+            print(f"Running BLaDE minimization (2000 steps) for run {run_idx}...")
+            print("Energy BEFORE BLaDE minimization:")
+            energy.show()
+            sys.stdout.flush()
+
+            minimize.run_sd(nstep=2000, nprint=200, step=0.005, tolenr=1e-3, tolgrd=1e-3)
+            write.coor_card(str(min_crd))
+            print(f"Minimized coordinates saved to {min_crd}")
+
+            print("Energy AFTER BLaDE minimization:")
+            energy.show()
+            sys.stdout.flush()
+
+        # MPI barrier: wait for rank 0 to write before others read
+        if self.state.size > 1:
+            from mpi4py import MPI
+            MPI.COMM_WORLD.Barrier()
+
+            if self.state.rank != 0:
+                print(f"Reading minimized coordinates from {min_crd}")
+                read.coor_card(qpath(min_crd))
+                sys.stdout.flush()
 
     # ------------------------------------------------------------------
     # Production dynamics
@@ -511,6 +566,10 @@ class DynamicsRunner:
         dyn.set_fbetas(np.full(psf.get_natom(), self.config.gscale, dtype=float))
 
         lingo.charmm_script("energy blade")
+
+        # BLaDE minimization: resolves EXTERN VDW clashes that CPU minimizer cannot see
+        if run_idx <= 5:
+            self.run_blade_minimization(run_idx, replica_idx)
 
         dyn_param = {
             "start": True,
@@ -749,6 +808,10 @@ class DynamicsRunner:
         dyn.set_fbetas(np.full(psf.get_natom(), self.config.gscale, dtype=float))
         lingo.charmm_script("energy blade")
 
+        # BLaDE minimization: resolves EXTERN VDW clashes that CPU minimizer cannot see
+        if run_idx <= 5:
+            self.run_blade_minimization(run_idx, replica_idx)
+
         # Use restart if provided, otherwise start fresh
         use_restart = restart_from is not None and Path(restart_from).exists()
 
@@ -892,6 +955,10 @@ class DynamicsRunner:
 
             dyn.set_fbetas(np.full(psf.get_natom(), self.config.gscale, dtype=float))
             lingo.charmm_script("energy blade")
+
+            # BLaDE minimization: resolves EXTERN VDW clashes
+            if run_idx <= 5:
+                self.run_blade_minimization(run_idx, replica_idx)
 
         dyn_param = {
             "blade": True,

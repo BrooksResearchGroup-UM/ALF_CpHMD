@@ -230,10 +230,13 @@ def generate_ldin_statements(
         subsites = patch_info.loc[site_mask, "sub"].tolist()
 
         # Dirichlet alpha: uniform [1,1,...] or biased [1,1,10] for unsampled states
-        alpha = np.array(biased_alphas.get(site, np.ones(len(subsites))), dtype=float)
+        n = len(subsites)
+        alpha = np.array(biased_alphas.get(site, np.ones(n)), dtype=float)
         l0_values = np.random.dirichlet(alpha)
-        l0_values = np.round(l0_values, 3)
-        l0_values[-1] = np.round(1.0 - np.sum(l0_values[:-1]), 3)
+        # Truncate to 4 decimals, then assign remainder to largest element
+        l0_values = np.trunc(l0_values * 10000) / 10000
+        remainder = round(1.0 - l0_values.sum(), 4)
+        l0_values[np.argmax(l0_values)] += remainder
 
         for sub, l0 in zip(subsites, l0_values):
             mask = (patch_info["site"] == site) & (patch_info["sub"] == sub)
@@ -246,7 +249,7 @@ def generate_ldin_statements(
 
     if use_tags:
         # Environment block
-        lines.append(f"LDIN {1:<4} {1:<4} {0.0:<4} {mass:<4} {0.0:<2} {fbeta:<4} {'NONE':<5}")
+        lines.append(f"LDIN {1:<4} {1.0:.4f} {0.0:.4f} {mass:.1f} {0.0:.4f} {fbeta:.1f} {'NONE':<5}")
 
         # Titratable groups with TAG
         for idx, row in patch_info.iterrows():
@@ -254,16 +257,16 @@ def generate_ldin_statements(
             var_key = f"lam{row['SELECT']}"
             bias = variables.get(var_key, 0.0)
             tag = row["TAG"]
-            lines.append(f"LDIN {idx + 2:<4} {l0:<4} {0.0:<4} {mass:<4} {bias:<2} {fbeta:<4} {tag:<5}")
+            lines.append(f"LDIN {idx + 2:<4} {l0:.4f} {0.0:.4f} {mass:.1f} {bias:.4f} {fbeta:.1f} {tag:<5}")
     else:
         # Without TAG values
-        lines.append(f"LDIN {1:<4} {1:<4} {0.0:<4} {mass:<4} {0.0:<2} {fbeta:<4}")
+        lines.append(f"LDIN {1:<4} {1.0:.4f} {0.0:.4f} {mass:.1f} {0.0:.4f} {fbeta:.1f}")
 
         for idx, row in patch_info.iterrows():
             l0 = row["l0"]
             var_key = f"lam{row['SELECT']}"
             bias = variables.get(var_key, 0.0)
-            lines.append(f"LDIN {idx + 2:<4} {l0:<4} {0.0:<4} {mass:<4} {bias:<2} {fbeta:<4}")
+            lines.append(f"LDIN {idx + 2:<4} {l0:.4f} {0.0:.4f} {mass:.1f} {bias:.4f} {fbeta:.1f}")
 
     return "\n".join(lines) + "\n\n"
 
@@ -304,7 +307,7 @@ def generate_rmla_msld(
 
     # Build site assignment string
     for i, select in enumerate(patch_info["SELECT"]):
-        site_num = select.split("s")[1]
+        site_num = select.lower().split("s")[1]
         if i < len(patch_info) - 1:
             lines.append(f"{site_num}  -")
         else:

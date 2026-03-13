@@ -22,6 +22,31 @@ from pathlib import Path
 
 import pandas as pd
 
+_CHARMM_MAX_LINE = 200
+
+
+def _wrap_charmm_line(line: str, max_len: int = _CHARMM_MAX_LINE) -> str:
+    """Break a long CHARMM command into continuation lines."""
+    if len(line) <= max_len:
+        return line
+    parts = []
+    while len(line) > max_len:
+        # Find last space before limit (leave room for ' -')
+        cut = line.rfind(" ", 0, max_len - 2)
+        if cut <= 0:
+            cut = max_len - 2
+        parts.append(line[:cut] + " -")
+        line = line[cut:].lstrip()
+    parts.append(line)
+    return "\n".join(parts)
+
+
+def _wrap_cats_line(atom: str, segid: str, resid: str, resname_clause: str) -> str:
+    """Build a cats SELE line with CHARMM line continuation if needed."""
+    full = (f"cats SELE type {atom} .and. segid {segid} .and. resid {resid}"
+            f" .and. ({resname_clause}) END")
+    return _wrap_charmm_line(full)
+
 
 @dataclass
 class BlockGeneratorConfig:
@@ -400,11 +425,11 @@ def _generate_restraints_str(
             resname_clause = " .or. ".join(f"resname {r}" for r in resnames)
 
             for atom in heavy_atoms:
-                lines.append(f"cats SELE type {atom} .and. segid {segid} .and. resid {resid} .and. ({resname_clause}) END")
+                lines.append(_wrap_cats_line(atom, segid, resid, resname_clause))
 
             if include_hydrogens:
                 for atom in h_atoms:
-                    lines.append(f"cats SELE type {atom} .and. segid {segid} .and. resid {resid} .and. ({resname_clause}) END")
+                    lines.append(_wrap_cats_line(atom, segid, resid, resname_clause))
 
         lines.append("END")
 
