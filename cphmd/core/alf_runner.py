@@ -45,7 +45,7 @@ from cphmd.core.phase_switcher import (
 from cphmd.utils.charmm_path import qpath
 
 # Type aliases
-RestrainType = Literal["SCAT", "NOE"]
+RestrainType = Literal["SCAT", "NOE", "none"]
 AnalysisMethod = Literal["wham", "lmalf", "hybrid", "nonlinear"]
 ConvergenceMode = Literal["population", "rmsd"]
 PrepFormat = Literal["default", "legacy", "auto"]
@@ -88,6 +88,7 @@ class ALFConfig:
     nreps: int | None = None  # Defaults to MPI size
     restrains: RestrainType = "SCAT"
     restrain_hydrogens: bool = False
+    scat_force_constant: float = 300.0  # SCAT restraint force constant (k)
     # Bias type: clean interface for enabling/disabling parameter types.
     # Each letter enables that bias type: b(linear), c(coupling), x(skew), s(endpoint),
     # t(opposite-endpoint), u(endpoint-cubed). None = use individual no_*_bias flags.
@@ -634,9 +635,9 @@ class ALFSimulation:
         patches_path = self.config.input_folder / "prep" / "patches.dat"
         self.state.patch_info = pd.read_csv(patches_path)
 
-        # Extract site and subsite indices from SELECT column (e.g., "s1s1" -> site=1, sub=1)
+        # Extract site and subsite indices from SELECT column (e.g., "s1s1" or "S1S1" -> site=1, sub=1)
         self.state.patch_info[["site", "sub"]] = (
-            self.state.patch_info["SELECT"].str.extract(r"s(\d+)s(\d+)")
+            self.state.patch_info["SELECT"].str.extract(r"(?i)s(\d+)s(\d+)")
         )
 
     def _init_alf(self):
@@ -1254,10 +1255,16 @@ class ALFSimulation:
                 if self.config.prep_format == "legacy":
                     self._setup_legacy(run_idx, letter, k, replica_idx)
                 else:
-                    self._setup_crystal(run_idx, letter, k, replica_idx,
+                    # Order: load structure → BLOCK/MSLD → crystal/nonbonded
+                    # BLOCK must be set up BEFORE MAKINB (crystal setup) so
+                    # CHARMM knows the MSLD block count and allocates enough
+                    # per-atom bond slots.
+                    self._load_structure(run_idx, letter, k, replica_idx,
                                         force=force_setup)
                     self._build_block_commands(run_idx, letter, k, replica_idx,
                                               force=force_setup)
+                    self._setup_crystal_nonbonded(run_idx, letter, k, replica_idx,
+                                                 force=force_setup)
                     self._apply_restraints(run_idx, k, force=force_setup)
 
                 # Run minimization on first runs if needed
@@ -1357,10 +1364,15 @@ class ALFSimulation:
             (run_dir / "res").mkdir(exist_ok=True)
         self._comm.Barrier()
 
-    def _setup_crystal(self, run_idx: int, letter: str, k: int, replica_idx: int,
-                       force: bool = False):
-        """Setup crystal/periodic boundary conditions."""
+    def _load_structure(self, run_idx: int, letter: str, k: int, replica_idx: int,
+                        force: bool = False):
+        """Load PSF, CRD, and prepare for BLOCK setup."""
         self._dynamics.setup_crystal(run_idx, letter, k, replica_idx, force=force)
+
+    def _setup_crystal_nonbonded(self, run_idx: int, letter: str, k: int,
+                                 replica_idx: int, force: bool = False):
+        """Setup crystal symmetry and nonbonded after BLOCK/MSLD."""
+        self._dynamics.setup_crystal_nonbonded(run_idx, letter, k, replica_idx, force=force)
 
     def _setup_legacy(self, run_idx: int, letter: str, k: int, replica_idx: int):
         """Set up CHARMM session by streaming a legacy setup script."""

@@ -13,10 +13,12 @@ SCAT is generally preferred for its simplicity and efficiency.
 NOE can be useful when explicit distance control is needed.
 """
 
-from pathlib import Path
 import itertools
+from pathlib import Path
 
 import pandas as pd
+
+from .generate_block import _wrap_cats_line
 
 
 def generate_scat_restraints(
@@ -63,12 +65,12 @@ def generate_scat_restraints(
 
         # Add restraints for heavy atoms
         for atom in heavy_atoms:
-            lines.append(f"cats SELE type {atom} .and. segid {segid} .and. resid {resid} .and. ({resname_clause}) END")
+            lines.append(_wrap_cats_line(atom, segid, resid, resname_clause))
 
         # Optionally add hydrogen restraints
         if include_hydrogen:
             for atom in h_atoms:
-                lines.append(f"cats SELE type {atom} .and. segid {segid} .and. resid {resid} .and. ({resname_clause}) END")
+                lines.append(_wrap_cats_line(atom, segid, resid, resname_clause))
 
     lines.append("END")
     return "\n".join(lines) + "\n"
@@ -115,9 +117,9 @@ def generate_noe_restraints(
             continue
 
         lines.extend([
-            f"!---------------------------------------------------------------",
+            "!---------------------------------------------------------------",
             f"! Restraints for {segid} {resname} {resid}, SITE {site}, GROUP {group_idx}",
-            f"!---------------------------------------------------------------",
+            "!---------------------------------------------------------------",
         ])
         group_idx += 1
 
