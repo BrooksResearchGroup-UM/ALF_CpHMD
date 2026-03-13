@@ -111,6 +111,12 @@ typedef struct struct_data
   struct_gimp_cache *gimp_cache;  // Cached G_imp file data (host-only)
   profile_desc *profiles;         // Precomputed profile descriptors [iN] (host-only)
   param_desc *params;             // Precomputed param descriptors [jN] (host-only)
+  param_desc *params_d;           // Device copy of param descriptors [jN]
+  int use_fused;                  // 0 = serial dlnZ + custom get_CC (legacy)
+                                  // 1 = fused dlnZ + cuBLAS DGEMM (default)
+  // Pre-allocated scratch buffers for fused DGEMM path (avoid per-profile malloc)
+  double *M_d;                    // Device: M matrix [jN × g_1d_bins] for DGEMM
+  double *sqrt_w_d;               // Device: sqrt(weights) [g_1d_bins]
 } struct_data;
 
 /**
