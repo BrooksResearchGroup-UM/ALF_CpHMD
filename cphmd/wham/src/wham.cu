@@ -45,9 +45,31 @@
 #include <stdlib.h> // For rand()
 #include <string.h> // For strncpy, strlen
 #include <cuda_runtime.h>
+#include <cublas_v2.h>
 #include <vector>
 
 #include "wham.h"
+
+// Global cuBLAS handle -- initialized once, reused across profile computations
+static cublasHandle_t g_cublas_handle = NULL;
+
+static void ensure_cublas_handle() {
+    if (g_cublas_handle == NULL) {
+        cublasStatus_t stat = cublasCreate(&g_cublas_handle);
+        if (stat != CUBLAS_STATUS_SUCCESS) {
+            fprintf(stderr, "cuBLAS initialization failed: %d\n", (int)stat);
+            g_cublas_handle = NULL;
+        }
+    }
+}
+
+__attribute__((destructor))
+static void cleanup_cublas() {
+    if (g_cublas_handle != NULL) {
+        cublasDestroy(g_cublas_handle);
+        g_cublas_handle = NULL;
+    }
+}
 
 // Polyfill: double atomicAdd via CAS for architectures < sm_60
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 600
@@ -880,6 +902,19 @@ void build_param_descs(struct_data *data)
     fprintf(stderr, "FATAL: build_param_descs count mismatch: %d vs jN=%d\n", idx, jN);
     exit(1);
   }
+
+  // Copy param descriptors to device for fused dlnZ kernel
+  CUDA_CHECK(cudaMalloc(&(data->params_d), jN * sizeof(param_desc)));
+  CUDA_CHECK(cudaMemcpy(data->params_d, data->params,
+                         jN * sizeof(param_desc), cudaMemcpyHostToDevice));
+
+  // Pre-allocate scratch buffers for fused DGEMM path (avoid per-profile malloc)
+  if (data->use_fused)
+  {
+    int bins_1d = data->B[1].N;
+    CUDA_CHECK(cudaMalloc(&(data->M_d), (size_t)jN * bins_1d * sizeof(double)));
+    CUDA_CHECK(cudaMalloc(&(data->sqrt_w_d), bins_1d * sizeof(double)));
+  }
 }
 
 __global__ void resetlogdata(double *d, int N)
@@ -1307,6 +1342,140 @@ __global__ void get_lnZ(struct_data data, double beta,
   }
 }
 
+// --- Inline reaction coordinate functions for fused dlnZ kernel ---
+// These mirror the global reactioncoord_* kernels (lines 1151-1218)
+// but as __device__ functions callable from within a kernel.
+
+static __device__ inline double rc_phi(const double *D, int j1) {
+    return D[1 + j1];
+}
+
+static __device__ inline double rc_psi(const double *D, int j1, int j2) {
+    return D[1 + j1] * D[1 + j2];
+}
+
+static __device__ inline double rc_chi(const double *D, int j1, int j2,
+                                        double omega_scale) {
+    double lam_i = D[1 + j1];
+    double lam_j = D[1 + j2];
+    return lam_j * (1.0 - exp(-lam_i / omega_scale));
+}
+
+static __device__ inline double rc_omega(const double *D, int j1, int j2,
+                                          double chi_offset) {
+    double lam_i = D[1 + j1];
+    double lam_j = D[1 + j2];
+    return lam_j * (1.0 - 1.0 / (lam_i / chi_offset + 1.0));
+}
+
+static __device__ inline double rc_omega2(const double *D, int j1, int j2,
+                                           double chi_offset_t) {
+    double lam_i = D[1 + j1];
+    double lam_j = D[1 + j2];
+    return -lam_j * (1.0 - 1.0 / (lam_i / (-1.0 - chi_offset_t) + 1.0));
+}
+
+static __device__ inline double rc_omega3(const double *D, int j1, int j2,
+                                           double chi_offset_u) {
+    double lam_i = D[1 + j1];
+    double lam_j = D[1 + j2];
+    return lam_j * lam_j * (1.0 - 1.0 / (lam_i / chi_offset_u + 1.0));
+}
+
+// Dispatch: compute q_j for parameter descriptor d, reading lambdas from frame row D
+static __device__ inline double compute_rc(const double *D,
+                                            const param_desc *d,
+                                            double chi_offset, double omega_scale,
+                                            double chi_offset_t, double chi_offset_u) {
+    switch (d->type) {
+    case 0: return rc_phi(D, d->j1);
+    case 1: return rc_psi(D, d->j1, d->j2);
+    case 2: return rc_chi(D, d->j1, d->j2, omega_scale);
+    case 3: return rc_omega(D, d->j1, d->j2, chi_offset);
+    case 4: return rc_omega2(D, d->j1, d->j2, chi_offset_t);
+    case 5: return rc_omega3(D, d->j1, d->j2, chi_offset_u);
+    default: return 0.0;
+    }
+}
+
+// --- Fused get_dlnZ: batch all jN parameters in one kernel launch ---
+// Grid:  (ceil(ND / (100 * SBLOCK)), jN, 1)
+//   blockIdx.x = frame-tile index, blockIdx.y = parameter index j1
+// Shared memory: g_1d_bins * sizeof(double) per block
+// Eliminates jN x 3 serial kernel launches + jN syncs + jN memcpys
+__global__ void get_dlnZ_fused(struct_data data, double beta,
+                                const double *__restrict__ gshift,
+                                const param_desc *__restrict__ params_d,
+                                int block_off)
+{
+    int j1 = blockIdx.y;
+    int t = blockIdx.x * blockDim.x + threadIdx.x;
+
+    extern __shared__ double loc_dlnZ[];
+
+    for (int i = threadIdx.x; i < g_1d_bins; i += blockDim.x)
+        loc_dlnZ[i] = -INFINITY;
+    __syncthreads();
+
+    param_desc pd = params_d[j1];
+
+    for (int i = SBLOCK * t; i < SBLOCK * (t + 1) && i < data.ND; i++)
+    {
+        const double *D_row = &data.D_d[i * data.Ndim];
+        double E = D_row[0];
+        int iB = (int)D_row[data.Ndim - 2];
+
+        if (iB >= 0 && iB < g_1d_bins && isfinite(E))
+        {
+            double q = compute_rc(D_row, &pd,
+                                  data.chi_offset, data.omega_scale,
+                                  data.chi_offset_t, data.chi_offset_u);
+
+            if (isfinite(q) && q > 1e-15)
+            {
+                int sim_idx = data.i_d[i];
+                if (sim_idx >= 0 && sim_idx < data.NF)
+                {
+                    double lnw = data.lnw_d[sim_idx];
+                    double lnDenom = data.lnDenom_d[i];
+
+                    if (isfinite(lnw) && isfinite(lnDenom))
+                    {
+                        double log_q = log(q);
+                        if (isfinite(log_q))
+                        {
+                            double vshift = 0.0;
+                            if (data.use_gshift) {
+                                for (int bl = 0; bl < data.Nblocks; bl++)
+                                    vshift += gshift[sim_idx * data.Nblocks + bl] * D_row[1 + bl];
+                            }
+
+                            double contribution = lnw - lnDenom - beta * (E + vshift) + log_q;
+                            if (isfinite(contribution))
+                                atomic_logadd(&loc_dlnZ[iB], contribution);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    __syncthreads();
+
+    for (int i = threadIdx.x; i < g_1d_bins; i += blockDim.x)
+    {
+        if (isfinite(loc_dlnZ[i]) && loc_dlnZ[i] > -INFINITY)
+            atomic_logadd(&data.dlnZ_dN[g_1d_bins * j1 + i], loc_dlnZ[i]);
+    }
+}
+
+// Reset entire dlnZ_dN array to -INFINITY in one kernel launch
+__global__ void resetlogdata_bulk(double *arr, int total_size)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < total_size)
+        arr[idx] = -INFINITY;
+}
+
 __global__ void get_dlnZ(struct_data data, int j1, double beta,
                          const double *__restrict__ gshift,
                          int block_off)
@@ -1382,6 +1551,93 @@ __global__ void get_dlnZ(struct_data data, int j1, double beta,
 static __host__ __device__ inline double endpoint_ramp(int k, int N, double W, double alpha) {
     int d = k < (N - 1 - k) ? k : (N - 1 - k);
     return 1.0 + (W - 1.0) * exp(-alpha * d);
+}
+
+// --- Build M matrix for cuBLAS DGEMM CC computation ---
+// M[j * g_1d_bins + k] = sqrt(w[k]) * exp(dlnZ_dN[j * g_1d_bins + k] - lnZ_d[k])
+// Non-finite lnZ or dlnZ entries are zeroed.
+__global__ void build_M_matrix(const double *__restrict__ dlnZ_dN,
+                                const double *__restrict__ lnZ_d,
+                                const double *__restrict__ sqrt_w_d,
+                                double *__restrict__ M_d,
+                                int jN)
+{
+    int j = blockIdx.y;
+    int k = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if (k < g_1d_bins && j < jN) {
+        double lnZ = lnZ_d[k];
+        double sw = sqrt_w_d[k];
+
+        if (isfinite(lnZ) && lnZ > -INFINITY && sw > 0.0) {
+            double dlnZ = dlnZ_dN[j * g_1d_bins + k];
+            if (isfinite(dlnZ)) {
+                double exp_arg = dlnZ - lnZ;
+                if (isfinite(exp_arg)) {
+                    double val = sw * exp(exp_arg);
+                    M_d[j * g_1d_bins + k] = isfinite(val) ? val : 0.0;
+                } else {
+                    M_d[j * g_1d_bins + k] = 0.0;
+                }
+            } else {
+                M_d[j * g_1d_bins + k] = 0.0;
+            }
+        } else {
+            M_d[j * g_1d_bins + k] = 0.0;
+        }
+    }
+}
+
+// CC = M * M^T via cuBLAS DGEMM
+// K dimension is bins_1d (= g_1d_bins = data->B[1].N), NOT B_N.
+static int compute_CC_dgemm(struct_data *data, double wnorm, int ptype)
+{
+    int jN = data->jN;
+    int bins_1d = data->B[1].N;
+
+    ensure_cublas_handle();
+    if (g_cublas_handle == NULL) return -1;
+
+    // Build sqrt_w on host, copy to pre-allocated device buffer
+    double *sqrt_w_h = (double *)malloc(bins_1d * sizeof(double));
+    for (int k = 0; k < bins_1d; k++) {
+        double w = wnorm;
+        if (ptype == 0 || ptype == 3)
+            w *= endpoint_ramp(k, bins_1d, data->endpoint_weight, data->endpoint_decay);
+        sqrt_w_h[k] = (w > 0.0) ? sqrt(w) : 0.0;
+    }
+
+    CUDA_CHECK(cudaMemcpy(data->sqrt_w_d, sqrt_w_h, bins_1d * sizeof(double),
+                           cudaMemcpyHostToDevice));
+    free(sqrt_w_h);
+
+    // Build M matrix using pre-allocated buffer [jN x bins_1d]
+    dim3 grid_m((bins_1d + BLOCK - 1) / BLOCK, jN, 1);
+    build_M_matrix<<<grid_m, BLOCK>>>(data->dlnZ_dN, data->lnZ_d,
+                                       data->sqrt_w_d, data->M_d, jN);
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    // CC = M * M^T: M is [jN x bins_1d] row-major = [bins_1d x jN] col-major
+    // cublasDgemm(T, N): [jN x bins_1d] * [bins_1d x jN] = [jN x jN]
+    double alpha = 1.0, beta_val = 0.0;
+    cublasStatus_t stat = cublasDgemm(g_cublas_handle,
+                                       CUBLAS_OP_T, CUBLAS_OP_N,
+                                       jN, jN, bins_1d,
+                                       &alpha,
+                                       data->M_d, bins_1d,
+                                       data->M_d, bins_1d,
+                                       &beta_val,
+                                       data->CC_d, jN);
+
+    if (stat != CUBLAS_STATUS_SUCCESS) {
+        fprintf(stderr, "cuBLAS DGEMM failed: %d\n", (int)stat);
+        return -1;
+    }
+
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    return 0;
 }
 
 __global__ void get_CC(struct_data data, int i, double beta, double wnorm, int ptype,
@@ -1831,25 +2087,64 @@ static void compute_profiles_range(
       }
     }
 
-    for (j1 = 0; j1 < jN; j1++)
-    {
-      reactioncoord_all(data, j1);
-      resetlogdata<<<(B_N + BLOCK - 1) / BLOCK, BLOCK>>>(&(data->dlnZ_dN[B_N * j1]), B_N);
+    if (data->use_fused) {
+      // --- Fused dlnZ path: single kernel for all jN parameters ---
+      int bins_1d = data->B[1].N;  // host-side g_1d_bins
+      int total_dlnZ = jN * bins_1d;
+      resetlogdata_bulk<<<(total_dlnZ + BLOCK - 1) / BLOCK, BLOCK>>>(
+          data->dlnZ_dN, total_dlnZ);
       CUDA_CHECK(cudaGetLastError());
       CUDA_CHECK(cudaDeviceSynchronize());
 
-      get_dlnZ<<<(data->ND + (100 * SBLOCK) - 1) / (100 * SBLOCK), 100, B_N * sizeof(double)>>>(data[0], j1, data->beta_t,
-                                                                          data->gshift_d, data->current_block_idx);
+      int frame_tiles = (data->ND + (100 * SBLOCK) - 1) / (100 * SBLOCK);
+      dim3 grid(frame_tiles, jN, 1);
+      get_dlnZ_fused<<<grid, 100, bins_1d * sizeof(double)>>>(
+          data[0], data->beta_t, data->gshift_d, data->params_d,
+          data->current_block_idx);
       CUDA_CHECK(cudaGetLastError());
       CUDA_CHECK(cudaDeviceSynchronize());
 
-      CUDA_CHECK(cudaMemcpy(data->dlnZ_hN[j1], &(data->dlnZ_dN[B_N * j1]), B_N * sizeof(double), cudaMemcpyDeviceToHost));
+      // Single bulk memcpy at g_1d_bins stride, then scatter to dlnZ_hN
+      double *dlnZ_bulk = (double *)malloc(jN * bins_1d * sizeof(double));
+      CUDA_CHECK(cudaMemcpy(dlnZ_bulk, data->dlnZ_dN,
+                             jN * bins_1d * sizeof(double), cudaMemcpyDeviceToHost));
+      for (j1 = 0; j1 < jN; j1++)
+        memcpy(data->dlnZ_hN[j1], &dlnZ_bulk[j1 * bins_1d], bins_1d * sizeof(double));
+      free(dlnZ_bulk);
+    } else {
+      // --- Serial dlnZ path (original) ---
+      for (j1 = 0; j1 < jN; j1++)
+      {
+        reactioncoord_all(data, j1);
+        resetlogdata<<<(B_N + BLOCK - 1) / BLOCK, BLOCK>>>(&(data->dlnZ_dN[B_N * j1]), B_N);
+        CUDA_CHECK(cudaGetLastError());
+        CUDA_CHECK(cudaDeviceSynchronize());
+
+        get_dlnZ<<<(data->ND + (100 * SBLOCK) - 1) / (100 * SBLOCK), 100, B_N * sizeof(double)>>>(data[0], j1, data->beta_t,
+                                                                            data->gshift_d, data->current_block_idx);
+        CUDA_CHECK(cudaGetLastError());
+        CUDA_CHECK(cudaDeviceSynchronize());
+
+        CUDA_CHECK(cudaMemcpy(data->dlnZ_hN[j1], &(data->dlnZ_dN[B_N * j1]), B_N * sizeof(double), cudaMemcpyDeviceToHost));
+      }
     }
 
-    get_CC<<<make_uint3(jN, jN, 1), 100>>>(data[0], i, data->beta_t, wnorm, ptype,
-                                           data->gshift_d, data->current_block_idx);
-    CUDA_CHECK(cudaGetLastError());
-    CUDA_CHECK(cudaDeviceSynchronize());
+    // CC matrix: DGEMM path or legacy kernel
+    if (data->use_fused) {
+      int dgemm_ret = compute_CC_dgemm(data, wnorm, ptype);
+      if (dgemm_ret != 0) {
+        fprintf(stderr, "DGEMM fallback to serial get_CC for profile %d\n", i);
+        get_CC<<<make_uint3(jN, jN, 1), 100>>>(data[0], i, data->beta_t, wnorm, ptype,
+                                                 data->gshift_d, data->current_block_idx);
+        CUDA_CHECK(cudaGetLastError());
+        CUDA_CHECK(cudaDeviceSynchronize());
+      }
+    } else {
+      get_CC<<<make_uint3(jN, jN, 1), 100>>>(data[0], i, data->beta_t, wnorm, ptype,
+                                               data->gshift_d, data->current_block_idx);
+      CUDA_CHECK(cudaGetLastError());
+      CUDA_CHECK(cudaDeviceSynchronize());
+    }
 
     CUDA_CHECK(cudaMemcpy(data->CC_h, data->CC_d, jN * jN * sizeof(double), cudaMemcpyDeviceToHost));
 
@@ -2042,7 +2337,10 @@ static void free_wham_data(struct_data *data)
     free(data->gimp_cache);
   }
   free(data->profiles);
+  cudaFree(data->params_d);
   free(data->params);
+  cudaFree(data->M_d);
+  cudaFree(data->sqrt_w_d);
 
   // The struct itself
   free(data);
@@ -2097,6 +2395,12 @@ static struct_data *readdata_from_memory(
   data->ntriangle = ntriangle_in;
   data->endpoint_weight = 100.0;  // default; overridden by caller after readdata_from_memory()
   data->endpoint_decay = 2.0;     // default; overridden by caller after readdata_from_memory()
+
+  // Fused dlnZ + cuBLAS DGEMM: enabled by default, override with CPHMD_WHAM_SERIAL=1
+  data->use_fused = 1;
+  const char *fused_env = getenv("CPHMD_WHAM_SERIAL");
+  if (fused_env && atoi(fused_env) == 1)
+    data->use_fused = 0;
   data->Nsim = nf;
 
   // G_imp path

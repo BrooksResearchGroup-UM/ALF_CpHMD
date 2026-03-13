@@ -11,7 +11,7 @@ NVCCFLAGS := -shared -Xcompiler -fPIC -arch=all-major -Wno-deprecated-gpu-target
 all: $(WHAM_TARGET)
 
 $(WHAM_TARGET): wham.cu wham.h
-	$(NVCC) $(NVCCFLAGS) -o $@ $<
+	$(NVCC) $(NVCCFLAGS) -lcublas -o $@ $<
 
 clean:
 	rm -f $(WHAM_TARGET)
