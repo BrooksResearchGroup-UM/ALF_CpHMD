@@ -1510,9 +1510,9 @@ def run_wham_distributed_from_packed(
 
     profile_ok = True
     dim_out = ctypes.c_int(0)
-    max_dim = 1000
-    C_out = np.zeros(max_dim * max_dim, dtype=np.float64)
-    V_out = np.zeros(max_dim, dtype=np.float64)
+    cv_dim = _compute_cv_dim(nsubs, nts0, nts1, ntriangle)
+    C_out = np.zeros(cv_dim * cv_dim, dtype=np.float64)
+    V_out = np.zeros(cv_dim, dtype=np.float64)
 
     if my_start < my_end:
         lib = _get_wham_lib()
@@ -1567,8 +1567,8 @@ def run_wham_distributed_from_packed(
 
     # Ranks that skipped CUDA have dim_out=0; get the real dim via allreduce MAX.
     dim = comm.allreduce(dim_out.value, op=MPI.MAX)
-    if dim > max_dim:
-        raise RuntimeError(f"C/V dimension {dim} exceeds max_dim={max_dim}")
+    if dim > cv_dim:
+        raise RuntimeError(f"C/V dimension {dim} exceeds pre-computed cv_dim={cv_dim}")
 
     C_local = C_out[: dim * dim].copy()
     V_local = V_out[:dim].copy()
@@ -1793,14 +1793,9 @@ def run_wham_profiles(
     out_path.mkdir(parents=True, exist_ok=True)
     (out_path / "multisite").mkdir(exist_ok=True)
 
-    # We don't know the exact dim until CUDA computes it, but we can estimate:
-    # dim = jN + iN, which depends on nsubs, ntriangle, ms, msprof.
-    # Allocate generously — CUDA will tell us the actual dim.
-    # Upper bound: for nsubs with N subsites each, jN ~ N + ntriangle*N*(N-1)/2 per site
-    # and iN ~ N + 2*N*(N-1)/2 per site. 1000 is a safe upper bound for any system.
-    max_dim = 1000
-    C_out = np.zeros(max_dim * max_dim, dtype=np.float64)
-    V_out = np.zeros(max_dim, dtype=np.float64)
+    cv_dim = _compute_cv_dim(nsubs, nts0, nts1, ntriangle)
+    C_out = np.zeros(cv_dim * cv_dim, dtype=np.float64)
+    V_out = np.zeros(cv_dim, dtype=np.float64)
     dim_out = ctypes.c_int(0)
 
     f_in = np.ascontiguousarray(f_values, dtype=np.float64)
@@ -1896,6 +1891,32 @@ def _compute_n_profiles(nsubs, nts1: int) -> int:
             elif nts1 > 0:  # msprof
                 iN += int(nsubs_arr[s1]) * int(nsubs_arr[s2])
     return iN
+
+
+def _compute_n_params(nsubs, nts0: int, ntriangle: int) -> int:
+    """Compute total number of WHAM bias parameters (jN) from nsubs.
+
+    Mirrors the param counting logic in wham.cu readdata_from_memory.
+    """
+    nsubs_arr = np.asarray(nsubs, dtype=np.int32) if nsubs is not None else np.array([], dtype=np.int32)
+    jN = 0
+    nsites_val = len(nsubs_arr)
+    for s1 in range(nsites_val):
+        for s2 in range(s1, nsites_val):
+            ns1 = int(nsubs_arr[s1])
+            ns2 = int(nsubs_arr[s2])
+            if s1 == s2:
+                jN += ns1 + ntriangle * ns1 * (ns1 - 1) // 2
+            elif nts0 == 1:
+                jN += ntriangle * ns1 * ns2
+            elif nts0 == 2:
+                jN += ns1 * ns2
+    return jN
+
+
+def _compute_cv_dim(nsubs, nts0: int, nts1: int, ntriangle: int) -> int:
+    """Compute C/V matrix dimension (jN + iN) for output buffer allocation."""
+    return _compute_n_params(nsubs, nts0, ntriangle) + _compute_n_profiles(nsubs, nts1)
 
 
 def run_wham_distributed(
@@ -2131,9 +2152,9 @@ def run_wham_distributed(
 
     profile_ok = True
     dim_out = ctypes.c_int(0)
-    max_dim = 1000
-    C_out = np.zeros(max_dim * max_dim, dtype=np.float64)
-    V_out = np.zeros(max_dim, dtype=np.float64)
+    cv_dim = _compute_cv_dim(nsubs, nts0, nts1, ntriangle)
+    C_out = np.zeros(cv_dim * cv_dim, dtype=np.float64)
+    V_out = np.zeros(cv_dim, dtype=np.float64)
 
     if my_start < my_end:
         lib = _get_wham_lib()
@@ -2186,10 +2207,9 @@ def run_wham_distributed(
 
     # Ranks that skipped CUDA have dim_out=0; get the real dim via allreduce MAX.
     dim = comm.allreduce(dim_out.value, op=MPI.MAX)
-    if dim > max_dim:
+    if dim > cv_dim:
         raise RuntimeError(
-            f"WHAM dimension {dim} exceeds buffer size {max_dim} — "
-            f"increase max_dim in run_wham_distributed"
+            f"WHAM dimension {dim} exceeds pre-computed cv_dim={cv_dim}"
         )
     C_partial = C_out[: dim * dim].copy()
     V_partial = V_out[:dim].copy()
