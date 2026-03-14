@@ -433,4 +433,7 @@ pytest tests/ -v --tb=short
 
 ## License
 
-MIT License -- See LICENSE file for details.
+Copyright (c) 2024-2026 Stanislav Cherepanov and Charles L. Brooks III,
+Brooks Research Group, University of Michigan.
+
+All rights reserved. Patent pending. See [LICENSE](LICENSE) for details.

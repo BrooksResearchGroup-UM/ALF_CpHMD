@@ -98,6 +98,7 @@ class DynamicsRunner:
 
         if is_first_run:
             settings.set_bomb_level(-1)
+            prnlvl = settings.set_verbosity(1)
             if self.config.hmr:
                 psf_file = prep_dir / "system_hmr.psf"
                 if not psf_file.exists():
@@ -110,6 +111,7 @@ class DynamicsRunner:
             else:
                 psf_file = prep_dir / "system.psf"
                 read.psf_card(qpath(psf_file))
+            settings.set_verbosity(prnlvl)
             settings.set_bomb_level(0)
 
             if (self.state.patch_info is not None
@@ -136,9 +138,8 @@ class DynamicsRunner:
 
         if (prep_dir / "system_min.crd").exists():
             crd_file = prep_dir / "system_min.crd"
-        elif self.config.hmr:
-            crd_file = prep_dir / "system_hmr.crd"
         else:
+            # CRD is always system.crd — HMR only changes the PSF, not coordinates
             crd_file = prep_dir / "system.crd"
 
         read.coor_card(qpath(crd_file))
