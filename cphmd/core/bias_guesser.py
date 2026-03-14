@@ -259,7 +259,7 @@ def _build_energy_block_command(
     # Ensure site/sub columns exist (derived from SELECT, e.g. "s1s2" → site=1, sub=2)
     if "site" not in patch_info.columns:
         patch_info = patch_info.copy()
-        patch_info[["site", "sub"]] = patch_info["SELECT"].str.extract(r"s(\d+)s(\d+)")
+        patch_info[["site", "sub"]] = patch_info["SELECT"].str.extract(r"(?i)s(\d+)s(\d+)")
         patch_info["site"] = patch_info["site"].astype(int)
         patch_info["sub"] = patch_info["sub"].astype(int)
 
@@ -271,17 +271,19 @@ def _build_energy_block_command(
         if site_idx in site_lambdas:
             full_lambda.extend(site_lambdas[site_idx])
         else:
-            # Equipartition for unperturbed sites
-            full_lambda.extend([1.0 / n] * n)
+            # Equipartition: integer percentages summing to 100, then /100
+            pcts = [100 // n] * n
+            pcts[0] += 100 - sum(pcts)
+            full_lambda.extend([p / 100.0 for p in pcts])
 
     # Build LDIN lines with zero bias, specified lambda
     ldin_lines = [
         "!--- LDIN for energy evaluation ---",
-        f"LDIN {1:<4} {1:<4} {0.0:<4} {12.0:<4} {0.0:<2} {5.0:<4}",  # Environment
+        f"LDIN {1:<4} {1.0:.4f} {0.0:.4f} {12.0:.1f} {0.0:.4f} {5.0:.1f}",  # Environment
     ]
     for idx, row in patch_info.iterrows():
         l0 = full_lambda[idx]
-        ldin_lines.append(f"LDIN {idx + 2:<4} {l0:<8.5f} {0.0:<4} {12.0:<4} {0.0:<2} {5.0:<4}")
+        ldin_lines.append(f"LDIN {idx + 2:<4} {l0:.4f} {0.0:.4f} {12.0:.1f} {0.0:.4f} {5.0:.1f}")
     ldin_str = "\n".join(ldin_lines) + "\n\n"
 
     # MSLD setup (no actual dynamics — just for energy evaluation)

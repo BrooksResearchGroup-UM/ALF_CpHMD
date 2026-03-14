@@ -229,14 +229,17 @@ def generate_ldin_statements(
         site_mask = patch_info["site"] == site
         subsites = patch_info.loc[site_mask, "sub"].tolist()
 
-        # Dirichlet alpha: uniform [1,1,...] or biased [1,1,10] for unsampled states
+        # Integer-percentage lambda init: draw Dirichlet, convert to integer
+        # percentages (1–100) that sum to exactly 100, then divide by 100.
+        # This guarantees exact sum=1.00 with 0.XX format (no rounding issues).
         n = len(subsites)
         alpha = np.array(biased_alphas.get(site, np.ones(n)), dtype=float)
-        l0_values = np.random.dirichlet(alpha)
-        # Truncate to 4 decimals, then assign remainder to largest element
-        l0_values = np.trunc(l0_values * 10000) / 10000
-        remainder = round(1.0 - l0_values.sum(), 4)
-        l0_values[np.argmax(l0_values)] += remainder
+        raw = np.random.dirichlet(alpha)
+        # Convert to integer percentages (floor), minimum 1 per state
+        pcts = np.maximum(np.floor(raw * 100).astype(int), 1)
+        # Distribute remainder to the largest element
+        pcts[np.argmax(raw)] += 100 - pcts.sum()
+        l0_values = pcts / 100.0
 
         for sub, l0 in zip(subsites, l0_values):
             mask = (patch_info["site"] == site) & (patch_info["sub"] == sub)
