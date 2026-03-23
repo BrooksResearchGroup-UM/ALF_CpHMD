@@ -337,6 +337,18 @@ def clear_noe() -> None:
     lingo.charmm_script("NOE\n RESET\n END")
 
 
+def reset_io_unit(unit: int = 91) -> None:
+    """Reset Fortran I/O unit to clear EOF marker.
+
+    After sequential write operations, the unit stays at EOF and subsequent
+    reads fail with "Sequential READ not allowed after EOF marker".
+    Force-reset by opening/closing with /dev/null.
+    """
+    import pycharmm.lingo as lingo
+    lingo.charmm_script(f"open unit {unit} write form name /dev/null")
+    lingo.charmm_script(f"close unit {unit}")
+
+
 def get_natom() -> int:
     """Get number of atoms in PSF."""
     import pycharmm.psf as psf

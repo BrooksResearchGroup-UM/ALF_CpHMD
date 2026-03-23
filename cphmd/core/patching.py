@@ -811,6 +811,10 @@ def patch_system(config: PatchConfig) -> Path:
     _read_topology_files(config)
     lingo.charmm_script("IOFOrmat EXTEnded")
 
+    # Ligand fragments may have fractional charge — suppress PSF charge warning
+    if config.ligand_patches:
+        pycharmm.charmm_script("bomblevel -2")
+
     # Load structure
     read.psf_card(qpath(psf_path))
     read.coor_card(qpath(crd_path))
@@ -856,9 +860,12 @@ def patch_system(config: PatchConfig) -> Path:
     tmp_dir = output_folder / "tmp"
     tmp_dir.mkdir(exist_ok=True)
 
+    from cphmd.core.charmm_utils import reset_io_unit as _reset_io
+
     for seg_id in seg_ids:
         if seg_id != seg_ids[0]:
             psf.delete_atoms(pycharmm.SelectAtoms().all_atoms())
+            _reset_io(91)
             read.psf_card(qpath(psf_path))
             read.coor_card(qpath(crd_path))
 
@@ -882,8 +889,8 @@ def patch_system(config: PatchConfig) -> Path:
             titratable_list.append((res[0], res[1], "HSP"))
 
         pycharmm.charmm_script("HBuild")
-        write.psf_card(str(tmp_dir / f"{seg_id}.psf"))
-        write.coor_card(str(tmp_dir / f"{seg_id}.crd"))
+        write.psf_card(str(tmp_dir / f"{seg_id.lower()}.psf"))
+        write.coor_card(str(tmp_dir / f"{seg_id.lower()}.crd"))
 
     # Filter titratable residues based on selection criteria
     filtered_list = [
@@ -913,8 +920,9 @@ def patch_system(config: PatchConfig) -> Path:
     for seg_id in seg_ids:
         with open(patches_file, "a") as f:
             psf.delete_atoms(pycharmm.SelectAtoms().all_atoms())
-            read.psf_card(qpath(tmp_dir / f"{seg_id}.psf"))
-            read.coor_card(qpath(tmp_dir / f"{seg_id}.crd"))
+            _reset_io(91)
+            read.psf_card(qpath(tmp_dir / f"{seg_id.lower()}.psf"))
+            read.coor_card(qpath(tmp_dir / f"{seg_id.lower()}.crd"))
 
             sublist = [res for res in titratable_list if res[0] == seg_id]
             print(f"Patching segment {seg_id}: {sublist}")
@@ -927,18 +935,19 @@ def patch_system(config: PatchConfig) -> Path:
         ic.prm_fill(replace_all=True)
         # Build coordinates for newly added hydrogens (e.g., H36, H37 from ligand patches)
         pycharmm.charmm_script("HBUILD")
-        write.coor_card(str(tmp_dir / f"{seg_id}.crd"))
-        write.psf_card(str(tmp_dir / f"{seg_id}.psf"))
+        write.coor_card(str(tmp_dir / f"{seg_id.lower()}.crd"))
+        write.psf_card(str(tmp_dir / f"{seg_id.lower()}.psf"))
 
     # Combine segments
     psf.delete_atoms(pycharmm.SelectAtoms().all_atoms())
     for i, seg_id in enumerate(seg_ids):
+        _reset_io(91)
         if i == 0:
-            read.psf_card(qpath(tmp_dir / f"{seg_id}.psf"))
-            read.coor_card(qpath(tmp_dir / f"{seg_id}.crd"))
+            read.psf_card(qpath(tmp_dir / f"{seg_id.lower()}.psf"))
+            read.coor_card(qpath(tmp_dir / f"{seg_id.lower()}.crd"))
         else:
-            read.psf_card(qpath(tmp_dir / f"{seg_id}.psf"), append=True)
-            read.coor_card(qpath(tmp_dir / f"{seg_id}.crd"), append=True)
+            read.psf_card(qpath(tmp_dir / f"{seg_id.lower()}.psf"), append=True)
+            read.coor_card(qpath(tmp_dir / f"{seg_id.lower()}.crd"), append=True)
 
     # Reset bomblevel after all patching is complete
     pycharmm.charmm_script("bomblevel 0")
@@ -980,6 +989,7 @@ def _apply_patches(
     f,
 ) -> int:
     """Apply patches to titratable residues using CHARMM REPLICATE command."""
+    from cphmd.core.charmm_utils import reset_io_unit as _reset_io
     pycharmm.charmm_script("AUTO NOPAtch")
     idx = start_idx
 
@@ -994,8 +1004,9 @@ def _apply_patches(
 
         # Check if first occurrence of this segment
         if [res[0] for res in titratable_list].index(seg_id) == titratable_list.index(residue):
-            read.psf_card(qpath(input_folder / "tmp" / f"{seg_id}.psf"))
-            read.coor_card(qpath(input_folder / "tmp" / f"{seg_id}.crd"))
+            _reset_io(91)
+            read.psf_card(qpath(input_folder / "tmp" / f"{seg_id.lower()}.psf"))
+            read.coor_card(qpath(input_folder / "tmp" / f"{seg_id.lower()}.crd"))
 
         # Build REPLICATE command
         n_rep = len(patches_topology.patches[resname]) + 1

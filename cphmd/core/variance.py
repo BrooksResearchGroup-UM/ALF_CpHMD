@@ -39,6 +39,43 @@ class VarianceResult:
     g_matrix: np.ndarray = field(default_factory=lambda: np.array([]))
 
 
+def _build_analysis_dir(work_dir: Path, analysis_idx: int) -> Path:
+    """Build path to an analysis directory.
+
+    The ALF runner creates directories at work_dir/analysis{N} (e.g., analysis5),
+    not work_dir/analysis/{N}.
+
+    Args:
+        work_dir: Path to system work directory.
+        analysis_idx: Analysis cycle index.
+
+    Returns:
+        Path to the analysis directory.
+    """
+    return work_dir / f"analysis{analysis_idx}"
+
+
+def _resolve_nbshift_dir(analysis_dir: Path, work_dir: Path) -> Path:
+    """Resolve nbshift directory, preferring per-analysis snapshot.
+
+    Each analysisN/ directory gets a frozen copy of nbshift/ at the time
+    that run was executed (via shutil.copytree in _alf_analysis). This
+    snapshot preserves the phase-specific delta_pKa. Falls back to the
+    top-level work_dir/nbshift/ for old runs that lack per-analysis copies.
+
+    Args:
+        analysis_dir: Path to analysisN/ directory.
+        work_dir: Path to system work directory.
+
+    Returns:
+        Path to the nbshift directory to use.
+    """
+    local = analysis_dir / "nbshift"
+    if local.is_dir() and (local / "b_shift.dat").exists():
+        return local
+    return work_dir / "nbshift"
+
+
 def get_variance(
     work_dir: str | Path,
     alf_info: "ALFInfo | dict",
@@ -51,7 +88,7 @@ def get_variance(
     """Compute free energies using histogram estimator with bootstrap.
 
     Estimates free energy changes using the histogram-based estimator and
-    alchemical trajectories in analysis/{idx}/data/Lambda.[idupl].[irep].{parquet,dat}.
+    alchemical trajectories in analysis{idx}/data/Lambda.[idupl].[irep].{parquet,dat}.
     The histogram estimator uses a lambda cutoff (default 0.99) to count
     endpoint occupancy.
 
@@ -66,7 +103,7 @@ def get_variance(
         work_dir: Working directory for ALF simulation.
         alf_info: ALF configuration dictionary or ALFInfo dataclass.
         nf: Number of independent trials run during production.
-        analysis_idx: Index of the analysis directory (e.g., 5 for analysis/5/).
+        analysis_idx: Index of the analysis directory (e.g., 5 for analysis5/).
         nbs: Number of bootstrap samples (default 50).
         lc: Lambda cutoff for endpoint detection (default 0.99).
         seed: Random seed for bootstrap reproducibility (default 2401).
@@ -85,8 +122,8 @@ def get_variance(
         >>> print(f"Uncertainties: {result.errors}")
     """
     work_dir = Path(work_dir)
-    analysis_dir = work_dir / "analysis" / str(analysis_idx)
-    nbshift_dir = work_dir / "nbshift"
+    analysis_dir = _build_analysis_dir(work_dir, analysis_idx)
+    nbshift_dir = _resolve_nbshift_dir(analysis_dir, work_dir)
 
     return _compute_variance(
         analysis_dir, nbshift_dir, alf_info, nf, nbs, lc, seed

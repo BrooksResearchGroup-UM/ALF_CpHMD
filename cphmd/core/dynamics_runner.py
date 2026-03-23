@@ -80,6 +80,7 @@ class DynamicsRunner:
         """
         import random
 
+        import pycharmm.lingo as lingo
         import pycharmm.read as read
         import pycharmm.settings as settings
 
@@ -98,7 +99,11 @@ class DynamicsRunner:
 
         if is_first_run:
             settings.set_bomb_level(-1)
-            prnlvl = settings.set_verbosity(1)
+            # Disable autogeneration before PSF read — prevents CHARMM from
+            # regenerating angles/dihedrals that were intentionally deleted
+            # during patching (e.g., cross-sub terms removed by dele connectivity).
+            lingo.charmm_script("AUTO OFF")
+            prnlvl = settings.set_verbosity(1) if not self.config.debug else None
             if self.config.hmr:
                 psf_file = prep_dir / "system_hmr.psf"
                 if not psf_file.exists():
@@ -111,7 +116,8 @@ class DynamicsRunner:
             else:
                 psf_file = prep_dir / "system.psf"
                 read.psf_card(qpath(psf_file))
-            settings.set_verbosity(prnlvl)
+            if prnlvl is not None:
+                settings.set_verbosity(prnlvl)
             settings.set_bomb_level(0)
 
             if (self.state.patch_info is not None
@@ -139,10 +145,14 @@ class DynamicsRunner:
         if (prep_dir / "system_min.crd").exists():
             crd_file = prep_dir / "system_min.crd"
         else:
-            # CRD is always system.crd — HMR only changes the PSF, not coordinates
             crd_file = prep_dir / "system.crd"
 
+        # Lower bomblevel for CRD read — converted systems may have
+        # resname mismatches that trigger sequence warnings (coordinates
+        # are assigned sequentially regardless)
+        settings.set_bomb_level(-1)
         read.coor_card(qpath(crd_file))
+        settings.set_bomb_level(0)
 
         if self.state.restart_run > 0:
             restart_candidates = [

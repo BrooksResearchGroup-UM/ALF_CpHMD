@@ -348,7 +348,7 @@ def _generate_block_str(
     output.append("! All bond/angle/dihe terms treated at full str (no scaling),")
     output.append("! prevent unphysical results")
     output.append("!------------------------------------------\n")
-    output.append("rmla bond thet impr")
+    output.append("rmla bond thet dihe impr")
 
     output.append("!------------------------------------------")
     output.append("! Selects MSLD, the numbers assign each block to the specified site on the core")

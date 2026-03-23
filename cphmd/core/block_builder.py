@@ -280,6 +280,7 @@ def generate_rmla_msld(
     fnex: float = 5.5,
     fpie_width: float = 1.0,
     fpie_force: float = 100.0,
+    no_constraint: bool = False,
 ) -> str:
     """Generate RMLA and MSLD/MSMA statements.
 
@@ -292,6 +293,7 @@ def generate_rmla_msld(
         fnex: FNEX parameter value (when constraint_type="fnex")
         fpie_width: FPIE flat-bottom well width (when constraint_type="fpie")
         fpie_force: FPIE flat-bottom force constant (when constraint_type="fpie")
+        no_constraint: Skip FNEX/FPIE constraint (safe for energy-only evaluation)
 
     Returns:
         CHARMM RMLA/MSLD/MSMA statements
@@ -301,7 +303,7 @@ def generate_rmla_msld(
         "! All bond/angle/dihe terms treated at full strength (no scaling),",
         "! prevent unphysical results",
         "!------------------------------------------\n",
-        "rmla bond theta impr\n",
+        "rmla bond thet dihe impr\n",
         "!------------------------------------------",
         "! MSLD - numbers assign each block to the specified site",
         "!------------------------------------------\n",
@@ -317,7 +319,11 @@ def generate_rmla_msld(
             lines.append(f"{site_num} -")
 
     # Generate constraint specification based on type
-    if constraint_type == "fpie":
+    # no_constraint: skip FNEX/FPIE — safe for energy-only evaluation (bias guessing),
+    # avoids instability at lambda=1.0 boundary
+    if no_constraint:
+        constraint_str = ""
+    elif constraint_type == "fpie":
         constraint_str = f"fpie widt {fpie_width} forc {fpie_force}"
     else:
         constraint_str = f"fnex {fnex}"

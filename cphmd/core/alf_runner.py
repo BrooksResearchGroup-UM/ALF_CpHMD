@@ -112,6 +112,7 @@ class ALFConfig:
     # Preset biases (converged single-site biases from cubic box simulations)
     use_presets: bool = False  # Use preset biases for initial ALF parameters
     bias_guess: bool = True  # Run solvated-vacuum bias guessing on first run
+    debug: bool = False  # Keep full CHARMM verbosity (skip prnlev suppression)
 
     # Inter-site coupling
     coupling: Literal[0, 1, 2] = 0  # 0=none, 1=full c/x/s, 2=c-only
@@ -605,10 +606,11 @@ class ALFSimulation:
         """
         from pycharmm import lingo, read, settings
 
-        # Suppress warnings during loading
-        lingo.charmm_script("prnlev -1")
+        # Suppress warnings during loading (debug keeps prnlev/wrnlev open)
         lingo.charmm_script("bomblevel -2")
-        settings.set_warn_level(-1)
+        if not self.config.debug:
+            lingo.charmm_script("prnlev -1")
+            settings.set_warn_level(-1)
 
         for file_path in self.config.extra_files:
             file_path = Path(file_path)
@@ -626,9 +628,10 @@ class ALFSimulation:
                 raise ValueError(f"Unknown file type: {file_path}")
 
         # Restore settings
-        settings.set_warn_level(5)
         lingo.charmm_script("bomblevel 0")
-        lingo.charmm_script("prnlev 5")
+        if not self.config.debug:
+            settings.set_warn_level(5)
+            lingo.charmm_script("prnlev 5")
 
     def _load_patch_info(self):
         """Load patch information from patches.dat."""
@@ -892,6 +895,7 @@ class ALFSimulation:
 
         if self.state.rank == 0:
             import pycharmm.lingo as lingo
+            import pycharmm.settings as settings
 
             from .alf_utils import init_vars
             from .bias_guesser import guess_initial_biases_combined
@@ -902,19 +906,34 @@ class ALFSimulation:
             print("Guessing initial biases from solvated-vacuum energy difference...")
             sys.stdout.flush()
 
-            # Suppress CHARMM output during bias guessing (many BLOCK/energy
-            # evaluations produce huge output for large systems)
-            lingo.charmm_script("prnlev 0")
+            # Suppress CHARMM output during bias guessing (unless debug mode)
+            verbosity = settings.set_verbosity(0) if not self.config.debug else None
+            warnings = settings.set_warn_level(-3) if not self.config.debug else None
 
-            # Load PSF, coordinates, crystal, and nonbonded for energy evaluation
+            # Workflow order (must match main loop):
+            #   1. Load PSF + CRD
+            #   2. Full BLOCK/MSLD — CALL, LDIN, exclusions, MSLD FNEX
+            #   3. Crystal + nonbonded (MAKINB)
+            #   4. Minimise — resolve clashes before energy evaluation
             if is_legacy:
                 self._dynamics.setup_legacy(
                     run_idx=self.config.start, letter="", k=0, replica_idx=0
                 )
             else:
+                # 1. Load PSF + CRD
                 self._dynamics.setup_crystal(
                     run_idx=self.config.start, letter="", k=0, replica_idx=0
                 )
+                # 2. Full BLOCK/MSLD setup (CALL, LDIN, exclusions, MSLD FNEX)
+                self._build_block_commands(
+                    self.config.start, letter="", k=0, replica_idx=0
+                )
+                # 3. Crystal + nonbonded
+                self._dynamics.setup_crystal_nonbonded(
+                    run_idx=self.config.start, letter="", k=0, replica_idx=0
+                )
+            # 4. Minimise
+            self._dynamics.run_minimization(self.config.start, replica_idx=0)
 
             try:
                 if is_legacy:
@@ -952,7 +971,10 @@ class ALFSimulation:
             marker.touch()
 
             # Restore CHARMM output level
-            lingo.charmm_script("prnlev 5")
+            if verbosity is not None:
+                settings.set_verbosity(verbosity)
+            if warnings is not None:
+                settings.set_warn_level(warnings)
 
             # Clear CHARMM session — main loop will reload fresh
             clear_block()
@@ -1951,6 +1973,13 @@ class ALFSimulation:
                     run_idx, nsubs, msprof, self.config.input_folder,
                 )
 
+            # Capture phase BEFORE transition check — the lambda data in this
+            # analysis directory was collected at THIS phase's delta_pKa.
+            from .cphmd_params import get_delta_pKa_for_phase
+
+            pre_transition_phase = self.state.phase
+            pre_transition_delta_pKa = get_delta_pKa_for_phase(pre_transition_phase)
+
             self._convergence.check_and_update_phase(
                 run_idx, lambda_data, nsubs, cut_params, trans_matrices,
                 self._regenerate_g_imp_if_needed,
@@ -1966,9 +1995,9 @@ class ALFSimulation:
                 self.state.patch_info is not None):
                 from cphmd.analysis.henderson_hasselbalch import generate_hh_analysis
 
-                from .cphmd_params import compute_all_site_parameters, get_delta_pKa_for_phase
+                from .cphmd_params import compute_all_site_parameters
 
-                delta_pKa = get_delta_pKa_for_phase(self.state.phase)
+                delta_pKa = pre_transition_delta_pKa
                 cphmd_params = compute_all_site_parameters(
                     self.state.patch_info,
                     self.config.temperature,

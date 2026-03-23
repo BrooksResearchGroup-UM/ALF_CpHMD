@@ -271,10 +271,8 @@ def _build_energy_block_command(
         if site_idx in site_lambdas:
             full_lambda.extend(site_lambdas[site_idx])
         else:
-            # Equipartition: integer percentages summing to 100, then /100
-            pcts = [100 // n] * n
-            pcts[0] += 100 - sum(pcts)
-            full_lambda.extend([p / 100.0 for p in pcts])
+            # Equipartition for unperturbed sites
+            full_lambda.extend([1.0 / n] * n)
 
     # Build LDIN lines with zero bias, specified lambda
     ldin_lines = [
@@ -301,7 +299,7 @@ def _build_energy_block_command(
         generate_exclusions(patch_info),
         dynamics_setup,
         ldin_str,
-        generate_rmla_msld(patch_info, constraint_type="fnex", fnex=fnex),
+        generate_rmla_msld(patch_info, no_constraint=True),
         _generate_zero_ldbv(patch_info, fnex=fnex),
         "END",
     ]
@@ -410,20 +408,26 @@ def guess_initial_biases(
     return b, c
 
 
-def _setup_vacuum_nonbonded():
-    """Delete solvent/ions and switch to vacuum nonbonded settings."""
+def _setup_vacuum_nonbonded(
+    patch_info: pd.DataFrame | None,
+    nsubs: list[int],
+    fnex: float = 5.5,
+    legacy: bool = False,
+):
+    """Delete solvent/ions and switch to vacuum nonbonded settings.
+
+    Sets up a full BLOCK (CALL, LDIN, exclusions, MSLD) before NBONDS
+    so CHARMM knows block assignments and excluded atom pairs during
+    the nonbond list build (MAKINB).
+    """
     import pycharmm.lingo as lingo
     import pycharmm.settings as settings
 
-    # Lower bomb level through entire transition — deleting atoms with
-    # image centering active triggers LEVEL 0 warning, and the first
-    # energy evaluation after clearing PME may trigger colfft LEVEL -5
-    # warnings as the FFT grid is invalidated.
+    from .charmm_utils import clear_block, execute_block_command
+
+    # Lower bomb level through entire transition
     settings.set_bomb_level(-6)
 
-    # Delete water and ion atoms. Use resname TIP3 (universal) with
-    # segid fallback to cover both default format (segid SOLV/IONS)
-    # and legacy format (msld-py-prep with different segment names).
     lingo.charmm_script(
         "delete atom sele resn TIP3 .or. segid SOLV .or. segid IONS end"
     )
@@ -431,8 +435,15 @@ def _setup_vacuum_nonbonded():
     # Clear crystal (removes PBC and PME)
     lingo.charmm_script("CRYSTAL FREE")
 
+    # Full BLOCK setup before NBONDS — CHARMM needs CALL assignments
+    # and exclusions to allocate per-atom bond arrays correctly.
+    clear_block()
+    block_cmd = _build_energy_block_command(
+        patch_info, {}, nsubs, fnex=fnex, legacy=legacy,
+    )
+    execute_block_command(block_cmd)
+
     # Set up vacuum nonbonded: force-shift, large cutoffs, no PME.
-    # NOEWald explicitly disables PME (FSHIFT alone does not clear it).
     lingo.charmm_script(
         "NBONDS ELEC ATOM CDIE EPS 1 NOEWald "
         "CUTNB 999.0 CUTIM 999.0 CTOFNB 998.0 CTONNB 990.0 "
@@ -469,7 +480,7 @@ def guess_initial_biases_vacuum(
     """
     import pycharmm.settings as settings
 
-    _setup_vacuum_nonbonded()
+    _setup_vacuum_nonbonded(patch_info, nsubs, fnex=fnex, legacy=legacy)
 
     # Keep bomb level low during vacuum energy evaluations — the first
     # nonbond list rebuild after clearing PME may still trigger residual
