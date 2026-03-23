@@ -915,6 +915,9 @@ class ALFSimulation:
             #   2. Full BLOCK/MSLD — CALL, LDIN, exclusions, MSLD FNEX
             #   3. Crystal + nonbonded (MAKINB)
             #   4. Minimise — resolve clashes before energy evaluation
+            # Create run directory before any file writes
+            self._setup_run_directory(self.config.start)
+
             if is_legacy:
                 self._dynamics.setup_legacy(
                     run_idx=self.config.start, letter="", k=0, replica_idx=0
