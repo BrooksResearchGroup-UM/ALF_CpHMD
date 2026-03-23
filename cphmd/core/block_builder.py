@@ -300,10 +300,10 @@ def generate_rmla_msld(
     """
     lines = [
         "!------------------------------------------",
-        "! All bond/angle/dihe terms treated at full strength (no scaling),",
-        "! prevent unphysical results",
+        "! Bond/angle/improper at full strength; dihedrals lambda-scaled",
+        "! (Hayes & Brooks 2024: scale dihedrals, unscale bond+angle)",
         "!------------------------------------------\n",
-        "rmla bond thet dihe impr\n",
+        "rmla bond thet impr\n",
         "!------------------------------------------",
         "! MSLD - numbers assign each block to the specified site",
         "!------------------------------------------\n",
