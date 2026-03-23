@@ -381,10 +381,12 @@ def generate_ldbv_statements(
         CHARMM LDBI/LDBV statements
     """
     from .bias_constants import derive_bias_constants
-    constants = derive_bias_constants(
-        fnex, chi_offset=chi_offset, omega_decay=omega_decay,
-        chi_offset_t=chi_offset_t, chi_offset_u=chi_offset_u,
-    )
+    kwargs = {"chi_offset_t": chi_offset_t, "chi_offset_u": chi_offset_u}
+    if chi_offset is not None:
+        kwargs["chi_offset"] = chi_offset
+    if omega_decay is not None:
+        kwargs["omega_decay"] = omega_decay
+    constants = derive_bias_constants(fnex, **kwargs)
     # Build all LDBV statements first to count them
     ldbv_lines = []
     idx = 0
