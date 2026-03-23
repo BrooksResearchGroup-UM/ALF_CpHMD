@@ -798,7 +798,7 @@ def _compute_cross_energy_matrix(
             Eij = np.reshape(np.dot(Lj, -bi), (-1, 1))
             Eij += np.sum(np.dot(Lj, -ci) * Lj, axis=1, keepdims=True)
             Eij += np.sum(
-                np.dot(1 - np.exp(-OMEGA_DECAY * Lj), -xi) * Lj,
+                np.dot(1 - np.exp(OMEGA_DECAY * Lj), -xi) * Lj,
                 axis=1, keepdims=True,
             )
             Eij += np.sum(
@@ -834,7 +834,7 @@ def _cross_energy_vec(
     E = np.dot(Lj, -bi).ravel()
     E += np.sum(np.dot(Lj, -ci) * Lj, axis=1)
     E += np.sum(
-        np.dot(1 - np.exp(-OMEGA_DECAY * Lj), -xi) * Lj,
+        np.dot(1 - np.exp(OMEGA_DECAY * Lj), -xi) * Lj,
         axis=1,
     )
     E += np.sum(
@@ -1061,7 +1061,7 @@ def compute_wham_inputs_distributed(
             Eij = np.reshape(np.dot(Lj, -bi), (-1, 1))
             Eij += np.sum(np.dot(Lj, -ci) * Lj, axis=1, keepdims=True)
             Eij += np.sum(
-                np.dot(1 - np.exp(-OMEGA_DECAY * Lj), -xi) * Lj,
+                np.dot(1 - np.exp(OMEGA_DECAY * Lj), -xi) * Lj,
                 axis=1, keepdims=True,
             )
             Eij += np.sum(
@@ -1363,7 +1363,7 @@ def compute_bias_energy(
     The bias energy has four components:
     - Linear (phi): -b·λ
     - Quadratic psi: -λᵀ·c·λ
-    - Omega (x-term): -λᵀ·(1-exp(-OMEGA_DECAY·λ))·x·λ
+    - Omega (x-term): -λᵀ·(1-exp(OMEGA_DECAY·λ))·x·λ  (OMEGA_DECAY < 0)
     - Chi (s-term): -λᵀ·(λ/(λ+CHI_OFFSET))·s·λ
 
     Constants are derived from FNEX (see bias_constants module).
@@ -1388,7 +1388,7 @@ def compute_bias_energy(
     E_c = -np.dot(lam, np.dot(c, lam))
 
     # Omega term (exponential)
-    omega_factor = 1.0 - np.exp(-OMEGA_DECAY * lam)
+    omega_factor = 1.0 - np.exp(OMEGA_DECAY * lam)
     E_x = -np.dot(lam * omega_factor, np.dot(x, lam))
 
     # Chi term (sigmoid)

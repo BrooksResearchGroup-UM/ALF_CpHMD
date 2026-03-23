@@ -100,10 +100,10 @@ typedef struct struct_data
   int current_block_idx; // Current block index for gshift lookups
   int use_gshift;        // 0 = disabled (legacy), 1 = enabled (apply G_imp shifts)
   char g_imp_path[256];  // Path to G_imp directory
-  double chi_offset;     // s-term sigmoid offset (derived from FNEX: 4*exp(-FNEX))
-  double omega_scale;      // x-term reciprocal decay (derived from FNEX: 1/FNEX)
-  double chi_offset_t;   // t-term sigmoid offset (independent of FNEX)
-  double chi_offset_u;   // u-term Hill sigmoid offset (independent of FNEX)
+  double chi_offset;     // s-term sigmoid offset (CHARMM LDBV class 8 REF = 0.017)
+  double omega_scale;    // x-term exponential scale (1/5.56, from LDBV class 10)
+  double chi_offset_t;   // t-term reverse sigmoid offset (0.012)
+  double chi_offset_u;   // u-term quadratic sigmoid offset (0.012)
   int ntriangle;         // pair params per unique pair: 5(bcxs), 7(+t), 9(+tu)
   double cutlsum;        // G12 conditional threshold (λ_i + λ_j > cutlsum)
   double endpoint_weight; // Phase-dependent endpoint bin weight (default 100.0)
@@ -224,12 +224,12 @@ typedef struct struct_lmalf
   // Paths
   char g_imp_path[256];  // Path to G_imp directory
 
-  // Bias constants (derived from FNEX)
+  // Bias constants (CHARMM LDBV defaults, independent of FNEX)
   double fnex;           // FNEX softmax constraint parameter
-  double chi_offset;     // s-term sigmoid offset (4*exp(-FNEX))
-  double omega_scale;      // x-term reciprocal decay (1/FNEX)
-  double chi_offset_t;   // t-term sigmoid offset (independent of FNEX)
-  double chi_offset_u;   // u-term Hill sigmoid offset (independent of FNEX)
+  double chi_offset;     // s-term sigmoid offset (CHARMM LDBV class 8 REF = 0.017)
+  double omega_scale;    // x-term exponential scale (1/5.56, from LDBV class 10)
+  double chi_offset_t;   // t-term reverse sigmoid offset (0.012)
+  double chi_offset_u;   // u-term quadratic sigmoid offset (0.012)
   int ntriangle;         // pair params per unique pair: 5(bcxs), 7(+t), 9(+tu)
 } struct_lmalf;
 

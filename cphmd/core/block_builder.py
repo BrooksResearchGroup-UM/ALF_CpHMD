@@ -456,7 +456,7 @@ def generate_ldbv_statements(
                     var_key = f"x{row1['SELECT']}{row2['SELECT']}"
                     x_val = variables.get(var_key, 0.0)
                     skew_lines.append(
-                        f"ldbv {idx:<3} {block1:<2} {block2:<2} {10:<4} {-constants.omega_decay:<8} {x_val:<6} {0:<1}"
+                        f"ldbv {idx:<3} {block1:<2} {block2:<2} {10:<4} {constants.omega_decay:<8} {x_val:<6} {0:<1}"
                     )
 
     ldbv_lines.extend(skew_lines)

@@ -70,8 +70,8 @@ class BlockGeneratorConfig:
     variables_dir: str = "variables"
     lambda_mass: float = 12.0    # Lambda mass in amu·Å² (BIMLAM)
     lambda_fbeta: float = 5.0    # Lambda Langevin friction in ps⁻¹ (BIBLAM)
-    chi_offset: float | None = None   # Sigmoid offset for LDBV class 8
-    omega_decay: float | None = None  # Exponential decay for LDBV class 10
+    chi_offset: float | None = None   # LDBV class 8 REF (default: 0.017)
+    omega_decay: float | None = None  # LDBV class 10 REF, negative (default: -5.56)
 
     def __post_init__(self):
         self.input_folder = Path(self.input_folder)
@@ -281,7 +281,7 @@ def _generate_block_str(
             x_key = f"xs1s{s1}s1s{s2}"
             x_val = var_df.get(x_key, 0.0)
             ldbv_lines.append(
-                f"LDBV {{idx:<3}} {b1:>4} {b2:>4} {10:>4} {-constants.omega_decay:>8} {x_val:>10} {0:>5}"
+                f"LDBV {{idx:<3}} {b1:>4} {b2:>4} {10:>4} {constants.omega_decay:>8} {x_val:>10} {0:>5}"
             )
 
         ldbv_lines.append("")

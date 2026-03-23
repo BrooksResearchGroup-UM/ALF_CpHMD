@@ -120,7 +120,7 @@ def energy_E_s(lambda_vec: np.ndarray, s: np.ndarray, epsilon: float = CHI_OFFSE
 
 def energy_E_x(lambda_vec: np.ndarray, x: np.ndarray, alpha: float = OMEGA_DECAY) -> float:
     """Compute skew bias energy E_x with exponential form."""
-    exp_term = 1 - np.exp(-alpha * lambda_vec)
+    exp_term = 1 - np.exp(alpha * lambda_vec)
     # sum_ij x[i,j] * lam[j] * (1 - exp(-alpha*lam[i]))
     return float(np.einsum("ij,j,i->", x, lambda_vec, exp_term))
 

@@ -1,45 +1,46 @@
-"""Bias potential constants derived from the FNEX parameter.
+"""Bias potential shape constants for LDBV classes.
 
-The FNEX parameter controls the implicit softmax constraint in lambda dynamics.
-The bias potential basis functions (x-term exponential and s-term sigmoid) have
-shape parameters that are physically determined by FNEX:
+Shape constants for the bias basis functions used in CHARMM BLOCK LDBV commands.
+These are independent of the FNEX softmax constraint parameter (c=5.5).
 
-    OMEGA_DECAY = FNEX           (x-term exponential decay rate)
-    CHI_OFFSET  = 4 * exp(-FNEX) (s-term sigmoid offset)
-    OMEGA_SCALE   = 1 / FNEX      (reciprocal for CUDA kernels)
+CHARMM BLOCK LDBV format: LDBV idx block1 block2 class REF amplitude flag
 
-For the default FNEX=5.5 (matching CHARMM BLOCK FNEX):
-    OMEGA_DECAY = 5.5, CHI_OFFSET = 0.01634, OMEGA_SCALE = 0.18182
+    Class 8  (s-term, endpoint sigmoid): REF = CHI_OFFSET = 0.017
+    Class 10 (x-term, exponential skew): REF = OMEGA_DECAY = -5.56
 
-Historical note: These were previously hardcoded as 5.56, 0.017, and 0.18 —
-approximations that drifted from the exact FNEX-derived values.
+Constants stored with the sign CHARMM receives:
+    OMEGA_DECAY = -5.56  (negative, written directly as LDBV class 10 REF)
+    CHI_OFFSET  =  0.017 (positive, written directly as LDBV class 8 REF)
+    OMEGA_SCALE = -1/OMEGA_DECAY = 1/5.56  (positive, for CUDA kernels)
 
-FNEX should NOT scale with N (number of subsites) because:
-1. Per-pair barrier height is FNEX-controlled, independent of N
-2. Larger N gives more transition partners, which accelerates mixing
-3. G_imp entropy correction already handles N-dependence
-4. All precomputed presets assume FNEX=5.5
+Provenance (Hayes & Brooks, J. Phys. Chem. B 2017; Hayes et al. 2018):
+    - 0.017: empirically optimized s-term offset for FNEX=5.5
+    - 5.56: empirically optimized x-term decay for FNEX=5.5
+    - 0.012: t/u-term offsets from bcxstu2026 (Hayes et al. 2024)
+
+These values are NOT derived from FNEX. They are independent empirical
+parameters that were optimized alongside FNEX=5.5. For other FNEX values,
+shape constants may need re-optimization.
 """
 
 from __future__ import annotations
 
 from typing import NamedTuple
 
-import numpy as np
-
 DEFAULT_FNEX = 5.5
 
 
 class BiasConstants(NamedTuple):
-    """Constants derived from a single FNEX value.
+    """LDBV shape constants for bias potential basis functions.
 
     Attributes:
-        fnex: The FNEX softmax constraint parameter.
-        omega_decay: Exponential decay for x-term LDBV class 10 REF.
-        chi_offset: Sigmoid offset for s-term LDBV class 8 REF.
-        omega_scale: Reciprocal of omega_decay (1/FNEX), used in CUDA.
-        chi_offset_t: Sigmoid offset for t-term LDBV class 8 REF.
-        chi_offset_u: Offset for u-term LDBV class 12 REF.
+        fnex: FNEX softmax constraint parameter (for BLOCK FNEX and G_imp).
+        omega_decay: x-term exponential decay, LDBV class 10 REF (negative).
+        chi_offset: s-term sigmoid offset, LDBV class 8 REF (positive).
+        omega_scale: Reciprocal magnitude of omega_decay (-1/omega_decay),
+            used in CUDA kernels as the exponential scale parameter.
+        chi_offset_t: t-term reverse sigmoid offset.
+        chi_offset_u: u-term quadratic sigmoid offset.
     """
 
     fnex: float
@@ -53,38 +54,37 @@ class BiasConstants(NamedTuple):
 def derive_bias_constants(
     fnex: float = DEFAULT_FNEX,
     *,
-    chi_offset: float | None = None,
-    omega_decay: float | None = None,
+    chi_offset: float = 0.017,
+    omega_decay: float = -5.56,
     chi_offset_t: float = 0.012,
     chi_offset_u: float = 0.012,
 ) -> BiasConstants:
-    """Derive bias potential constants from a FNEX value.
+    """Build bias constants from explicit values.
+
+    Shape constants are independent of FNEX. They are stored alongside
+    fnex for convenience but are NOT derived from it.
 
     Args:
-        fnex: The FNEX softmax constraint parameter (default 5.5).
-        chi_offset: Override for s-term sigmoid offset. If None, derived
-            as 4*exp(-fnex). Set to 0.017 to match legacy ALF behavior.
-        omega_decay: Override for x-term exponential decay. If None, derived
-            as fnex. Set to 5.56 to match legacy ALF behavior.
-        chi_offset_t: t-term sigmoid offset (independent of FNEX, default 0.012).
-        chi_offset_u: u-term offset (independent of FNEX, default 0.012).
+        fnex: FNEX softmax constraint parameter (default 5.5).
+        chi_offset: LDBV class 8 REF (default 0.017).
+        omega_decay: LDBV class 10 REF, negative (default -5.56).
+        chi_offset_t: t-term reverse sigmoid offset (default 0.012).
+        chi_offset_u: u-term quadratic sigmoid offset (default 0.012).
 
     Returns:
-        BiasConstants with all derived values.
+        BiasConstants with all values.
     """
-    actual_omega = omega_decay if omega_decay is not None else fnex
-    actual_chi = chi_offset if chi_offset is not None else 4.0 * np.exp(-fnex)
     return BiasConstants(
         fnex=fnex,
-        omega_decay=actual_omega,
-        chi_offset=actual_chi,
-        omega_scale=1.0 / actual_omega,
+        omega_decay=omega_decay,
+        chi_offset=chi_offset,
+        omega_scale=-1.0 / omega_decay,
         chi_offset_t=chi_offset_t,
         chi_offset_u=chi_offset_u,
     )
 
 
-# Module-level defaults for backward compatibility
+# Module-level defaults
 _DEFAULT = derive_bias_constants()
 OMEGA_DECAY = _DEFAULT.omega_decay
 CHI_OFFSET = _DEFAULT.chi_offset

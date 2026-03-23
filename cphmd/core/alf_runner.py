@@ -143,13 +143,13 @@ class ALFConfig:
     # Default 1 = all frames. Use 10 to reduce memory 10x for large windows.
     analysis_skip: int | list[int] = 1
 
-    # FNEX softmax constraint parameter (controls bias potential shape)
+    # FNEX softmax constraint parameter (independent of bias shape constants)
     fnex: float = 5.5
-    # Optional overrides for bias potential shape constants (None = derive from fnex)
-    chi_offset: float | None = None  # s-term sigmoid offset (default: 4*exp(-fnex))
-    omega_decay: float | None = None  # x-term exponential decay (default: fnex)
-    chi_offset_t: float = 0.012  # t-term sigmoid offset (independent of FNEX)
-    chi_offset_u: float = 0.012  # u-term offset (independent of FNEX)
+    # Bias shape constants — CHARMM LDBV REF values, independent of FNEX
+    chi_offset: float | None = None   # LDBV class 8 REF (default: 0.017)
+    omega_decay: float | None = None  # LDBV class 10 REF, negative (default: -5.56)
+    chi_offset_t: float = 0.012  # t-term sigmoid offset
+    chi_offset_u: float = 0.012  # u-term offset
 
     # Lambda dynamics mass and friction (per-block via LDIN)
     # None = auto: HMR(4fs) → mass=12.0/fbeta=5.0; non-HMR(2fs) → mass=5.0/fbeta=7.0
@@ -915,9 +915,6 @@ class ALFSimulation:
             #   2. Full BLOCK/MSLD — CALL, LDIN, exclusions, MSLD FNEX
             #   3. Crystal + nonbonded (MAKINB)
             #   4. Minimise — resolve clashes before energy evaluation
-            # Create run directory before any file writes
-            self._setup_run_directory(self.config.start)
-
             if is_legacy:
                 self._dynamics.setup_legacy(
                     run_idx=self.config.start, letter="", k=0, replica_idx=0

@@ -210,7 +210,7 @@ def _generate_zero_ldbv(patch_info: pd.DataFrame, fnex: float = 5.5) -> str:
                     idx += 1
                     ldbv_lines.append(
                         f"ldbv {idx:<3} {i1 + 2:<2} {i2 + 2:<2} {10:<4} "
-                        f"{-constants.omega_decay:<8} {0.0:<6} {0:<1}"
+                        f"{constants.omega_decay:<8} {0.0:<6} {0:<1}"
                     )
 
     header = f"LDBI {idx}"

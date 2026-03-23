@@ -134,7 +134,7 @@ def _compute_model_dca(
 
     # Lambda endpoint values for bias energy calculation
     c1 = 1
-    x1 = 1 - np.exp(-OMEGA_DECAY * 1)
+    x1 = 1 - np.exp(OMEGA_DECAY * 1)
     s1 = 1 / (1 + CHI_OFFSET)
 
     # Compute bias contributions to h and J
@@ -332,7 +332,7 @@ def _compute_variance_dca(
             E = (
                 np.dot(LList, b)
                 + np.dot(np.dot(LList, c), LList)
-                + np.dot(np.dot(1 - np.exp(-OMEGA_DECAY * LList), x), LList)
+                + np.dot(np.dot(1 - np.exp(OMEGA_DECAY * LList), x), LList)
                 + np.dot(np.dot(LList / (LList + CHI_OFFSET), s), LList)
             )
             G[jno0] = E - kT * Epotts
@@ -360,7 +360,7 @@ def _compute_variance_dca(
             E = (
                 np.dot(LList, b)
                 + np.dot(np.dot(LList, c), LList)
-                + np.dot(np.dot(1 - np.exp(-OMEGA_DECAY * LList), x), LList)
+                + np.dot(np.dot(1 - np.exp(OMEGA_DECAY * LList), x), LList)
                 + np.dot(np.dot(LList / (LList + CHI_OFFSET), s), LList)
             )
 
