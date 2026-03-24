@@ -54,8 +54,8 @@ class BiasConstants(NamedTuple):
 def derive_bias_constants(
     fnex: float = DEFAULT_FNEX,
     *,
-    chi_offset: float = 0.017,
-    omega_decay: float = -5.56,
+    chi_offset: float | None = None,
+    omega_decay: float | None = None,
     chi_offset_t: float = 0.012,
     chi_offset_u: float = 0.012,
 ) -> BiasConstants:
@@ -66,14 +66,18 @@ def derive_bias_constants(
 
     Args:
         fnex: FNEX softmax constraint parameter (default 5.5).
-        chi_offset: LDBV class 8 REF (default 0.017).
-        omega_decay: LDBV class 10 REF, negative (default -5.56).
+        chi_offset: LDBV class 8 REF (None = 0.017).
+        omega_decay: LDBV class 10 REF, negative (None = -5.56).
         chi_offset_t: t-term reverse sigmoid offset (default 0.012).
         chi_offset_u: u-term quadratic sigmoid offset (default 0.012).
 
     Returns:
         BiasConstants with all values.
     """
+    if omega_decay is None:
+        omega_decay = -5.56
+    if chi_offset is None:
+        chi_offset = 0.017
     return BiasConstants(
         fnex=fnex,
         omega_decay=omega_decay,
