@@ -416,6 +416,7 @@ class DynamicsRunner:
         )
 
         block_file = self.config.input_folder / f"run{run_idx}" / f"block.{k}.{replica_idx}.str"
+        block_file.parent.mkdir(parents=True, exist_ok=True)
         block_file.write_text(block_cmd)
 
         execute_block_command(block_cmd)
