@@ -281,6 +281,7 @@ def generate_rmla_msld(
     fpie_width: float = 1.0,
     fpie_force: float = 100.0,
     no_constraint: bool = False,
+    electrostatics: str = "pmeex",
 ) -> str:
     """Generate RMLA and MSLD/MSMA statements.
 
@@ -294,6 +295,7 @@ def generate_rmla_msld(
         fpie_width: FPIE flat-bottom well width (when constraint_type="fpie")
         fpie_force: FPIE flat-bottom force constant (when constraint_type="fpie")
         no_constraint: Skip FNEX/FPIE constraint (safe for energy-only evaluation)
+        electrostatics: Electrostatics method (pmeex/pmeon/pmenn/fshift/fswitch)
 
     Returns:
         CHARMM RMLA/MSLD/MSMA statements
@@ -334,11 +336,30 @@ def generate_rmla_msld(
         "! Constructs the interaction matrix",
         "!------------------------------------------\n",
         "MSMA\n",
-        "!------------------------------------------",
-        "! PME for electrostatics",
-        "!------------------------------------------\n",
-        "PMEL EX\n",
     ])
+
+    # PME electrostatics — only for PME methods, not fshift/fswitch
+    if electrostatics in ("pmeex", "pme_ex"):
+        lines.extend([
+            "!------------------------------------------",
+            "! PME exclusions for electrostatics",
+            "!------------------------------------------\n",
+            "PMEL EX\n",
+        ])
+    elif electrostatics in ("pmeon", "pme_on"):
+        lines.extend([
+            "!------------------------------------------",
+            "! PME ON for electrostatics",
+            "!------------------------------------------\n",
+            "PMEL ON\n",
+        ])
+    elif electrostatics in ("pmenn", "pme_nn"):
+        lines.extend([
+            "!------------------------------------------",
+            "! PME no-exclusions for electrostatics",
+            "!------------------------------------------\n",
+            "PMEL NN\n",
+        ])
 
     return "\n".join(lines)
 
@@ -381,12 +402,10 @@ def generate_ldbv_statements(
         CHARMM LDBI/LDBV statements
     """
     from .bias_constants import derive_bias_constants
-    kwargs = {"chi_offset_t": chi_offset_t, "chi_offset_u": chi_offset_u}
-    if chi_offset is not None:
-        kwargs["chi_offset"] = chi_offset
-    if omega_decay is not None:
-        kwargs["omega_decay"] = omega_decay
-    constants = derive_bias_constants(fnex, **kwargs)
+    constants = derive_bias_constants(
+        fnex, chi_offset=chi_offset, omega_decay=omega_decay,
+        chi_offset_t=chi_offset_t, chi_offset_u=chi_offset_u,
+    )
     # Build all LDBV statements first to count them
     ldbv_lines = []
     idx = 0
@@ -539,6 +558,7 @@ def build_block_command(
     chi_offset_u: float = 0.012,
     no_t_bias: bool = True,
     no_u_bias: bool = True,
+    electrostatics: str = "pmeex",
 ) -> str:
     """Build complete BLOCK command string.
 
@@ -574,6 +594,7 @@ def build_block_command(
             fnex=fnex,
             fpie_width=fpie_width,
             fpie_force=fpie_force,
+            electrostatics=electrostatics,
         ),
         generate_ldbv_statements(patch_info, variables, fnex=fnex,
                                  chi_offset=chi_offset, omega_decay=omega_decay,
@@ -600,6 +621,7 @@ def write_block_file(
     chi_offset_u: float = 0.012,
     no_t_bias: bool = True,
     no_u_bias: bool = True,
+    electrostatics: str = "pmeex",
 ) -> str:
     """Generate and write BLOCK command to file.
 
@@ -636,6 +658,7 @@ def write_block_file(
         chi_offset_u=chi_offset_u,
         no_t_bias=no_t_bias,
         no_u_bias=no_u_bias,
+        electrostatics=electrostatics,
     )
 
     with open(output_path, "w") as f:

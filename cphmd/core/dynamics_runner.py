@@ -413,6 +413,7 @@ class DynamicsRunner:
             chi_offset_u=self.config.chi_offset_u,
             no_t_bias=self.config.no_t_bias,
             no_u_bias=self.config.no_u_bias,
+            electrostatics=self.config.elec_type,
         )
 
         block_file = self.config.input_folder / f"run{run_idx}" / f"block.{k}.{replica_idx}.str"

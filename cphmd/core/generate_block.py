@@ -368,16 +368,23 @@ def _generate_block_str(
     output.append("!------------------------------------------\n")
     output.append("msma\n")
 
-    # PME electrostatics
-    output.append("!------------------------------------------")
-    output.append("! PME electrostatics")
-    output.append("!------------------------------------------\n")
+    # PME electrostatics — only for PME methods, not fshift/fswitch
     if electrostatics in ("pmeon", "pme_on"):
+        output.append("!------------------------------------------")
+        output.append("! PME ON for electrostatics")
+        output.append("!------------------------------------------\n")
         output.append("pmel on\n")
     elif electrostatics in ("pmenn", "pme_nn"):
+        output.append("!------------------------------------------")
+        output.append("! PME no-exclusions for electrostatics")
+        output.append("!------------------------------------------\n")
         output.append("pmel nn\n")
-    else:
+    elif electrostatics in ("pmeex", "pme_ex"):
+        output.append("!------------------------------------------")
+        output.append("! PME exclusions for electrostatics")
+        output.append("!------------------------------------------\n")
         output.append("pmel ex\n")
+    # fshift/fswitch: no PMEL line needed
 
     # LDBI and LDBV
     output.append("!------------------------------------------")
