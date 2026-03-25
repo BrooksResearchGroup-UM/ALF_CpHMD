@@ -1574,21 +1574,23 @@ class ALFSimulation:
         )
 
     def _phase2_cutoffs(self, run_idx: int, coupling_scale: float) -> dict:
-        """Compute Phase 2 warmup cutoffs (log-space decay over 20 runs)."""
+        """Compute Phase 2 cutoffs (warmup for single replica, fixed for multi)."""
         return self._bias_analyzer.compute_cutoffs(
             phase=2, run_idx=run_idx, coupling_scale=coupling_scale,
             phase2_start_run=self.state.phase2_start_run,
             alf_info=self.state.alf_info,
             input_folder=self.config.input_folder,
+            nreps=self.config.nreps or 1,
         )
 
     def _phase3_cutoffs(self, run_idx: int, coupling_scale: float) -> dict:
-        """Compute Phase 3 cutoffs (tight, with recovery for skewed populations)."""
+        """Compute Phase 3 cutoffs (tight for single replica, fixed for multi)."""
         return self._bias_analyzer.compute_cutoffs(
             phase=3, run_idx=run_idx, coupling_scale=coupling_scale,
             phase2_start_run=self.state.phase2_start_run,
             alf_info=self.state.alf_info,
             input_folder=self.config.input_folder,
+            nreps=self.config.nreps or 1,
         )
 
     def _run_wham_with_retry(

@@ -75,8 +75,8 @@ def compute_c_from_midpoints(
         for (i, j), e_mid in mids.items():
             linear_interp = 0.5 * (e[i] + e[j])
             val = -(e_mid - linear_interp)
+            # Upper triangle only (i < j) — WHAM convention
             c[offset + i, offset + j] = val
-            c[offset + j, offset + i] = val
 
         offset += n
 

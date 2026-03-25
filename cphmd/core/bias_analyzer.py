@@ -157,6 +157,7 @@ class BiasAnalyzer:
         alf_info: dict,
         input_folder: Path,
         xs_enabled: bool = False,
+        nreps: int = 1,
     ) -> dict:
         """Compute cutoff parameters based on phase and run index.
 
@@ -168,6 +169,7 @@ class BiasAnalyzer:
             alf_info: ALF info dict (for nsubs)
             input_folder: Path to input folder (for pop_strict files)
             xs_enabled: Whether Phase 1 x/s coverage gate is satisfied
+            nreps: Number of pH replicas (>1 = replica mode with loose cutoffs)
 
         Returns:
             dict of cutoff/calc parameters for get_free_energy5
@@ -180,10 +182,11 @@ class BiasAnalyzer:
         if phase == 1:
             cut_params = self._phase1_cutoffs(run_idx, xs_enabled=xs_enabled)
         elif phase == 2:
-            cut_params = self._phase2_cutoffs(run_idx, coupling_scale, phase2_start_run)
+            cut_params = self._phase2_cutoffs(
+                run_idx, coupling_scale, phase2_start_run, nreps=nreps)
         else:
             cut_params = self._phase3_cutoffs(
-                run_idx, coupling_scale, alf_info, input_folder
+                run_idx, coupling_scale, alf_info, input_folder, nreps=nreps
             )
 
         if override:
@@ -230,8 +233,25 @@ class BiasAnalyzer:
         return cut_params
 
     def _phase2_cutoffs(self, run_idx: int, coupling_scale: float,
-                        phase2_start_run: int | None) -> dict:
-        """Compute Phase 2 warmup cutoffs (log-space decay over 20 runs)."""
+                        phase2_start_run: int | None,
+                        nreps: int = 1) -> dict:
+        """Compute Phase 2 cutoffs.
+
+        Single replica: warmup with coupling_scale (log-space decay over 20 runs).
+        Multi-replica: fixed loose cutoffs (no coupling_scale needed).
+        """
+        if nreps > 1:
+            cut_params = {
+                "cutb": 2.0, "cutc": 8.0, "cutx": 2.0, "cuts": 1.0,
+                "cutt": 1.0 if not self.config.no_t_bias else 0.0,
+                "cutu": 1.0 if not self.config.no_u_bias else 0.0,
+            }
+            cut_params["calc_omega2"] = not self.config.no_t_bias
+            cut_params["calc_omega3"] = not self.config.no_u_bias
+            print("  Phase 2 cutoffs (replica mode): "
+                  "cutb=2.0 cutc=8.0 cutx=2.0 cuts=1.0")
+            return cut_params
+
         warmup_runs = 20
         p2_start = phase2_start_run or run_idx
         runs_in_p2 = max(run_idx - p2_start, 0)
@@ -258,8 +278,24 @@ class BiasAnalyzer:
         return cut_params
 
     def _phase3_cutoffs(self, run_idx: int, coupling_scale: float,
-                        alf_info: dict, input_folder: Path) -> dict:
-        """Compute Phase 3 cutoffs (tight, with recovery for skewed populations)."""
+                        alf_info: dict, input_folder: Path,
+                        nreps: int = 1) -> dict:
+        """Compute Phase 3 cutoffs.
+
+        Single replica: tight cutoffs with recovery for skewed populations.
+        Multi-replica: fixed cutoffs (no coupling_scale, no recovery).
+        """
+        if nreps > 1:
+            cut_params = {
+                "cutb": 0.5, "cutc": 2.0, "cutx": 0.5, "cuts": 0.25,
+                "cutt": 0.25 if not self.config.no_t_bias else 0.0,
+                "cutu": 0.25 if not self.config.no_u_bias else 0.0,
+            }
+            cut_params["calc_omega2"] = not self.config.no_t_bias
+            cut_params["calc_omega3"] = not self.config.no_u_bias
+            print("  Phase 3 cutoffs (replica mode): "
+                  "cutb=0.5 cutc=2.0 cutx=0.5 cuts=0.25")
+            return cut_params
         prev_pop_file = input_folder / f"analysis{run_idx - 1}" / "pop_strict.dat"
         if prev_pop_file.exists():
             try:
