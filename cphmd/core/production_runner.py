@@ -370,6 +370,23 @@ class ProductionConfig:
         return math.ceil(self.ns / self.ns_per_chunk)
 
     @property
+    def timestep(self) -> float:
+        """Integration timestep in ps (0.004 for HMR, 0.002 otherwise)."""
+        return 0.004 if self.hmr else 0.002
+
+    def steps_for_chunk(self, iteration: int) -> int:
+        """Compute number of MD steps for a given chunk iteration (1-based).
+
+        Last chunk handles remainder when ns doesn't divide evenly by ns_per_chunk.
+        """
+        steps_per_chunk = int(self.ns_per_chunk * 1e6 / (self.timestep * 1e3))
+        if iteration == self.n_chunks:
+            total_steps = int(self.ns * 1e6 / (self.timestep * 1e3))
+            completed = steps_per_chunk * (iteration - 1)
+            return total_steps - completed
+        return steps_per_chunk
+
+    @property
     def delta_pKa(self) -> float:
         """pH spacing between replicas (0.0 when single replica)."""
         if self.nreps > 1:
@@ -474,25 +491,23 @@ class ProductionConfig:
         # Last resort: first 3 chars
         return patch_name[:3] if len(patch_name) >= 3 else patch_name
 
-    def _get_site_residue_types(self) -> dict[str, str]:
+    def _get_site_residue_types(self) -> set[str]:
         """Extract canonical residue type for each titratable site.
 
         Reads patches.dat via ``_load_patches``, groups by site, and maps
         the first subsite's PATCH name to a canonical type.
 
         Returns:
-            Dict mapping canonical residue type to itself (deduplicated).
-            The keys are the unique residue types found across all sites.
+            Set of unique residue types found across all sites.
         """
         from cphmd.core.generate_block import _load_patches
 
         df = _load_patches(self.input_folder)
-        restypes: dict[str, str] = {}
+        restypes: set[str] = set()
         for site in sorted(df["site"].unique(), key=int):
             site_rows = df[df["site"] == site]
             patch_name = site_rows.iloc[0]["PATCH"]
-            restype = self._patch_to_restype(patch_name)
-            restypes[restype] = restype
+            restypes.add(self._patch_to_restype(patch_name))
         return restypes
 
     def _resolve_variables(self) -> dict[str, dict[str, float]]:
@@ -512,6 +527,7 @@ class ProductionConfig:
         Returns:
             Mapping of residue type to variable dict (e.g., {"lams1s1": 0.0, ...}).
         """
+        import os
         import tempfile
 
         from cphmd.core.generate_block import _load_variables
@@ -521,7 +537,6 @@ class ProductionConfig:
         variables: dict[str, dict[str, float]] = {}
         missing: list[str] = []
 
-        # Normalize variables_files keys to uppercase for matching
         files_map: dict[str, Path] = {}
         if self.variables_files:
             files_map = {k.upper(): Path(v) for k, v in self.variables_files.items()}
@@ -530,13 +545,14 @@ class ProductionConfig:
         available_presets = list_presets(preset_config) if self.use_presets else []
 
         for restype in sorted(site_types):
-            # 1. Explicit file override
             if restype in files_map:
                 var_file = files_map[restype]
-                variables[restype] = self._read_variable_file(var_file)
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    expected = Path(tmpdir) / f"var-{restype.lower()}.inp"
+                    os.symlink(var_file.resolve(), expected)
+                    variables[restype] = _load_variables(restype, Path(tmpdir))
                 continue
 
-            # 2. Variables directory
             if self.variables_dir is not None:
                 try:
                     variables[restype] = _load_variables(restype, self.variables_dir)
@@ -544,16 +560,13 @@ class ProductionConfig:
                 except FileNotFoundError:
                     pass
 
-            # 3. Presets
             if self.use_presets and restype in available_presets:
-                # Write preset to temp file, then read back as variable dict
                 with tempfile.TemporaryDirectory() as tmpdir:
                     tmp_path = Path(tmpdir) / f"var-{restype.lower()}.inp"
                     write_preset_variables(restype, str(tmp_path), config=preset_config)
                     variables[restype] = _load_variables(restype, Path(tmpdir))
                 continue
 
-            # 4. Not found
             missing.append(restype)
 
         if missing:
@@ -562,24 +575,6 @@ class ProductionConfig:
                 f"Provide via variables_files, variables_dir, or enable use_presets."
             )
 
-        return variables
-
-    @staticmethod
-    def _read_variable_file(path: Path) -> dict[str, float]:
-        """Read a CHARMM-style variable file (``set varname = value``)."""
-        variables: dict[str, float] = {}
-        with open(path) as f:
-            for line in f:
-                line = line.strip()
-                if line.startswith("set"):
-                    parts = line.replace("set", "", 1).strip().split("=")
-                    if len(parts) == 2:
-                        var_name = parts[0].strip()
-                        try:
-                            var_value = float(parts[1].strip())
-                        except ValueError:
-                            continue
-                        variables[var_name] = var_value
         return variables
 
 
@@ -591,12 +586,13 @@ class ProductionRunner:
         self._comm = comm
         self._prod_dir = config.input_folder / f"prod_{config.prod_id}"
         self._blade_ready = False
-        self._gpuid = 0  # Will be set from MPI rank or CUDA_VISIBLE_DEVICES
-        self._rank = 0  # Will be set from MPI rank in _run_impl
+        self._gpuid = 0
+        self._rank = 0
         self._resumed = False
-        self._nsubs: list[int] | None = None  # Set during initialize from patches.dat
-        self._exchanger = None  # Set in initialize() if exchange configured
-        self._patch_info = None  # DataFrame from patches.dat
+        self._natom = 0
+        self._nsubs: list[int] | None = None
+        self._exchanger = None
+        self._patch_info = None
 
     def _create_prod_directory(self) -> None:
         """Create production directory with required subdirectories.
@@ -621,10 +617,8 @@ class ProductionRunner:
 
         from cphmd.core.generate_block import BlockGeneratorConfig, generate_block_files
 
-        # 1. Resolve per-residue bias variable dicts
         variables = self.config._resolve_variables()
 
-        # 2. Write variable files to a temp directory
         temp_dir = Path(tempfile.mkdtemp())
         try:
             for restype, var_dict in variables.items():
@@ -635,12 +629,10 @@ class ProductionRunner:
                 lines.append("")
                 var_file.write_text("\n".join(lines))
 
-            # 3. Copy patches.dat into prod prep directory
             src_patches = self.config.input_folder / "prep" / "patches.dat"
             dst_patches = self._prod_dir / "prep" / "patches.dat"
             shutil.copy2(str(src_patches), str(dst_patches))
 
-            # 4. Generate block.str and restrains.str
             block_config = BlockGeneratorConfig(
                 input_folder=str(self._prod_dir),
                 variables_dir=str(temp_dir),
@@ -655,7 +647,6 @@ class ProductionRunner:
             )
             generate_block_files(block_config)
         finally:
-            # 5. Clean up temp directory
             shutil.rmtree(temp_dir, ignore_errors=True)
 
     # ------------------------------------------------------------------
@@ -706,6 +697,81 @@ class ProductionRunner:
         return [r for r in range(self.config.nreps) if r % size == rank]
 
     # ------------------------------------------------------------------
+    # BLaDE / dynamics helpers
+    # ------------------------------------------------------------------
+
+    def _ensure_blade_ready(self):
+        """Initialize SHAKE, BLaDE, and fbeta on first call."""
+        if self._blade_ready:
+            return
+        import numpy as np
+        import pycharmm.dynamics as dyn
+        import pycharmm.lingo as lingo
+        import pycharmm.psf as psf
+        import pycharmm.shake as shake
+
+        shake.on(fast=True, bonh=True, param=True, tol=1e-7)
+        lingo.charmm_script("faster on")
+        lingo.charmm_script(f"blade on gpuid {self._gpuid}")
+        self._natom = psf.get_natom()
+        dyn.set_fbetas(np.full(self._natom, self.config.gscale, dtype=float))
+        lingo.charmm_script("energy blade")
+        self._blade_ready = True
+
+    def _build_dyn_params(
+        self,
+        nsteps: int,
+        seed: int,
+        nsavl: int = 1,
+        nsavc: int = 0,
+        lmd_unit: int = 53,
+        rst_unit: int = 52,
+        dcd_unit: int = -1,
+    ) -> dict:
+        """Build base dynamics parameter dict for pyCHARMM DynamicsScript."""
+        config = self.config
+        return {
+            "blade": True,
+            "prmc": True,
+            "iprs": 100,
+            "prdv": 100,
+            "cpt": True,
+            "timestep": config.timestep,
+            "firstt": config.temperature,
+            "finalt": config.temperature,
+            "tstruc": config.temperature,
+            "tbath": config.temperature,
+            "ichecw": 0,
+            "ihtfrq": 0,
+            "ieqfrq": 0,
+            "iasors": 1,
+            "iasvel": 1,
+            "iscvel": 0,
+            "inbfrq": -1,
+            "ilbfrq": 0,
+            "imgfrq": -1,
+            "ntrfrq": 0,
+            "echeck": -1,
+            "iunldm": lmd_unit,
+            "iunwri": rst_unit,
+            "iuncrd": dcd_unit,
+            "nsavc": nsavc,
+            "nsavl": nsavl,
+            "nprint": min(nsteps, 50000),
+            "iprfrq": min(nsteps, 50000),
+            "nstep": nsteps,
+            "isvfrq": nsteps,
+            "iseed": seed,
+            "pconstant": True,
+            "pmass": self._natom * 0.12,
+            "pref": 1.0,
+            "pgamma": 20.0,
+            "hoover": True,
+            "reft": config.temperature,
+            "tmass": 1000,
+        }
+
+    # ------------------------------------------------------------------
     # Non-exchange dynamics
     # ------------------------------------------------------------------
 
@@ -729,12 +795,7 @@ class ProductionRunner:
         tuple[Path, Path]
             ``(rst_path, lmd_path)`` for the restart and lambda files written.
         """
-        import numpy as np
         import pycharmm
-        import pycharmm.dynamics as dyn
-        import pycharmm.lingo as lingo
-        import pycharmm.psf as psf
-        import pycharmm.shake as shake
 
         from cphmd.utils.charmm_path import qpath
 
@@ -743,15 +804,7 @@ class ProductionRunner:
         res_dir = prod_dir / "res"
         dcd_dir = prod_dir / "dcd"
 
-        # Compute step counts
-        timestep = 0.004 if config.hmr else 0.002
-        nsteps = int(config.ns_per_chunk * 1e6 / (timestep * 1e3))  # ns -> ps -> steps
-        # Handle remainder for last chunk
-        if iteration == config.n_chunks:
-            total_steps = int(config.ns * 1e6 / (timestep * 1e3))
-            completed_steps = nsteps * (iteration - 1)
-            nsteps = total_steps - completed_steps
-
+        nsteps = config.steps_for_chunk(iteration)
         nsavl = config.nsavl
         nsavc = config.nsavc
 
@@ -759,65 +812,24 @@ class ProductionRunner:
         lmd_fn = res_dir / f"prod.{iteration:03d}.{replica:02d}.lmd"
         dcd_fn = dcd_dir / f"prod.{iteration:03d}.{replica:02d}.dcd" if nsavc > 0 else None
 
-        # File units
         rst_unit = 52
         lmd_unit = 53
         dcd_unit = 51
         rpr_unit = 54
 
-        # Setup BLADE and shake on first chunk
-        if not self._blade_ready:
-            shake.on(fast=True, bonh=True, param=True, tol=1e-7)
-            lingo.charmm_script("faster on")
-            lingo.charmm_script(f"blade on gpuid {self._gpuid}")
-            dyn.set_fbetas(np.full(psf.get_natom(), config.gscale, dtype=float))
-            lingo.charmm_script("energy blade")
-            self._blade_ready = True
+        self._ensure_blade_ready()
 
-        # Build dynamics parameters
         seed = config.get_seed_for_chunk(iteration)
-        dyn_param: dict = {
-            "blade": True,
-            "prmc": True,
-            "iprs": 100,
-            "prdv": 100,
-            "cpt": True,
-            "timestep": timestep,
-            "firstt": config.temperature,
-            "finalt": config.temperature,
-            "tstruc": config.temperature,
-            "tbath": config.temperature,
-            "ichecw": 0,
-            "ihtfrq": 0,
-            "ieqfrq": 0,
-            "iasors": 1,
-            "iasvel": 1,
-            "iscvel": 0,
-            "inbfrq": -1,
-            "ilbfrq": 0,
-            "imgfrq": -1,
-            "ntrfrq": 0,
-            "echeck": -1,
-            "iunldm": lmd_unit,
-            "iunwri": rst_unit,
-            "iuncrd": dcd_unit if dcd_fn else -1,
-            "nsavc": nsavc if dcd_fn else 0,
-            "nsavl": nsavl,
-            "nprint": min(nsteps, 50000),
-            "iprfrq": min(nsteps, 50000),
-            "nstep": nsteps,
-            "isvfrq": nsteps,
-            "iseed": seed,
-            "pconstant": True,
-            "pmass": psf.get_natom() * 0.12,
-            "pref": 1.0,
-            "pgamma": 20.0,
-            "hoover": True,
-            "reft": config.temperature,
-            "tmass": 1000,
-        }
+        dyn_param = self._build_dyn_params(
+            nsteps=nsteps,
+            seed=seed,
+            nsavl=nsavl,
+            nsavc=nsavc if dcd_fn else 0,
+            lmd_unit=lmd_unit,
+            rst_unit=rst_unit,
+            dcd_unit=dcd_unit if dcd_fn else -1,
+        )
 
-        # Start vs restart
         rpr = None
         if iteration > 1 or self._resumed:
             dyn_param["start"] = False
@@ -834,7 +846,6 @@ class ProductionRunner:
             dyn_param["start"] = True
             dyn_param["restart"] = False
 
-        # Open output files
         rst = pycharmm.CharmmFile(
             file_name=qpath(rst_fn),
             file_unit=rst_unit,
@@ -858,7 +869,6 @@ class ProductionRunner:
 
         pycharmm.DynamicsScript(**dyn_param).run()
 
-        # Close files
         rst.close()
         lmd.close()
         if dcd:
@@ -968,20 +978,12 @@ class ProductionRunner:
         tuple[Path, Path]
             ``(rst_path, lmd_path)`` for the completed segment.
         """
-        import numpy as np
         import pycharmm
-        import pycharmm.dynamics as dyn
-        import pycharmm.lingo as lingo
-        import pycharmm.psf as psf
-        import pycharmm.shake as shake
 
         from cphmd.utils.charmm_path import qpath
 
         config = self.config
         res_dir = self._prod_dir / "res"
-
-        timestep = 0.004 if config.hmr else 0.002
-        nsavl = config.nsavl
 
         seg_tag = f"seg{segment_idx:04d}"
         rst_fn = res_dir / f"prod.{iteration:03d}.{replica:02d}.{seg_tag}.rst"
@@ -991,58 +993,17 @@ class ProductionRunner:
         lmd_unit = 53
         rpr_unit = 54
 
-        # Setup BLADE and shake on first call
-        if not self._blade_ready:
-            shake.on(fast=True, bonh=True, param=True, tol=1e-7)
-            lingo.charmm_script("faster on")
-            lingo.charmm_script(f"blade on gpuid {self._gpuid}")
-            dyn.set_fbetas(np.full(psf.get_natom(), config.gscale, dtype=float))
-            lingo.charmm_script("energy blade")
-            self._blade_ready = True
+        self._ensure_blade_ready()
 
         seed = config.get_seed_for_chunk(iteration) + segment_idx
-        dyn_param: dict = {
-            "blade": True,
-            "prmc": True,
-            "iprs": 100,
-            "prdv": 100,
-            "cpt": True,
-            "timestep": timestep,
-            "firstt": config.temperature,
-            "finalt": config.temperature,
-            "tstruc": config.temperature,
-            "tbath": config.temperature,
-            "ichecw": 0,
-            "ihtfrq": 0,
-            "ieqfrq": 0,
-            "iasors": 1,
-            "iasvel": 1,
-            "iscvel": 0,
-            "inbfrq": -1,
-            "ilbfrq": 0,
-            "imgfrq": -1,
-            "ntrfrq": 0,
-            "echeck": -1,
-            "iunldm": lmd_unit,
-            "iunwri": rst_unit,
-            "iuncrd": -1,
-            "nsavc": 0,
-            "nsavl": nsavl,
-            "nprint": min(nsteps, 50000),
-            "iprfrq": min(nsteps, 50000),
-            "nstep": nsteps,
-            "isvfrq": nsteps,
-            "iseed": seed,
-            "pconstant": True,
-            "pmass": psf.get_natom() * 0.12,
-            "pref": 1.0,
-            "pgamma": 20.0,
-            "hoover": True,
-            "reft": config.temperature,
-            "tmass": 1000,
-        }
+        dyn_param = self._build_dyn_params(
+            nsteps=nsteps,
+            seed=seed,
+            nsavl=config.nsavl,
+            lmd_unit=lmd_unit,
+            rst_unit=rst_unit,
+        )
 
-        # Start vs restart
         rpr = None
         if restart_from is not None and Path(restart_from).exists():
             dyn_param["start"] = False
@@ -1055,7 +1016,6 @@ class ProductionRunner:
                 formatted=True,
             )
         elif iteration == 1 and segment_idx == 0 and not self._resumed:
-            # Very first segment of first chunk: cold start
             dyn_param["start"] = True
             dyn_param["restart"] = False
         else:
@@ -1064,7 +1024,6 @@ class ProductionRunner:
                 f"(chunk {iteration}, replica {replica})"
             )
 
-        # Open output files
         rst = pycharmm.CharmmFile(
             file_name=qpath(rst_fn),
             file_unit=rst_unit,
@@ -1087,7 +1046,7 @@ class ProductionRunner:
 
         return (rst_fn, lmd_fn)
 
-    def _run_chunk_with_exchange(self, iteration: int, replica: int) -> list[tuple[Path, Path]]:
+    def _run_chunk_with_exchange(self, iteration: int, replica: int) -> None:
         """Run one chunk of production dynamics with replica exchange.
 
         Splits the chunk into segments of ``exchange_freq`` steps, running
@@ -1100,35 +1059,20 @@ class ProductionRunner:
             1-based chunk number.
         replica : int
             0-based replica index.
-
-        Returns
-        -------
-        list[tuple[Path, Path]]
-            List of ``(rst_path, lmd_path)`` for each segment.
         """
         config = self.config
         exchange_cfg = config.replica_exchange
 
-        # Compute total steps for this chunk
-        timestep = 0.004 if config.hmr else 0.002
-        nsteps_per_chunk = int(config.ns_per_chunk * 1e6 / (timestep * 1e3))
-        # Handle remainder for last chunk
-        if iteration == config.n_chunks:
-            total_steps = int(config.ns * 1e6 / (timestep * 1e3))
-            completed_steps = nsteps_per_chunk * (iteration - 1)
-            nsteps_per_chunk = total_steps - completed_steps
-
+        nsteps_per_chunk = config.steps_for_chunk(iteration)
         n_segments = nsteps_per_chunk // exchange_cfg.exchange_freq
 
-        # Fallback: exchange_freq >= chunk steps — run as single chunk
         if n_segments == 0:
-            rst, lmd = self._run_chunk(iteration, replica)
-            return [(rst, lmd)]
+            self._run_chunk(iteration, replica)
+            return
 
         seg_steps = exchange_cfg.exchange_freq
         nblocks = 1 + sum(self._nsubs)
 
-        # Reset permutation to identity at start of each chunk
         npairs = config.nreps - 1
         self._exchanger.state.ensure_size(npairs)
         self._exchanger.state.permutation = list(range(config.nreps))
@@ -1136,13 +1080,10 @@ class ProductionRunner:
         delta_pKa = config.delta_pKa
 
         restart_override: Path | None = None
-        # For first chunk, first segment: find restart from previous chunk or cold start
         if iteration > 1 or self._resumed:
             restart_override = find_restart_for_chunk(
                 self._prod_dir / "res", iteration, replica, exchange=True
             )
-
-        segments: list[tuple[Path, Path]] = []
 
         for seg in range(n_segments):
             rst_path, lmd_path = self._run_segment(
@@ -1153,10 +1094,8 @@ class ProductionRunner:
                 restart_from=restart_override,
             )
 
-            # All ranks synchronize before exchange attempt
             self._comm.Barrier()
 
-            # Attempt exchange
             partner_rst = self._exchanger.attempt_exchange(
                 segment_idx=seg,
                 run_idx=iteration,
@@ -1168,22 +1107,16 @@ class ProductionRunner:
                 temperature=config.temperature,
             )
 
-            # Ensure all restart files are accessible before next segment
             self._comm.Barrier()
 
-            # Next segment reads partner's restart if swapped, else own restart
             restart_override = partner_rst if partner_rst is not None else rst_path
-
-            segments.append((rst_path, lmd_path))
-
-        return segments
 
     def _segments_to_parquet(self, iteration: int, replica: int) -> Path:
         """Convert segment .lmd files from one chunk into a single parquet.
 
         Reads all segment LMD files for the given chunk and replica,
         stacks them into a single array, writes a parquet with production
-        metadata, and deletes the source ``.lmd`` files.
+        metadata, and deletes the source ``.lmd`` and segment ``.rst`` files.
 
         Parameters
         ----------
@@ -1199,10 +1132,10 @@ class ProductionRunner:
         """
         import glob as glob_mod
 
-        import numpy as np
         import pyarrow.parquet as pq
 
         from cphmd.utils.lambda_io import (
+            concatenate_lambda_files,
             read_lambda_binary,
             write_lambda_parquet,
         )
@@ -1210,7 +1143,6 @@ class ProductionRunner:
         res_dir = self._prod_dir / "res"
         lambdas_dir = self._prod_dir / "lambdas"
 
-        # Glob and sort segment LMD files
         pattern = str(res_dir / f"prod.{iteration:03d}.{replica:02d}.seg*.lmd")
         seg_files = sorted(glob_mod.glob(pattern))
 
@@ -1220,19 +1152,9 @@ class ProductionRunner:
                 f"replica {replica} in {res_dir}"
             )
 
-        # Read first segment for metadata
-        first_data, first_meta = read_lambda_binary(seg_files[0])
-        arrays = [first_data]
+        _, first_meta = read_lambda_binary(seg_files[0])
+        all_data = concatenate_lambda_files(sorted(seg_files))
 
-        # Read remaining segments
-        for seg_file in seg_files[1:]:
-            data, _ = read_lambda_binary(seg_file)
-            arrays.append(data)
-
-        # Stack all segment data
-        all_data = np.vstack(arrays)
-
-        # Build metadata from first segment's metadata and total frame count
         pH = self._get_replica_pH(replica)
         metadata = build_parquet_metadata(
             nsubs=self._nsubs,
@@ -1249,12 +1171,14 @@ class ProductionRunner:
         parquet_fn = lambdas_dir / f"{iteration:03d}_{replica:02d}.parquet"
         write_lambda_parquet(parquet_fn, all_data, nsubs=self._nsubs, metadata=metadata)
 
-        # Verify written parquet
         pq.read_metadata(str(parquet_fn))
 
-        # Delete segment LMD files
         for seg_file in seg_files:
             Path(seg_file).unlink()
+
+        seg_rst_pattern = str(res_dir / f"prod.{iteration:03d}.{replica:02d}.seg*.rst")
+        for seg_rst in glob_mod.glob(seg_rst_pattern):
+            Path(seg_rst).unlink()
 
         return parquet_fn
 
@@ -1297,8 +1221,7 @@ class ProductionRunner:
             import traceback
 
             print(
-                f"\n[RANK {self._rank}] FATAL — aborting MPI:\n"
-                f"{traceback.format_exc()}",
+                f"\n[RANK {self._rank}] FATAL — aborting MPI:\n" f"{traceback.format_exc()}",
                 file=sys.__stderr__,
                 flush=True,
             )
@@ -1311,7 +1234,7 @@ class ProductionRunner:
         import os
         import time
 
-        if not hasattr(self, "_nsubs") or self._nsubs is None:
+        if self._nsubs is None:
             self.initialize()
 
         config = self.config
@@ -1343,10 +1266,7 @@ class ProductionRunner:
         print(f"Production run: {config.ns} ns in {n_chunks} chunks of {config.ns_per_chunk} ns")
         print(f"Starting from chunk {start_iteration}/{n_chunks}")
         if self._exchanger:
-            print(
-                f"pH-REMD enabled: exchange_freq="
-                f"{config.replica_exchange.exchange_freq}"
-            )
+            print(f"pH-REMD enabled: exchange_freq=" f"{config.replica_exchange.exchange_freq}")
 
         # Load exchange state if resuming
         if self._exchanger and self._resumed:
