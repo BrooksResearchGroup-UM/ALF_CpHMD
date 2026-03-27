@@ -33,7 +33,7 @@ def build_parquet_metadata(
     nsavl: int,
     delta_t: float,
     npriv: int,
-    actual_steps: int,
+    n_frames: int,
     pH: float,
     prod_id: int,
     name: str,
@@ -41,12 +41,17 @@ def build_parquet_metadata(
     """Build metadata dict for production parquet files.
 
     All values are strings (parquet schema metadata requirement).
+
+    Parameters
+    ----------
+    n_frames : int
+        Number of lambda frames (rows) in the parquet file.
     """
     nblocks = 1 + sum(nsubs)
     nsites = len(nsubs)
     time_step = delta_t * nsavl
     time_start = npriv * delta_t
-    time_end = time_start + (actual_steps - 1) * time_step
+    time_end = time_start + (n_frames - 1) * time_step
 
     return {
         "Title": "CpHMD production",
@@ -59,8 +64,8 @@ def build_parquet_metadata(
         "nsites": str(nsites),
         "nsubsites": build_nsubsites_str(nsubs),
         "Start Step": str(npriv),
-        "Total Steps": str(actual_steps),
-        "End Step": str(npriv + actual_steps - nsavl),
+        "Total Steps": str(n_frames * nsavl),
+        "End Step": str(npriv + (n_frames - 1) * nsavl),
         "pH": str(pH),
         "Simulation": f"prod_{prod_id}",
         "Name": name,
@@ -79,6 +84,7 @@ def find_resume_point(lambdas_dir: Path, n_chunks: int, nreps: int) -> int:
         1-based chunk number to start/resume from.  Returns ``n_chunks + 1``
         when every chunk already has valid parquets for all replicas.
     """
+    import pyarrow as pa
     import pyarrow.parquet as pq
 
     for chunk in range(1, n_chunks + 1):
@@ -90,7 +96,8 @@ def find_resume_point(lambdas_dir: Path, n_chunks: int, nreps: int) -> int:
                 break
             try:
                 pq.read_metadata(str(parquet_path))
-            except Exception:
+            except (pa.ArrowInvalid, pa.ArrowIOError, OSError) as e:
+                print(f"WARNING: Corrupt parquet {parquet_path.name}, removing: {e}")
                 parquet_path.unlink(missing_ok=True)
                 all_valid = False
                 break
@@ -280,6 +287,8 @@ class ProductionConfig:
         self.toppar_dir = Path(self.toppar_dir)
         if self.variables_dir is not None:
             self.variables_dir = Path(self.variables_dir)
+            if not self.variables_dir.is_dir():
+                raise FileNotFoundError(f"variables_dir does not exist: {self.variables_dir}")
 
         # --- Prep format auto-detection ---
         prep_dir = self.input_folder / "prep"
@@ -319,6 +328,21 @@ class ProductionConfig:
         if self.use_presets and self.vdw_type is None:
             raise ValueError(
                 "Preset resolution requires explicit vdw_type " "(e.g., vdw_type='vswitch')"
+            )
+
+        # --- Numeric range validation ---
+        if self.ns <= 0:
+            raise ValueError(f"ns must be positive, got {self.ns}")
+        if self.nreps < 1:
+            raise ValueError(f"nreps must be >= 1, got {self.nreps}")
+        if self.temperature <= 0:
+            raise ValueError(f"temperature must be positive, got {self.temperature}")
+        if self.fnex <= 0:
+            raise ValueError(f"fnex must be positive, got {self.fnex}")
+        if not (self.ctonnb < self.ctofnb < self.cutnb):
+            raise ValueError(
+                f"Cutoffs must satisfy ctonnb < ctofnb < cutnb, "
+                f"got {self.ctonnb}, {self.ctofnb}, {self.cutnb}"
             )
 
         # --- ns_per_chunk ---
@@ -586,6 +610,7 @@ class ProductionRunner:
         self._comm = comm
         self._prod_dir = config.input_folder / f"prod_{config.prod_id}"
         self._blade_ready = False
+        self._system_loaded = False
         self._gpuid = 0
         self._rank = 0
         self._resumed = False
@@ -695,6 +720,89 @@ class ProductionRunner:
         rank = self._comm.Get_rank()
         size = self._comm.Get_size()
         return [r for r in range(self.config.nreps) if r % size == rank]
+
+    # ------------------------------------------------------------------
+    # System loading
+    # ------------------------------------------------------------------
+
+    def _load_system(self, replica: int) -> None:
+        """Load molecular system into pyCHARMM for production dynamics.
+
+        Loads topology files, reads structure (PSF/CRD), sets up crystal
+        and nonbonded interactions, streams block.str and restrains.str.
+        Called once per process before the first dynamics chunk, and again
+        at the start of each subsequent chunk to re-setup crystal/block
+        after dynamics.
+        """
+        import pycharmm.lingo as lingo
+
+        from cphmd.core.charmm_utils import (
+            BoxParameters,
+            FFTConfig,
+            NonBondedConfig,
+            clear_block,
+            clear_crystal,
+            execute_block_command,
+            read_structure,
+            read_topology_files,
+            setup_crystal,
+            setup_nonbonded,
+        )
+        from cphmd.utils.charmm_path import qpath
+
+        config = self.config
+        prep_dir = self._prod_dir / "prep"
+
+        if not self._system_loaded:
+            # Load topology and parameter files
+            toppar = config.input_folder / config.toppar_dir
+            read_topology_files(toppar, config.topology_files, verbose=config.debug)
+
+            # Load extra files (custom ligand topologies)
+            for extra in config.extra_files:
+                lingo.charmm_script(f"stream {qpath(extra)}")
+
+            # Read structure
+            psf_file = config.input_folder / "prep" / "system.psf"
+            crd_file = config.input_folder / "prep" / "system.crd"
+            read_structure(psf_file, crd_file)
+            self._system_loaded = True
+        else:
+            # Clear previous BLOCK and crystal setup for re-streaming
+            clear_block()
+            clear_crystal()
+
+        # Set up crystal and nonbonded
+        box_params = BoxParameters.from_file(config.input_folder / "prep" / "box.dat")
+        fft_config = FFTConfig.from_file(config.input_folder / "prep" / "fft.dat")
+        nb_config = NonBondedConfig(
+            cutnb=config.cutnb,
+            cutim=config.cutnb,
+            ctofnb=config.ctofnb,
+            ctonnb=config.ctonnb,
+            elec_type=config.elec_type,
+            vdw_type=config.vdw_type,
+            fft_config=fft_config,
+        )
+        setup_crystal(box_params, nb_config)
+        setup_nonbonded(nb_config)
+
+        # Set CHARMM variables needed by block.str
+        lingo.charmm_script(f"set nrep = {config.nreps}")
+
+        # Stream block.str (contains BLOCK setup, lambda dynamics, PHMD)
+        block_file = prep_dir / "block.str"
+        block_str = block_file.read_text()
+        execute_block_command(block_str)
+
+        # Override pH for this replica (block.str has a default pH from generation)
+        pH = self._get_replica_pH(replica)
+        lingo.charmm_script(f"phmd pH {pH}")
+
+        # Stream restraints
+        restraint_file = prep_dir / "restrains.str"
+        if restraint_file.exists():
+            lingo.charmm_script(f"stream {qpath(restraint_file)}")
 
     # ------------------------------------------------------------------
     # BLaDE / dynamics helpers
@@ -867,14 +975,15 @@ class ProductionRunner:
                 formatted=False,
             )
 
-        pycharmm.DynamicsScript(**dyn_param).run()
-
-        rst.close()
-        lmd.close()
-        if dcd:
-            dcd.close()
-        if rpr:
-            rpr.close()
+        try:
+            pycharmm.DynamicsScript(**dyn_param).run()
+        finally:
+            rst.close()
+            lmd.close()
+            if dcd:
+                dcd.close()
+            if rpr:
+                rpr.close()
 
         return (rst_fn, lmd_fn)
 
@@ -917,7 +1026,7 @@ class ProductionRunner:
             nsavl=meta.nsavl,
             delta_t=meta.delta_t,
             npriv=meta.npriv,
-            actual_steps=len(data),
+            n_frames=len(data),
             pH=pH,
             prod_id=self.config.prod_id,
             name=self.config.input_folder.name,
@@ -926,7 +1035,12 @@ class ProductionRunner:
         write_lambda_parquet(parquet_fn, data, nsubs=self._nsubs, metadata=metadata)
 
         # Verify before deleting source
-        pq.read_metadata(str(parquet_fn))
+        file_meta = pq.read_metadata(str(parquet_fn))
+        if file_meta.num_rows != len(data):
+            raise RuntimeError(
+                f"Parquet verification failed: expected {len(data)} rows, "
+                f"got {file_meta.num_rows} (chunk {iteration}, replica {replica})"
+            )
         lmd_fn.unlink()
 
         return parquet_fn
@@ -1005,7 +1119,13 @@ class ProductionRunner:
         )
 
         rpr = None
-        if restart_from is not None and Path(restart_from).exists():
+        if restart_from is not None:
+            restart_path = Path(restart_from)
+            if not restart_path.exists():
+                raise FileNotFoundError(
+                    f"Restart file not found: {restart_from} "
+                    f"(chunk {iteration}, replica {replica}, segment {segment_idx})"
+                )
             dyn_param["start"] = False
             dyn_param["restart"] = True
             dyn_param["iunrea"] = rpr_unit
@@ -1037,12 +1157,13 @@ class ProductionRunner:
             formatted=False,
         )
 
-        pycharmm.DynamicsScript(**dyn_param).run()
-
-        rst.close()
-        lmd.close()
-        if rpr:
-            rpr.close()
+        try:
+            pycharmm.DynamicsScript(**dyn_param).run()
+        finally:
+            rst.close()
+            lmd.close()
+            if rpr:
+                rpr.close()
 
         return (rst_fn, lmd_fn)
 
@@ -1060,6 +1181,9 @@ class ProductionRunner:
         replica : int
             0-based replica index.
         """
+        if self._comm is None:
+            raise RuntimeError("Replica exchange requires MPI communicator (comm cannot be None)")
+
         config = self.config
         exchange_cfg = config.replica_exchange
 
@@ -1110,6 +1234,17 @@ class ProductionRunner:
             self._comm.Barrier()
 
             restart_override = partner_rst if partner_rst is not None else rst_path
+
+        # Handle remainder steps
+        remainder = nsteps_per_chunk - n_segments * seg_steps
+        if remainder > 0:
+            rst_path, lmd_path = self._run_segment(
+                iteration,
+                replica,
+                segment_idx=n_segments,
+                nsteps=remainder,
+                restart_from=restart_override,
+            )
 
     def _segments_to_parquet(self, iteration: int, replica: int) -> Path:
         """Convert segment .lmd files from one chunk into a single parquet.
@@ -1162,7 +1297,7 @@ class ProductionRunner:
             nsavl=first_meta.nsavl,
             delta_t=first_meta.delta_t,
             npriv=first_meta.npriv,
-            actual_steps=len(all_data),
+            n_frames=len(all_data),
             pH=pH,
             prod_id=self.config.prod_id,
             name=self.config.input_folder.name,
@@ -1271,10 +1406,14 @@ class ProductionRunner:
         # Load exchange state if resuming
         if self._exchanger and self._resumed:
             state_path = prod_dir / "exchange_state.json"
-            if state_path.exists():
-                from cphmd.core.replica_exchange import ExchangeState
+            if not state_path.exists():
+                raise FileNotFoundError(
+                    f"Cannot resume replica exchange: {state_path} not found. "
+                    f"Exchange state is required for consistent resumption."
+                )
+            from cphmd.core.replica_exchange import ExchangeState
 
-                self._exchanger.state = ExchangeState.load(state_path)
+            self._exchanger.state = ExchangeState.load(state_path)
 
         my_replicas = self._get_replica_assignments()
 
@@ -1282,6 +1421,9 @@ class ProductionRunner:
             start_time = time.time()
 
             for replica in my_replicas:
+                # Load/reload system (topology, crystal, block, restraints)
+                self._load_system(replica)
+
                 # Dispatch to exchange or regular dynamics
                 if self._exchanger is not None:
                     self._run_chunk_with_exchange(iteration, replica)
