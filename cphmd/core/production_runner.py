@@ -1,0 +1,274 @@
+"""Production CpHMD runner configuration.
+
+ProductionConfig defines parameters for production CpHMD runs with fixed
+converged biases (no ALF training loop).  It shares field conventions with
+ALFConfig but strips out all training-specific knobs.
+"""
+
+from __future__ import annotations
+
+import math
+import warnings
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from cphmd.core import ElecType, PrepFormat, RestrainType, VdwType
+from cphmd.core.replica_exchange import ReplicaExchangeConfig
+
+
+@dataclass
+class ProductionConfig:
+    """Configuration for a production CpHMD simulation with fixed biases.
+
+    At least one bias source must be provided: ``use_presets``,
+    ``variables_dir``, or ``variables_files``.  When multiple sources are
+    set, per-residue precedence is: files > dir > presets.
+
+    Attributes:
+        input_folder: System folder (contains ``prep/`` subdirectory).
+        toppar_dir: Path to topology/parameter directory.
+        prod_id: Production run identity; creates ``prod_{id}/``.
+        seed: RNG seed for reproducibility (``None`` = derive from *prod_id*).
+        ns: Total nanoseconds of production dynamics.
+        ns_per_chunk: Nanoseconds per iteration chunk (last chunk handles remainder).
+        temperature: Simulation temperature in Kelvin.
+        pH_start: Starting (or only) pH value.
+        pH_end: Ending pH value (ignored when *nreps* == 1).
+        nreps: Number of pH replicas.
+        use_presets: Use converged single-site preset biases.
+        variables_dir: Directory containing ``var-{resname}.inp`` files.
+        variables_files: Explicit per-residue variable file mapping.
+        elec_type: Electrostatics method.
+        vdw_type: VDW method (``None`` = auto-detect from prep format).
+        hmr: Hydrogen mass repartitioning (``None`` = auto-detect).
+        restrains: Restraint method for titratable atoms.
+        scat_force_constant: SCAT restraint force constant.
+        fnex: FNEX softmax constraint parameter.
+        chi_offset: LDBV class 8 REF (s-term).
+        omega_decay: LDBV class 10 REF (x-term, negative).
+        lambda_mass: Lambda mass in amu*A^2 (``None`` = auto).
+        lambda_fbeta: Lambda Langevin friction in ps^-1 (``None`` = auto).
+        nsavc: Coordinate save frequency (frames).
+        nsavl: Lambda save frequency.
+        cutnb: Non-bonded list cutoff.
+        ctofnb: Outer non-bonded cutoff.
+        ctonnb: Inner non-bonded cutoff.
+        gscale: Langevin friction coefficient (``None`` = auto).
+        topology_files: Topology/parameter files relative to *toppar_dir*.
+        extra_files: Additional topology/parameter files (absolute paths).
+        replica_exchange: Replica exchange configuration (``None`` = disabled).
+        prep_format: Prep format (``"default"``, ``"legacy"``, or ``"auto"``).
+        cent_ncres: Number of residues for recentering (``False`` to disable).
+        debug: Keep full CHARMM verbosity.
+    """
+
+    # ------------------------------------------------------------------
+    # System
+    # ------------------------------------------------------------------
+    input_folder: str | Path
+    toppar_dir: str | Path = "toppar"
+
+    # Production run identity
+    prod_id: int = 1
+    seed: int | None = None
+
+    # Duration
+    ns: float = 10.0
+    ns_per_chunk: float = 1.0
+
+    # Temperature
+    temperature: float = 298.15
+
+    # pH replicas
+    pH_start: float = 7.0
+    pH_end: float = 7.0
+    nreps: int = 1
+
+    # ------------------------------------------------------------------
+    # Bias source (at least one required)
+    # ------------------------------------------------------------------
+    use_presets: bool = False
+    variables_dir: str | Path | None = None
+    variables_files: dict[str, str | Path] | None = None
+
+    # ------------------------------------------------------------------
+    # Electrostatics / nonbonded
+    # ------------------------------------------------------------------
+    elec_type: ElecType = "pmeex"
+    vdw_type: VdwType | None = None
+    hmr: bool | None = None
+    restrains: RestrainType = "SCAT"
+    scat_force_constant: float = 300.0
+    fnex: float = 5.5
+
+    # Bias shape constants
+    chi_offset: float | None = None
+    omega_decay: float | None = None
+
+    # Lambda dynamics
+    lambda_mass: float | None = None
+    lambda_fbeta: float | None = None
+
+    # Output frequencies
+    nsavc: int = 500
+    nsavl: int = 1
+
+    # Nonbonded
+    cutnb: float = 14.0
+    ctofnb: float = 12.0
+    ctonnb: float = 10.0
+    gscale: float | None = None
+
+    # Topology files (relative to toppar_dir)
+    topology_files: list[str] = field(
+        default_factory=lambda: [
+            "top_all36_prot.rtf",
+            "par_all36m_prot.prm",
+            "top_all36_na.rtf",
+            "par_all36_na.prm",
+            "toppar_water_ions.str",
+            "top_all36_cgenff.rtf",
+            "par_all36_cgenff.prm",
+            "my_files/titratable_residues.str",
+            "my_files/nucleic_c36.str",
+        ]
+    )
+
+    # Extra topology/parameter files (absolute paths for custom ligands)
+    extra_files: list[str | Path] = field(default_factory=list)
+
+    # Replica exchange
+    replica_exchange: ReplicaExchangeConfig | None = None
+
+    # Prep format
+    prep_format: PrepFormat = "auto"
+
+    # Recentering
+    cent_ncres: int | bool = False
+
+    # Debug
+    debug: bool = False
+
+    # ------------------------------------------------------------------
+    # Validation
+    # ------------------------------------------------------------------
+
+    def __post_init__(self) -> None:
+        """Validate configuration after initialization."""
+        # --- Path conversions ---
+        self.input_folder = Path(self.input_folder).resolve()
+        self.toppar_dir = Path(self.toppar_dir)
+        if self.variables_dir is not None:
+            self.variables_dir = Path(self.variables_dir)
+
+        # --- Prep format auto-detection ---
+        prep_dir = self.input_folder / "prep"
+        if self.prep_format == "auto":
+            if (prep_dir / "patches.dat").exists():
+                self.prep_format = "default"
+            elif (prep_dir / "alf_info.py").exists():
+                self.prep_format = "legacy"
+            else:
+                raise FileNotFoundError(
+                    f"Cannot detect prep format in {prep_dir}: "
+                    f"expected patches.dat (default) or alf_info.py (legacy)"
+                )
+
+        # --- Required files ---
+        if self.prep_format == "default":
+            for f in [
+                "prep/system.psf",
+                "prep/system.crd",
+                "prep/patches.dat",
+                "prep/box.dat",
+                "prep/fft.dat",
+            ]:
+                path = self.input_folder / f
+                if not path.exists():
+                    raise FileNotFoundError(f"Required file not found: {path}")
+
+        # --- Bias source validation ---
+        has_bias = self.use_presets or self.variables_dir is not None or self.variables_files
+        if not has_bias:
+            raise ValueError(
+                "At least one bias source must be set: "
+                "use_presets=True, variables_dir, or variables_files"
+            )
+
+        # --- Preset requires explicit vdw_type ---
+        if self.use_presets and self.vdw_type is None:
+            raise ValueError(
+                "Preset resolution requires explicit vdw_type "
+                "(e.g., vdw_type='vswitch')"
+            )
+
+        # --- ns_per_chunk ---
+        if self.ns_per_chunk <= 0:
+            raise ValueError("ns_per_chunk must be positive")
+
+        # --- Replica exchange requires 2+ replicas ---
+        if self.replica_exchange is not None and self.replica_exchange.enabled and self.nreps < 2:
+            raise ValueError(
+                "Replica exchange requires 2 or more replicas "
+                f"(nreps={self.nreps})"
+            )
+
+        # --- pH warnings ---
+        if self.nreps > 1 and self.pH_start == self.pH_end:
+            warnings.warn(
+                f"nreps={self.nreps} but all replicas at same pH "
+                f"({self.pH_start})",
+                UserWarning,
+                stacklevel=2,
+            )
+        if self.nreps == 1 and self.pH_start != self.pH_end:
+            warnings.warn(
+                f"pH_end ignored when nreps=1 "
+                f"(pH_start={self.pH_start}, pH_end={self.pH_end})",
+                UserWarning,
+                stacklevel=2,
+            )
+
+        # --- Auto-detect sentinels from prep format ---
+        is_legacy = self.prep_format == "legacy"
+        if self.hmr is None:
+            self.hmr = not is_legacy
+        if self.vdw_type is None:
+            self.vdw_type = "vfswitch" if is_legacy else "vswitch"
+        if self.gscale is None:
+            self.gscale = 0.1 if is_legacy else 10.0
+
+        # Lambda mass/friction: HMR(4fs) → heavy/gentle; non-HMR(2fs) → lighter
+        if self.lambda_mass is None:
+            self.lambda_mass = 12.0 if self.hmr else 5.0
+        if self.lambda_fbeta is None:
+            self.lambda_fbeta = 5.0 if self.hmr else 7.0
+
+    # ------------------------------------------------------------------
+    # Properties
+    # ------------------------------------------------------------------
+
+    @property
+    def n_chunks(self) -> int:
+        """Number of iteration chunks (last chunk handles remainder)."""
+        return math.ceil(self.ns / self.ns_per_chunk)
+
+    @property
+    def delta_pKa(self) -> float:
+        """pH spacing between replicas (0.0 when single replica)."""
+        if self.nreps > 1:
+            return (self.pH_end - self.pH_start) / (self.nreps - 1)
+        return 0.0
+
+    # ------------------------------------------------------------------
+    # Methods
+    # ------------------------------------------------------------------
+
+    def get_seed_for_chunk(self, iteration: int) -> int:
+        """Return a deterministic seed for the given chunk iteration.
+
+        When ``seed`` is ``None``, derives from *prod_id* so that runs with
+        different ``prod_id`` values get distinct seed sequences.
+        """
+        base = self.seed if self.seed is not None else self.prod_id * 10000
+        return base + iteration
