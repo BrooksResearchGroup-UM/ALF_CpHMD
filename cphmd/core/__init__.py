@@ -12,6 +12,8 @@ from typing import Literal
 PhaseType = Literal[1, 2, 3]
 ElecType = Literal["pmeex", "pmeon", "pmenn", "fshift", "fswitch"]
 VdwType = Literal["vswitch", "vfswitch"]
+RestrainType = Literal["SCAT", "NOE", "none"]
+PrepFormat = Literal["default", "legacy", "auto"]
 
 from .alf_runner import ALFConfig, ALFSimulation, run_alf_simulation
 from .alf_utils import (
@@ -175,6 +177,8 @@ __all__ = [
     "PhaseType",
     "ElecType",
     "VdwType",
+    "RestrainType",
+    "PrepFormat",
     # Patching (lazy)
     "LigandPatchDef",
     "LigandSiteDef",

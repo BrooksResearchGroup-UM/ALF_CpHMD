@@ -263,6 +263,92 @@ def alf(
         console.print("[green]ALF simulation complete[/green]")
 
 
+@run_app.command("production")
+def production(
+    input_folder: str = typer.Option(
+        ..., "-i", "--input", help="Input folder with prep/ directory"
+    ),
+    toppar_dir: str = typer.Option("toppar", "--toppar", help="Topology/parameter directory"),
+    prod_id: int = typer.Option(1, "--prod-id", help="Production run ID (creates prod_N/)"),
+    ns: float = typer.Option(10.0, "--ns", help="Total nanoseconds"),
+    ns_per_chunk: float = typer.Option(
+        1.0, "--chunk-ns", help="Nanoseconds per iteration chunk"
+    ),
+    pH_start: float = typer.Option(7.0, "--pH-start", help="Starting pH"),
+    pH_end: float = typer.Option(7.0, "--pH-end", help="Ending pH"),
+    pH: float = typer.Option(None, "--pH", help="Single pH (sets both start and end)"),
+    nreps: int = typer.Option(1, "--nreps", help="Number of pH replicas"),
+    use_presets: bool = typer.Option(
+        False, "--presets/--no-presets", help="Use preset biases"
+    ),
+    variables_dir: str = typer.Option(None, "-v", "--var-dir", help="Variables directory"),
+    elec_type: str = typer.Option("pmeex", "-e", "--elec", help="Electrostatics method"),
+    vdw_type: str = typer.Option(None, "--vdw", help="VDW method: vswitch or vfswitch"),
+    hmr: bool = typer.Option(None, "--hmr/--no-hmr", help="Hydrogen mass repartitioning"),
+    restrains: str = typer.Option("SCAT", "--restrain-type", help="Restraint method"),
+    temperature: float = typer.Option(298.15, "-t", "--temp", help="Temperature (K)"),
+    nsavc: int = typer.Option(500, "--nsavc", help="DCD save frequency (frames)"),
+    seed: int = typer.Option(None, "--seed", help="Random seed"),
+    exchange_freq: int = typer.Option(
+        0, "--exchange-freq", help="Exchange freq in steps (0=disabled)"
+    ),
+    prep_format: str = typer.Option(
+        "auto", "--prep-format", help="Prep format: default, legacy, auto"
+    ),
+    extra_files: list[str] = typer.Option([], "--extra", help="Extra topology files"),
+    debug: bool = typer.Option(False, "--debug/--no-debug", help="Debug mode"),
+):
+    """Run CpHMD production dynamics with converged biases."""
+    from cphmd.core.production_runner import ProductionConfig, ProductionRunner
+    from cphmd.core.replica_exchange import ReplicaExchangeConfig
+
+    # Handle --pH shorthand
+    if pH is not None:
+        pH_start = pH
+        pH_end = pH
+
+    # Handle --exchange-freq -> ReplicaExchangeConfig
+    rex = None
+    if exchange_freq > 0:
+        if nreps < 2:
+            console.print("[red]Error: --exchange-freq requires --nreps >= 2[/red]")
+            raise typer.Exit(1)
+        rex = ReplicaExchangeConfig(enabled=True, exchange_freq=exchange_freq)
+
+    try:
+        config = ProductionConfig(
+            input_folder=input_folder,
+            toppar_dir=toppar_dir,
+            prod_id=prod_id,
+            ns=ns,
+            ns_per_chunk=ns_per_chunk,
+            temperature=temperature,
+            pH_start=pH_start,
+            pH_end=pH_end,
+            nreps=nreps,
+            use_presets=use_presets,
+            variables_dir=variables_dir,
+            elec_type=elec_type,
+            vdw_type=vdw_type,
+            hmr=hmr,
+            restrains=restrains,
+            nsavc=nsavc,
+            seed=seed,
+            replica_exchange=rex,
+            prep_format=prep_format,
+            extra_files=extra_files,
+            debug=debug,
+        )
+
+        runner = ProductionRunner(config)
+        runner.initialize()
+        runner.run()
+
+    except Exception as e:
+        console.print(f"[red]Error: {e}[/red]")
+        raise typer.Exit(1)
+
+
 @run_app.command("bias-search")
 def bias_search(
     input_folder: str = typer.Option(..., "-i", "--input", help="Input folder with analysis directories"),

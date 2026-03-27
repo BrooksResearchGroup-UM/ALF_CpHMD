@@ -28,7 +28,8 @@ from typing import Any, Literal
 import numpy as np
 import pandas as pd
 
-from cphmd.core import ElecType, PhaseType, VdwType
+# Type aliases — RestrainType and PrepFormat imported from cphmd.core (shared)
+from cphmd.core import ElecType, PhaseType, PrepFormat, RestrainType, VdwType
 from cphmd.core.alf_utils import (
     convert_lambda_binary_to_parquet,
     init_vars,
@@ -44,11 +45,8 @@ from cphmd.core.phase_switcher import (
 )
 from cphmd.utils.charmm_path import qpath
 
-# Type aliases
-RestrainType = Literal["SCAT", "NOE", "none"]
 AnalysisMethod = Literal["wham", "lmalf", "hybrid", "nonlinear"]
 ConvergenceMode = Literal["population", "rmsd"]
-PrepFormat = Literal["default", "legacy", "auto"]
 
 
 @dataclass

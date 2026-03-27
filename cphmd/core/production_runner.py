@@ -592,6 +592,7 @@ class ProductionRunner:
         self._prod_dir = config.input_folder / f"prod_{config.prod_id}"
         self._blade_ready = False
         self._gpuid = 0  # Will be set from MPI rank or CUDA_VISIBLE_DEVICES
+        self._rank = 0  # Will be set from MPI rank in _run_impl
         self._resumed = False
         self._nsubs: list[int] | None = None  # Set during initialize from patches.dat
         self._exchanger = None  # Set in initialize() if exchange configured
@@ -1279,3 +1280,112 @@ class ProductionRunner:
         self._exchanger.state.save(state_path)
         log_path = self._prod_dir / "logs" / f"exchange_log_{iteration:03d}.txt"
         self._exchanger.write_exchange_log(log_path, iteration)
+
+    # ------------------------------------------------------------------
+    # Main run loop
+    # ------------------------------------------------------------------
+
+    def run(self):
+        """Execute production dynamics.
+
+        MPI safety: wraps _run_impl in try/except -> comm.Abort.
+        """
+        try:
+            self._run_impl()
+        except BaseException:
+            import sys
+            import traceback
+
+            print(
+                f"\n[RANK {self._rank}] FATAL — aborting MPI:\n"
+                f"{traceback.format_exc()}",
+                file=sys.__stderr__,
+                flush=True,
+            )
+            if self._comm is not None:
+                self._comm.Abort(1)
+            raise
+
+    def _run_impl(self):
+        """Inner production loop."""
+        import os
+        import time
+
+        if not hasattr(self, "_nsubs") or self._nsubs is None:
+            self.initialize()
+
+        config = self.config
+        prod_dir = self._prod_dir
+        lambdas_dir = prod_dir / "lambdas"
+
+        n_chunks = config.n_chunks
+
+        # Resume: find first incomplete chunk
+        start_iteration = find_resume_point(lambdas_dir, n_chunks, config.nreps)
+
+        if start_iteration > n_chunks:
+            print(f"All {n_chunks} chunks complete. Nothing to do.")
+            return
+
+        self._resumed = start_iteration > 1
+
+        # MPI rank
+        rank = self._comm.Get_rank() if self._comm else 0
+        self._rank = rank
+
+        # GPU assignment
+        if "CUDA_VISIBLE_DEVICES" in os.environ:
+            devices = os.environ["CUDA_VISIBLE_DEVICES"].split(",")
+            self._gpuid = int(devices[rank % len(devices)])
+        else:
+            self._gpuid = rank
+
+        print(f"Production run: {config.ns} ns in {n_chunks} chunks of {config.ns_per_chunk} ns")
+        print(f"Starting from chunk {start_iteration}/{n_chunks}")
+        if self._exchanger:
+            print(
+                f"pH-REMD enabled: exchange_freq="
+                f"{config.replica_exchange.exchange_freq}"
+            )
+
+        # Load exchange state if resuming
+        if self._exchanger and self._resumed:
+            state_path = prod_dir / "exchange_state.json"
+            if state_path.exists():
+                from cphmd.core.replica_exchange import ExchangeState
+
+                self._exchanger.state = ExchangeState.load(state_path)
+
+        my_replicas = self._get_replica_assignments()
+
+        for iteration in range(start_iteration, n_chunks + 1):
+            start_time = time.time()
+
+            for replica in my_replicas:
+                # Dispatch to exchange or regular dynamics
+                if self._exchanger is not None:
+                    self._run_chunk_with_exchange(iteration, replica)
+                else:
+                    self._run_chunk(iteration, replica)
+
+            if self._comm:
+                self._comm.Barrier()
+
+            # Post-chunk: convert lambda to parquet
+            for replica in my_replicas:
+                if self._exchanger:
+                    self._segments_to_parquet(iteration, replica)
+                else:
+                    self._convert_lambda(iteration, replica)
+
+            # Save exchange state
+            if self._exchanger and rank == 0:
+                self._save_exchange_state(iteration)
+
+            if self._comm:
+                self._comm.Barrier()
+
+            elapsed = time.time() - start_time
+            print(f"Chunk {iteration}/{n_chunks} completed in {elapsed:.1f}s")
+
+        print(f"\nProduction run complete: {n_chunks} chunks, {config.ns} ns total")
