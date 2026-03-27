@@ -318,8 +318,7 @@ class ProductionConfig:
         # --- Preset requires explicit vdw_type ---
         if self.use_presets and self.vdw_type is None:
             raise ValueError(
-                "Preset resolution requires explicit vdw_type "
-                "(e.g., vdw_type='vswitch')"
+                "Preset resolution requires explicit vdw_type " "(e.g., vdw_type='vswitch')"
             )
 
         # --- ns_per_chunk ---
@@ -329,22 +328,19 @@ class ProductionConfig:
         # --- Replica exchange requires 2+ replicas ---
         if self.replica_exchange is not None and self.replica_exchange.enabled and self.nreps < 2:
             raise ValueError(
-                "Replica exchange requires 2 or more replicas "
-                f"(nreps={self.nreps})"
+                "Replica exchange requires 2 or more replicas " f"(nreps={self.nreps})"
             )
 
         # --- pH warnings ---
         if self.nreps > 1 and self.pH_start == self.pH_end:
             warnings.warn(
-                f"nreps={self.nreps} but all replicas at same pH "
-                f"({self.pH_start})",
+                f"nreps={self.nreps} but all replicas at same pH " f"({self.pH_start})",
                 UserWarning,
                 stacklevel=2,
             )
         if self.nreps == 1 and self.pH_start != self.pH_end:
             warnings.warn(
-                f"pH_end ignored when nreps=1 "
-                f"(pH_start={self.pH_start}, pH_end={self.pH_end})",
+                f"pH_end ignored when nreps=1 " f"(pH_start={self.pH_start}, pH_end={self.pH_end})",
                 UserWarning,
                 stacklevel=2,
             )
@@ -384,6 +380,48 @@ class ProductionConfig:
     # Methods
     # ------------------------------------------------------------------
 
+    # Patch name → canonical residue type for variable resolution.
+    # Known patches map to their standard residue name; unknown patches
+    # fall back to progressively shorter prefixes then first-3-chars.
+    _PATCH_TO_RESTYPE = {
+        "ASP": "ASP",
+        "ASH": "ASP",
+        "ASPO": "ASP",
+        "GLU": "GLU",
+        "GLH": "GLU",
+        "GLUO": "GLU",
+        "HSP": "HSP",
+        "HSD": "HSP",
+        "HSE": "HSP",
+        "HSPO": "HSP",
+        "HSPD": "HSP",
+        "HSPE": "HSP",
+        "LYS": "LYS",
+        "LYSO": "LYS",
+        "LYSU": "LYS",
+        "TYR": "TYR",
+        "TYRO": "TYR",
+        "TYRU": "TYR",
+        "ARG": "ARG",
+        "ARGO": "ARG",
+        "ARU1": "ARG",
+        "ARU2": "ARG",
+        "SER": "SER",
+        "SERO": "SER",
+        "SERD": "SER",
+        "CYS": "CYS",
+        "CYSO": "CYS",
+        "CYSD": "CYS",
+        "THR": "THR",
+        "THRO": "THR",
+        "THRD": "THR",
+        "NR": "NR",
+        "NRED": "NR",
+        "NREDO": "NR",
+        "NRDU": "NR",
+        "NRD2": "NR",
+    }
+
     def get_seed_for_chunk(self, iteration: int) -> int:
         """Return a deterministic seed for the given chunk iteration.
 
@@ -392,3 +430,154 @@ class ProductionConfig:
         """
         base = self.seed if self.seed is not None else self.prod_id * 10000
         return base + iteration
+
+    def _resolve_preset_config(self) -> str | None:
+        """Resolve preset configuration name from elec_type + vdw_type.
+
+        Mapping: pmeex -> pme_ex, pmeon -> pme_on, pmenn -> pme_nn,
+                 fshift -> fshift, fswitch -> fswitch; combined with vdw_type.
+
+        Returns:
+            Preset config name (e.g., "pme_ex_vswitch") or None if types unknown.
+        """
+        elec_map = {
+            "pmeex": "pme_ex",
+            "pmeon": "pme_on",
+            "pmenn": "pme_nn",
+            "fshift": "fshift",
+            "fswitch": "fswitch",
+        }
+        elec = elec_map.get(self.elec_type)
+        vdw = self.vdw_type
+        if elec and vdw:
+            return f"{elec}_{vdw}"
+        return None
+
+    def _patch_to_restype(self, patch_name: str) -> str:
+        """Map a patch name to its canonical residue type.
+
+        Tries exact match in ``_PATCH_TO_RESTYPE``, then progressively shorter
+        prefixes, then falls back to stripping a trailing O/U/D suffix.
+        """
+        # Exact match
+        restype = self._PATCH_TO_RESTYPE.get(patch_name)
+        if restype is not None:
+            return restype
+        # Progressively shorter prefixes
+        for length in range(len(patch_name) - 1, 1, -1):
+            restype = self._PATCH_TO_RESTYPE.get(patch_name[:length])
+            if restype is not None:
+                return restype
+        # Fallback: strip trailing protonation suffix (O/U/D) if present
+        if len(patch_name) > 2 and patch_name[-1] in "OUD":
+            return patch_name[:-1]
+        # Last resort: first 3 chars
+        return patch_name[:3] if len(patch_name) >= 3 else patch_name
+
+    def _get_site_residue_types(self) -> dict[str, str]:
+        """Extract canonical residue type for each titratable site.
+
+        Reads patches.dat via ``_load_patches``, groups by site, and maps
+        the first subsite's PATCH name to a canonical type.
+
+        Returns:
+            Dict mapping canonical residue type to itself (deduplicated).
+            The keys are the unique residue types found across all sites.
+        """
+        from cphmd.core.generate_block import _load_patches
+
+        df = _load_patches(self.input_folder)
+        restypes: dict[str, str] = {}
+        for site in sorted(df["site"].unique(), key=int):
+            site_rows = df[df["site"] == site]
+            patch_name = site_rows.iloc[0]["PATCH"]
+            restype = self._patch_to_restype(patch_name)
+            restypes[restype] = restype
+        return restypes
+
+    def _resolve_variables(self) -> dict[str, dict[str, float]]:
+        """Resolve per-residue bias parameters from multiple sources.
+
+        For each unique residue type found in patches.dat, looks up bias
+        variables in precedence order:
+
+        1. ``variables_files[restype]`` — explicit per-residue file path
+        2. ``variables_dir / "var-{restype}.inp"`` — directory-based lookup
+        3. ``use_presets`` — converged single-site preset biases
+        4. None found — collected into missing list
+
+        Raises:
+            ValueError: If any residue types cannot be resolved from any source.
+
+        Returns:
+            Mapping of residue type to variable dict (e.g., {"lams1s1": 0.0, ...}).
+        """
+        import tempfile
+
+        from cphmd.core.generate_block import _load_variables
+        from cphmd.presets import list_presets, write_preset_variables
+
+        site_types = self._get_site_residue_types()
+        variables: dict[str, dict[str, float]] = {}
+        missing: list[str] = []
+
+        # Normalize variables_files keys to uppercase for matching
+        files_map: dict[str, Path] = {}
+        if self.variables_files:
+            files_map = {k.upper(): Path(v) for k, v in self.variables_files.items()}
+
+        preset_config = self._resolve_preset_config() if self.use_presets else None
+        available_presets = list_presets(preset_config) if self.use_presets else []
+
+        for restype in sorted(site_types):
+            # 1. Explicit file override
+            if restype in files_map:
+                var_file = files_map[restype]
+                variables[restype] = self._read_variable_file(var_file)
+                continue
+
+            # 2. Variables directory
+            if self.variables_dir is not None:
+                try:
+                    variables[restype] = _load_variables(restype, self.variables_dir)
+                    continue
+                except FileNotFoundError:
+                    pass
+
+            # 3. Presets
+            if self.use_presets and restype in available_presets:
+                # Write preset to temp file, then read back as variable dict
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    tmp_path = Path(tmpdir) / f"var-{restype.lower()}.inp"
+                    write_preset_variables(restype, str(tmp_path), config=preset_config)
+                    variables[restype] = _load_variables(restype, Path(tmpdir))
+                continue
+
+            # 4. Not found
+            missing.append(restype)
+
+        if missing:
+            raise ValueError(
+                f"No bias variables found for residue types: {', '.join(sorted(missing))}. "
+                f"Provide via variables_files, variables_dir, or enable use_presets."
+            )
+
+        return variables
+
+    @staticmethod
+    def _read_variable_file(path: Path) -> dict[str, float]:
+        """Read a CHARMM-style variable file (``set varname = value``)."""
+        variables: dict[str, float] = {}
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith("set"):
+                    parts = line.replace("set", "", 1).strip().split("=")
+                    if len(parts) == 2:
+                        var_name = parts[0].strip()
+                        try:
+                            var_value = float(parts[1].strip())
+                        except ValueError:
+                            continue
+                        variables[var_name] = var_value
+        return variables
