@@ -67,6 +67,75 @@ def build_parquet_metadata(
     }
 
 
+def find_resume_point(lambdas_dir: Path, n_chunks: int, nreps: int) -> int:
+    """Scan for existing valid parquets and return first incomplete chunk.
+
+    Validates each parquet with ``pq.read_metadata()``.  Invalid files are
+    deleted so that a subsequent run can regenerate them cleanly.
+
+    Returns
+    -------
+    int
+        1-based chunk number to start/resume from.  Returns ``n_chunks + 1``
+        when every chunk already has valid parquets for all replicas.
+    """
+    import pyarrow.parquet as pq
+
+    for chunk in range(1, n_chunks + 1):
+        all_valid = True
+        for rep in range(nreps):
+            parquet_path = lambdas_dir / f"{chunk:03d}_{rep:02d}.parquet"
+            if not parquet_path.exists():
+                all_valid = False
+                break
+            try:
+                pq.read_metadata(str(parquet_path))
+            except Exception:
+                parquet_path.unlink(missing_ok=True)
+                all_valid = False
+                break
+        if not all_valid:
+            return chunk
+    return n_chunks + 1
+
+
+def find_restart_for_chunk(
+    res_dir: Path,
+    iteration: int,
+    replica: int,
+    exchange: bool,
+) -> Path:
+    """Find restart file from the previous chunk for continuation.
+
+    Looks for ``prod.{prev:03d}.{replica:02d}.rst`` first.  When *exchange*
+    is ``True`` and the normal restart is missing, falls back to the
+    highest-numbered segment restart (``*.seg*.rst``).
+
+    Raises
+    ------
+    FileNotFoundError
+        If no suitable restart file exists.
+    """
+    prev = iteration - 1
+
+    rst = res_dir / f"prod.{prev:03d}.{replica:02d}.rst"
+    if rst.exists():
+        return rst
+
+    if exchange:
+        import glob as glob_mod
+
+        pattern = str(res_dir / f"prod.{prev:03d}.{replica:02d}.seg*.rst")
+        seg_files = sorted(glob_mod.glob(pattern))
+        if seg_files:
+            return Path(seg_files[-1])
+
+    raise FileNotFoundError(
+        f"No restart file found for chunk {iteration}, replica {replica} "
+        f"in {res_dir}. Expected prod.{prev:03d}.{replica:02d}.rst"
+    )
+
+
 @dataclass
 class ProductionConfig:
     """Configuration for a production CpHMD simulation with fixed biases.
