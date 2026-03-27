@@ -168,6 +168,7 @@ def write_lambda_parquet(
     column_names: list[str] | None = None,
     nsubs: list[int] | None = None,
     compression: str = "snappy",
+    metadata: dict[str, str] | None = None,
 ) -> Path:
     """Write lambda data to Parquet file.
 
@@ -177,6 +178,8 @@ def write_lambda_parquet(
         column_names: Optional column names (overrides nsubs-based naming)
         nsubs: Number of substituents per site for s{site}s{subsite} naming
         compression: Parquet compression (snappy, gzip, lz4, zstd)
+        metadata: Optional key-value metadata to embed in the parquet schema
+                  (e.g. pH, temperature, simulation ID)
 
     Returns:
         Path to written file
@@ -201,6 +204,13 @@ def write_lambda_parquet(
     table = pa.table(
         {column_names[i]: pa.array(lambda_data[:, i]) for i in range(lambda_data.shape[1])}
     )
+
+    if metadata:
+        byte_metadata = {k.encode(): v.encode() for k, v in metadata.items()}
+        existing = table.schema.metadata or {}
+        existing.update(byte_metadata)
+        table = table.replace_schema_metadata(existing)
+
     pq.write_table(table, str(filepath), compression=compression)
 
     return filepath
