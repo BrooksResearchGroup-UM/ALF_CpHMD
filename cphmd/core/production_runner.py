@@ -590,6 +590,10 @@ class ProductionRunner:
         self.config = config
         self._comm = comm
         self._prod_dir = config.input_folder / f"prod_{config.prod_id}"
+        self._blade_ready = False
+        self._gpuid = 0  # Will be set from MPI rank or CUDA_VISIBLE_DEVICES
+        self._resumed = False
+        self._nsubs: list[int] | None = None  # Set during initialize from patches.dat
 
     def _create_prod_directory(self) -> None:
         """Create production directory with required subdirectories.
@@ -650,3 +654,266 @@ class ProductionRunner:
         finally:
             # 5. Clean up temp directory
             shutil.rmtree(temp_dir, ignore_errors=True)
+
+    # ------------------------------------------------------------------
+    # Initialization
+    # ------------------------------------------------------------------
+
+    def initialize(self) -> None:
+        """Set up for production: create directories, generate block files.
+
+        Creates the ``prod_{id}/`` directory tree, generates ``block.str`` and
+        ``restrains.str`` from resolved bias variables, and reads ``patches.dat``
+        to determine per-site substate counts (``_nsubs``).
+        """
+        self._create_prod_directory()
+        self._generate_production_files()
+
+        # Extract nsubs from patches.dat
+        from cphmd.core.generate_block import _load_patches
+
+        df = _load_patches(self._prod_dir)
+        self._nsubs = [len(g) for _, g in df.groupby("site", sort=True)]
+
+    # ------------------------------------------------------------------
+    # MPI replica assignment
+    # ------------------------------------------------------------------
+
+    def _get_replica_assignments(self) -> list[int]:
+        """Return list of replica indices this MPI rank is responsible for.
+
+        When running without MPI (``comm`` is ``None``), all replicas are
+        assigned to this (single) process.  With MPI, replicas are distributed
+        round-robin across ranks.
+        """
+        if self._comm is None:
+            return list(range(self.config.nreps))
+        rank = self._comm.Get_rank()
+        size = self._comm.Get_size()
+        return [r for r in range(self.config.nreps) if r % size == rank]
+
+    # ------------------------------------------------------------------
+    # Non-exchange dynamics
+    # ------------------------------------------------------------------
+
+    def _run_chunk(self, iteration: int, replica: int) -> tuple[Path, Path]:
+        """Run one chunk of production dynamics (non-exchange).
+
+        Executes BLaDE-accelerated Langevin dynamics for a single chunk,
+        using the CHARMM dynamics engine via pyCHARMM.  On the first chunk
+        SHAKE, BLaDE, and friction coefficients are initialized; subsequent
+        chunks skip that setup.
+
+        Parameters
+        ----------
+        iteration : int
+            1-based chunk number.
+        replica : int
+            0-based replica index.
+
+        Returns
+        -------
+        tuple[Path, Path]
+            ``(rst_path, lmd_path)`` for the restart and lambda files written.
+        """
+        import numpy as np
+        import pycharmm
+        import pycharmm.dynamics as dyn
+        import pycharmm.lingo as lingo
+        import pycharmm.psf as psf
+        import pycharmm.shake as shake
+
+        from cphmd.utils.charmm_path import qpath
+
+        config = self.config
+        prod_dir = self._prod_dir
+        res_dir = prod_dir / "res"
+        dcd_dir = prod_dir / "dcd"
+
+        # Compute step counts
+        timestep = 0.004 if config.hmr else 0.002
+        nsteps = int(config.ns_per_chunk * 1e6 / (timestep * 1e3))  # ns -> ps -> steps
+        # Handle remainder for last chunk
+        if iteration == config.n_chunks:
+            total_steps = int(config.ns * 1e6 / (timestep * 1e3))
+            completed_steps = nsteps * (iteration - 1)
+            nsteps = total_steps - completed_steps
+
+        nsavl = config.nsavl
+        nsavc = config.nsavc
+
+        rst_fn = res_dir / f"prod.{iteration:03d}.{replica:02d}.rst"
+        lmd_fn = res_dir / f"prod.{iteration:03d}.{replica:02d}.lmd"
+        dcd_fn = dcd_dir / f"prod.{iteration:03d}.{replica:02d}.dcd" if nsavc > 0 else None
+
+        # File units
+        rst_unit = 52
+        lmd_unit = 53
+        dcd_unit = 51
+        rpr_unit = 54
+
+        # Setup BLADE and shake on first chunk
+        if not self._blade_ready:
+            shake.on(fast=True, bonh=True, param=True, tol=1e-7)
+            lingo.charmm_script("faster on")
+            lingo.charmm_script(f"blade on gpuid {self._gpuid}")
+            dyn.set_fbetas(np.full(psf.get_natom(), config.gscale, dtype=float))
+            lingo.charmm_script("energy blade")
+            self._blade_ready = True
+
+        # Build dynamics parameters
+        seed = config.get_seed_for_chunk(iteration)
+        dyn_param: dict = {
+            "blade": True,
+            "prmc": True,
+            "iprs": 100,
+            "prdv": 100,
+            "cpt": True,
+            "timestep": timestep,
+            "firstt": config.temperature,
+            "finalt": config.temperature,
+            "tstruc": config.temperature,
+            "tbath": config.temperature,
+            "ichecw": 0,
+            "ihtfrq": 0,
+            "ieqfrq": 0,
+            "iasors": 1,
+            "iasvel": 1,
+            "iscvel": 0,
+            "inbfrq": -1,
+            "ilbfrq": 0,
+            "imgfrq": -1,
+            "ntrfrq": 0,
+            "echeck": -1,
+            "iunldm": lmd_unit,
+            "iunwri": rst_unit,
+            "iuncrd": dcd_unit if dcd_fn else -1,
+            "nsavc": nsavc if dcd_fn else 0,
+            "nsavl": nsavl,
+            "nprint": min(nsteps, 50000),
+            "iprfrq": min(nsteps, 50000),
+            "nstep": nsteps,
+            "isvfrq": nsteps,
+            "iseed": seed,
+            "pconstant": True,
+            "pmass": psf.get_natom() * 0.12,
+            "pref": 1.0,
+            "pgamma": 20.0,
+            "hoover": True,
+            "reft": config.temperature,
+            "tmass": 1000,
+        }
+
+        # Start vs restart
+        rpr = None
+        if iteration > 1 or self._resumed:
+            dyn_param["start"] = False
+            dyn_param["restart"] = True
+            restart_file = find_restart_for_chunk(res_dir, iteration, replica, exchange=False)
+            dyn_param["iunrea"] = rpr_unit
+            rpr = pycharmm.CharmmFile(
+                file_name=qpath(restart_file),
+                file_unit=rpr_unit,
+                read_only=True,
+                formatted=True,
+            )
+        else:
+            dyn_param["start"] = True
+            dyn_param["restart"] = False
+
+        # Open output files
+        rst = pycharmm.CharmmFile(
+            file_name=qpath(rst_fn),
+            file_unit=rst_unit,
+            read_only=False,
+            formatted=True,
+        )
+        lmd = pycharmm.CharmmFile(
+            file_name=qpath(lmd_fn),
+            file_unit=lmd_unit,
+            read_only=False,
+            formatted=False,
+        )
+        dcd = None
+        if dcd_fn:
+            dcd = pycharmm.CharmmFile(
+                file_name=qpath(dcd_fn),
+                file_unit=dcd_unit,
+                read_only=False,
+                formatted=False,
+            )
+
+        pycharmm.DynamicsScript(**dyn_param).run()
+
+        # Close files
+        rst.close()
+        lmd.close()
+        if dcd:
+            dcd.close()
+        if rpr:
+            rpr.close()
+
+        return (rst_fn, lmd_fn)
+
+    def _convert_lambda(self, iteration: int, replica: int) -> Path:
+        """Convert ``.lmd`` binary to ``.parquet`` with production metadata.
+
+        Reads the binary lambda file produced by ``_run_chunk``, writes a
+        parquet file into the ``lambdas/`` directory with full provenance
+        metadata, validates the written file, and deletes the source ``.lmd``.
+
+        Parameters
+        ----------
+        iteration : int
+            1-based chunk number.
+        replica : int
+            0-based replica index.
+
+        Returns
+        -------
+        Path
+            Path to the written parquet file.
+        """
+        import pyarrow.parquet as pq
+
+        from cphmd.utils.lambda_io import read_lambda_binary, write_lambda_parquet
+
+        res_dir = self._prod_dir / "res"
+        lambdas_dir = self._prod_dir / "lambdas"
+
+        lmd_fn = res_dir / f"prod.{iteration:03d}.{replica:02d}.lmd"
+        parquet_fn = lambdas_dir / f"{iteration:03d}_{replica:02d}.parquet"
+
+        data, meta = read_lambda_binary(lmd_fn)
+
+        # Build metadata
+        pH = self._get_replica_pH(replica)
+        metadata = build_parquet_metadata(
+            nsubs=self._nsubs,
+            temperature=self.config.temperature,
+            nsavl=meta.nsavl,
+            delta_t=meta.delta_t,
+            npriv=meta.npriv,
+            actual_steps=len(data),
+            pH=pH,
+            prod_id=self.config.prod_id,
+            name=self.config.input_folder.name,
+        )
+
+        write_lambda_parquet(parquet_fn, data, nsubs=self._nsubs, metadata=metadata)
+
+        # Verify before deleting source
+        pq.read_metadata(str(parquet_fn))
+        lmd_fn.unlink()
+
+        return parquet_fn
+
+    def _get_replica_pH(self, replica: int) -> float:
+        """Compute pH value for a given replica index.
+
+        For a single replica, returns ``pH_start``.  For multiple replicas,
+        linearly interpolates between ``pH_start`` and ``pH_end``.
+        """
+        if self.config.nreps == 1:
+            return self.config.pH_start
+        return self.config.pH_start + replica * self.config.delta_pKa
