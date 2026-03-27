@@ -16,6 +16,57 @@ from cphmd.core import ElecType, PrepFormat, RestrainType, VdwType
 from cphmd.core.replica_exchange import ReplicaExchangeConfig
 
 
+def build_nsubsites_str(nsubs: list[int]) -> str:
+    """Build isitemld-format nsubsites string for parquet metadata.
+
+    Maps nsubs (per-site substate counts) to the block-to-site mapping array.
+    Index 0 is the environment block, values are 1-based site indices.
+    Example: nsubs=[3,2] -> "[0 1 1 1 2 2]"
+    """
+    isitemld = [0] + [i + 1 for i, n in enumerate(nsubs) for _ in range(n)]
+    return "[" + " ".join(map(str, isitemld)) + "]"
+
+
+def build_parquet_metadata(
+    nsubs: list[int],
+    temperature: float,
+    nsavl: int,
+    delta_t: float,
+    npriv: int,
+    actual_steps: int,
+    pH: float,
+    prod_id: int,
+    name: str,
+) -> dict[str, str]:
+    """Build metadata dict for production parquet files.
+
+    All values are strings (parquet schema metadata requirement).
+    """
+    nblocks = 1 + sum(nsubs)
+    nsites = len(nsubs)
+    time_step = delta_t * nsavl
+    time_start = npriv * delta_t
+    time_end = time_start + (actual_steps - 1) * time_step
+
+    return {
+        "Title": "CpHMD production",
+        "Temperature": f"{temperature:.2f}",
+        "Time Step": f"{time_step:.6f}".rstrip("0").rstrip("."),
+        "Time Start": f"{time_start:.3f}",
+        "Time End": f"{time_end:.3f}",
+        "Save Frequency": str(nsavl),
+        "nblocks": str(nblocks),
+        "nsites": str(nsites),
+        "nsubsites": build_nsubsites_str(nsubs),
+        "Start Step": str(npriv),
+        "Total Steps": str(actual_steps),
+        "End Step": str(npriv + actual_steps - nsavl),
+        "pH": str(pH),
+        "Simulation": f"prod_{prod_id}",
+        "Name": name,
+    }
+
+
 @dataclass
 class ProductionConfig:
     """Configuration for a production CpHMD simulation with fixed biases.
