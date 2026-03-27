@@ -594,6 +594,8 @@ class ProductionRunner:
         self._gpuid = 0  # Will be set from MPI rank or CUDA_VISIBLE_DEVICES
         self._resumed = False
         self._nsubs: list[int] | None = None  # Set during initialize from patches.dat
+        self._exchanger = None  # Set in initialize() if exchange configured
+        self._patch_info = None  # DataFrame from patches.dat
 
     def _create_prod_directory(self) -> None:
         """Create production directory with required subdirectories.
@@ -663,17 +665,27 @@ class ProductionRunner:
         """Set up for production: create directories, generate block files.
 
         Creates the ``prod_{id}/`` directory tree, generates ``block.str`` and
-        ``restrains.str`` from resolved bias variables, and reads ``patches.dat``
-        to determine per-site substate counts (``_nsubs``).
+        ``restrains.str`` from resolved bias variables, reads ``patches.dat``
+        to determine per-site substate counts (``_nsubs``), and optionally
+        initializes the replica exchanger.
         """
         self._create_prod_directory()
         self._generate_production_files()
 
-        # Extract nsubs from patches.dat
+        # Extract nsubs and patch_info from patches.dat
         from cphmd.core.generate_block import _load_patches
 
-        df = _load_patches(self._prod_dir)
-        self._nsubs = [len(g) for _, g in df.groupby("site", sort=True)]
+        patches = _load_patches(self._prod_dir)
+        self._nsubs = [len(g) for _, g in patches.groupby("site", sort=True)]
+        self._patch_info = patches
+
+        # Initialize replica exchanger if exchange configured
+        if self.config.replica_exchange is not None and self.config.replica_exchange.enabled:
+            from cphmd.core.replica_exchange import ReplicaExchanger
+
+            rank = self._comm.Get_rank() if self._comm else 0
+            size = self._comm.Get_size() if self._comm else 1
+            self._exchanger = ReplicaExchanger(self.config.replica_exchange, self._comm, rank, size)
 
     # ------------------------------------------------------------------
     # MPI replica assignment
@@ -917,3 +929,353 @@ class ProductionRunner:
         if self.config.nreps == 1:
             return self.config.pH_start
         return self.config.pH_start + replica * self.config.delta_pKa
+
+    # ------------------------------------------------------------------
+    # Exchange dynamics
+    # ------------------------------------------------------------------
+
+    def _run_segment(
+        self,
+        iteration: int,
+        replica: int,
+        segment_idx: int,
+        nsteps: int,
+        restart_from: Path | None = None,
+    ) -> tuple[Path, Path]:
+        """Run a single dynamics segment for exchange mode.
+
+        Similar to ``_run_chunk`` but takes explicit *nsteps* and
+        *restart_from* parameters, and produces no DCD output (segments
+        are too short for trajectory saving).
+
+        Parameters
+        ----------
+        iteration : int
+            1-based chunk number.
+        replica : int
+            0-based replica index.
+        segment_idx : int
+            Segment index within this chunk.
+        nsteps : int
+            Number of MD steps for this segment.
+        restart_from : Path or None
+            Restart file to read.  ``None`` only on the very first
+            segment of the very first chunk (cold start).
+
+        Returns
+        -------
+        tuple[Path, Path]
+            ``(rst_path, lmd_path)`` for the completed segment.
+        """
+        import numpy as np
+        import pycharmm
+        import pycharmm.dynamics as dyn
+        import pycharmm.lingo as lingo
+        import pycharmm.psf as psf
+        import pycharmm.shake as shake
+
+        from cphmd.utils.charmm_path import qpath
+
+        config = self.config
+        res_dir = self._prod_dir / "res"
+
+        timestep = 0.004 if config.hmr else 0.002
+        nsavl = config.nsavl
+
+        seg_tag = f"seg{segment_idx:04d}"
+        rst_fn = res_dir / f"prod.{iteration:03d}.{replica:02d}.{seg_tag}.rst"
+        lmd_fn = res_dir / f"prod.{iteration:03d}.{replica:02d}.{seg_tag}.lmd"
+
+        rst_unit = 52
+        lmd_unit = 53
+        rpr_unit = 54
+
+        # Setup BLADE and shake on first call
+        if not self._blade_ready:
+            shake.on(fast=True, bonh=True, param=True, tol=1e-7)
+            lingo.charmm_script("faster on")
+            lingo.charmm_script(f"blade on gpuid {self._gpuid}")
+            dyn.set_fbetas(np.full(psf.get_natom(), config.gscale, dtype=float))
+            lingo.charmm_script("energy blade")
+            self._blade_ready = True
+
+        seed = config.get_seed_for_chunk(iteration) + segment_idx
+        dyn_param: dict = {
+            "blade": True,
+            "prmc": True,
+            "iprs": 100,
+            "prdv": 100,
+            "cpt": True,
+            "timestep": timestep,
+            "firstt": config.temperature,
+            "finalt": config.temperature,
+            "tstruc": config.temperature,
+            "tbath": config.temperature,
+            "ichecw": 0,
+            "ihtfrq": 0,
+            "ieqfrq": 0,
+            "iasors": 1,
+            "iasvel": 1,
+            "iscvel": 0,
+            "inbfrq": -1,
+            "ilbfrq": 0,
+            "imgfrq": -1,
+            "ntrfrq": 0,
+            "echeck": -1,
+            "iunldm": lmd_unit,
+            "iunwri": rst_unit,
+            "iuncrd": -1,
+            "nsavc": 0,
+            "nsavl": nsavl,
+            "nprint": min(nsteps, 50000),
+            "iprfrq": min(nsteps, 50000),
+            "nstep": nsteps,
+            "isvfrq": nsteps,
+            "iseed": seed,
+            "pconstant": True,
+            "pmass": psf.get_natom() * 0.12,
+            "pref": 1.0,
+            "pgamma": 20.0,
+            "hoover": True,
+            "reft": config.temperature,
+            "tmass": 1000,
+        }
+
+        # Start vs restart
+        rpr = None
+        if restart_from is not None and Path(restart_from).exists():
+            dyn_param["start"] = False
+            dyn_param["restart"] = True
+            dyn_param["iunrea"] = rpr_unit
+            rpr = pycharmm.CharmmFile(
+                file_name=qpath(restart_from),
+                file_unit=rpr_unit,
+                read_only=True,
+                formatted=True,
+            )
+        elif iteration == 1 and segment_idx == 0 and not self._resumed:
+            # Very first segment of first chunk: cold start
+            dyn_param["start"] = True
+            dyn_param["restart"] = False
+        else:
+            raise RuntimeError(
+                f"No restart file for segment {segment_idx} "
+                f"(chunk {iteration}, replica {replica})"
+            )
+
+        # Open output files
+        rst = pycharmm.CharmmFile(
+            file_name=qpath(rst_fn),
+            file_unit=rst_unit,
+            read_only=False,
+            formatted=True,
+        )
+        lmd = pycharmm.CharmmFile(
+            file_name=qpath(lmd_fn),
+            file_unit=lmd_unit,
+            read_only=False,
+            formatted=False,
+        )
+
+        pycharmm.DynamicsScript(**dyn_param).run()
+
+        rst.close()
+        lmd.close()
+        if rpr:
+            rpr.close()
+
+        return (rst_fn, lmd_fn)
+
+    def _run_chunk_with_exchange(self, iteration: int, replica: int) -> list[tuple[Path, Path]]:
+        """Run one chunk of production dynamics with replica exchange.
+
+        Splits the chunk into segments of ``exchange_freq`` steps, running
+        dynamics segments interleaved with exchange attempts.  Falls back
+        to ``_run_chunk`` when ``exchange_freq >= nsteps_per_chunk``.
+
+        Parameters
+        ----------
+        iteration : int
+            1-based chunk number.
+        replica : int
+            0-based replica index.
+
+        Returns
+        -------
+        list[tuple[Path, Path]]
+            List of ``(rst_path, lmd_path)`` for each segment.
+        """
+        config = self.config
+        exchange_cfg = config.replica_exchange
+
+        # Compute total steps for this chunk
+        timestep = 0.004 if config.hmr else 0.002
+        nsteps_per_chunk = int(config.ns_per_chunk * 1e6 / (timestep * 1e3))
+        # Handle remainder for last chunk
+        if iteration == config.n_chunks:
+            total_steps = int(config.ns * 1e6 / (timestep * 1e3))
+            completed_steps = nsteps_per_chunk * (iteration - 1)
+            nsteps_per_chunk = total_steps - completed_steps
+
+        n_segments = nsteps_per_chunk // exchange_cfg.exchange_freq
+
+        # Fallback: exchange_freq >= chunk steps — run as single chunk
+        if n_segments == 0:
+            rst, lmd = self._run_chunk(iteration, replica)
+            return [(rst, lmd)]
+
+        seg_steps = exchange_cfg.exchange_freq
+        nblocks = 1 + sum(self._nsubs)
+
+        # Reset permutation to identity at start of each chunk
+        npairs = config.nreps - 1
+        self._exchanger.state.ensure_size(npairs)
+        self._exchanger.state.permutation = list(range(config.nreps))
+
+        delta_pKa = config.delta_pKa
+
+        restart_override: Path | None = None
+        # For first chunk, first segment: find restart from previous chunk or cold start
+        if iteration > 1 or self._resumed:
+            restart_override = find_restart_for_chunk(
+                self._prod_dir / "res", iteration, replica, exchange=True
+            )
+
+        segments: list[tuple[Path, Path]] = []
+
+        for seg in range(n_segments):
+            rst_path, lmd_path = self._run_segment(
+                iteration,
+                replica,
+                segment_idx=seg,
+                nsteps=seg_steps,
+                restart_from=restart_override,
+            )
+
+            # All ranks synchronize before exchange attempt
+            self._comm.Barrier()
+
+            # Attempt exchange
+            partner_rst = self._exchanger.attempt_exchange(
+                segment_idx=seg,
+                run_idx=iteration,
+                lmd_path=lmd_path,
+                rst_path=rst_path,
+                nblocks=nblocks,
+                patch_info=self._patch_info,
+                delta_pKa=delta_pKa,
+                temperature=config.temperature,
+            )
+
+            # Ensure all restart files are accessible before next segment
+            self._comm.Barrier()
+
+            # Next segment reads partner's restart if swapped, else own restart
+            restart_override = partner_rst if partner_rst is not None else rst_path
+
+            segments.append((rst_path, lmd_path))
+
+        return segments
+
+    def _segments_to_parquet(self, iteration: int, replica: int) -> Path:
+        """Convert segment .lmd files from one chunk into a single parquet.
+
+        Reads all segment LMD files for the given chunk and replica,
+        stacks them into a single array, writes a parquet with production
+        metadata, and deletes the source ``.lmd`` files.
+
+        Parameters
+        ----------
+        iteration : int
+            1-based chunk number.
+        replica : int
+            0-based replica index.
+
+        Returns
+        -------
+        Path
+            Path to the written parquet file.
+        """
+        import glob as glob_mod
+
+        import numpy as np
+        import pyarrow.parquet as pq
+
+        from cphmd.utils.lambda_io import (
+            read_lambda_binary,
+            write_lambda_parquet,
+        )
+
+        res_dir = self._prod_dir / "res"
+        lambdas_dir = self._prod_dir / "lambdas"
+
+        # Glob and sort segment LMD files
+        pattern = str(res_dir / f"prod.{iteration:03d}.{replica:02d}.seg*.lmd")
+        seg_files = sorted(glob_mod.glob(pattern))
+
+        if not seg_files:
+            raise FileNotFoundError(
+                f"No segment LMD files found for chunk {iteration}, "
+                f"replica {replica} in {res_dir}"
+            )
+
+        # Read first segment for metadata
+        first_data, first_meta = read_lambda_binary(seg_files[0])
+        arrays = [first_data]
+
+        # Read remaining segments
+        for seg_file in seg_files[1:]:
+            data, _ = read_lambda_binary(seg_file)
+            arrays.append(data)
+
+        # Stack all segment data
+        all_data = np.vstack(arrays)
+
+        # Build metadata from first segment's metadata and total frame count
+        pH = self._get_replica_pH(replica)
+        metadata = build_parquet_metadata(
+            nsubs=self._nsubs,
+            temperature=self.config.temperature,
+            nsavl=first_meta.nsavl,
+            delta_t=first_meta.delta_t,
+            npriv=first_meta.npriv,
+            actual_steps=len(all_data),
+            pH=pH,
+            prod_id=self.config.prod_id,
+            name=self.config.input_folder.name,
+        )
+
+        parquet_fn = lambdas_dir / f"{iteration:03d}_{replica:02d}.parquet"
+        write_lambda_parquet(parquet_fn, all_data, nsubs=self._nsubs, metadata=metadata)
+
+        # Verify written parquet
+        pq.read_metadata(str(parquet_fn))
+
+        # Delete segment LMD files
+        for seg_file in seg_files:
+            Path(seg_file).unlink()
+
+        return parquet_fn
+
+    # ------------------------------------------------------------------
+    # Exchange state persistence
+    # ------------------------------------------------------------------
+
+    def _save_exchange_state(self, iteration: int) -> None:
+        """Save exchange state and write exchange log after a chunk.
+
+        Persists the exchanger's cumulative state to
+        ``prod_{id}/exchange_state.json`` and writes a per-chunk
+        human-readable log to ``prod_{id}/logs/exchange_log_{iteration}.txt``.
+
+        Parameters
+        ----------
+        iteration : int
+            1-based chunk number (used in log filename).
+        """
+        if self._exchanger is None:
+            return
+        state_path = self._prod_dir / "exchange_state.json"
+        self._exchanger.state.save(state_path)
+        log_path = self._prod_dir / "logs" / f"exchange_log_{iteration:03d}.txt"
+        self._exchanger.write_exchange_log(log_path, iteration)
