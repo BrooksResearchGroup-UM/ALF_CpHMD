@@ -581,3 +581,72 @@ class ProductionConfig:
                             continue
                         variables[var_name] = var_value
         return variables
+
+
+class ProductionRunner:
+    """Runs CpHMD production dynamics with fixed converged biases."""
+
+    def __init__(self, config: ProductionConfig, comm=None):
+        self.config = config
+        self._comm = comm
+        self._prod_dir = config.input_folder / f"prod_{config.prod_id}"
+
+    def _create_prod_directory(self) -> None:
+        """Create production directory with required subdirectories.
+
+        Creates ``prod_{id}/`` under ``input_folder`` with subdirectories:
+        ``dcd``, ``lambdas``, ``res``, ``logs``, ``prep``.
+        Idempotent — safe to call multiple times.
+        """
+        for subdir in ("dcd", "lambdas", "res", "logs", "prep"):
+            (self._prod_dir / subdir).mkdir(parents=True, exist_ok=True)
+
+    def _generate_production_files(self) -> None:
+        """Generate block.str and restrains.str in the production prep directory.
+
+        Resolves per-residue bias variables (from presets, directory, or explicit
+        files), writes them to a temporary directory, copies ``patches.dat``
+        into ``prod_{id}/prep/``, and calls ``generate_block_files`` to produce
+        ``block.str`` and ``restrains.str``.
+        """
+        import shutil
+        import tempfile
+
+        from cphmd.core.generate_block import BlockGeneratorConfig, generate_block_files
+
+        # 1. Resolve per-residue bias variable dicts
+        variables = self.config._resolve_variables()
+
+        # 2. Write variable files to a temp directory
+        temp_dir = Path(tempfile.mkdtemp())
+        try:
+            for restype, var_dict in variables.items():
+                var_file = temp_dir / f"var-{restype.lower()}.inp"
+                lines = [f"* Variables for {restype}", "*", ""]
+                for var_name, var_value in var_dict.items():
+                    lines.append(f"set {var_name} = {var_value:10.3f}")
+                lines.append("")
+                var_file.write_text("\n".join(lines))
+
+            # 3. Copy patches.dat into prod prep directory
+            src_patches = self.config.input_folder / "prep" / "patches.dat"
+            dst_patches = self._prod_dir / "prep" / "patches.dat"
+            shutil.copy2(str(src_patches), str(dst_patches))
+
+            # 4. Generate block.str and restrains.str
+            block_config = BlockGeneratorConfig(
+                input_folder=str(self._prod_dir),
+                variables_dir=str(temp_dir),
+                restrain_type=self.config.restrains,
+                electrostatics=self.config.elec_type,
+                temperature=self.config.temperature,
+                pH=self.config.pH_start,
+                lambda_mass=self.config.lambda_mass,
+                lambda_fbeta=self.config.lambda_fbeta,
+                chi_offset=self.config.chi_offset,
+                omega_decay=self.config.omega_decay,
+            )
+            generate_block_files(block_config)
+        finally:
+            # 5. Clean up temp directory
+            shutil.rmtree(temp_dir, ignore_errors=True)
