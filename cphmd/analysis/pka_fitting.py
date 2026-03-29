@@ -291,6 +291,8 @@ def quick_prefit(
         Fitted pKa value.
     fitted_params : ndarray
         All fitted parameters ``[A, pka, slope]``.
+        Use ``fitted_params[2]`` for Hill coefficient (pass to
+        ``identify_transition_region(prefit_slope=...)`` for spread safeguard).
     """
     from scipy.optimize import curve_fit
 
@@ -350,6 +352,7 @@ def identify_transition_region(
     transition_width: float = 2.0,
     pop_floor: float = 0.05,
     pop_ceil: float = 0.95,
+    prefit_slope: float | None = None,
 ) -> np.ndarray:
     """Return boolean mask of pH values in the fluctuating (transition) region.
 
@@ -360,6 +363,12 @@ def identify_transition_region(
     Plateau points (outside mask) are locked at their mean values during
     bootstrap resampling.  If NO pH passes the filter, all entries are set
     to *True* as a fallback so that the full dataset is resampled.
+
+    **Spread safeguard:** If ``prefit_slope`` is provided and
+    ``|prefit_slope| < 0.3`` (very shallow transition — Hill coefficient near
+    zero), the entire pH range is marked as transition (all-True) because
+    importance sampling offers no benefit for spread sigmoids and a bad
+    pKa_approx could exclude informative points.
 
     Parameters
     ----------
@@ -373,6 +382,9 @@ def identify_transition_region(
         Half-width of the pKa-centred window.
     pop_floor, pop_ceil : float
         Population thresholds for identifying plateau vs. transition.
+    prefit_slope : float or None
+        Hill coefficient from prefit. If ``|prefit_slope| < 0.3``, returns
+        all-True (spread safeguard).
 
     Returns
     -------
@@ -380,6 +392,11 @@ def identify_transition_region(
         Boolean mask of length *N*.
     """
     n = len(pH_values)
+
+    # Spread safeguard: shallow Hill coefficient → bootstrap everything
+    if prefit_slope is not None and abs(prefit_slope) < 0.3:
+        return np.ones(n, dtype=bool)
+
     mask = np.zeros(n, dtype=bool)
     for i, pH in enumerate(pH_values):
         # Distance criterion
