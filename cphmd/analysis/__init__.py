@@ -34,6 +34,11 @@ from .henderson_hasselbalch import (
     two_state_basic_hh,
     write_hh_csv,
 )
+from .ldin_parser import (
+    SiteInfo,
+    StateInfo,
+    parse_block_str,
+)
 from .plot_style import (
     apply_pub_style,
     clean_axes,
@@ -100,6 +105,10 @@ __all__ = [
     "plot_site_substates",
     "write_hh_csv",
     "generate_hh_analysis",
+    # LDIN parser
+    "StateInfo",
+    "SiteInfo",
+    "parse_block_str",
     # WHAM free energy profiles
     "plot_wham_profiles",
     # Plot styling
