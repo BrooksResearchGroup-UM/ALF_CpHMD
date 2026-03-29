@@ -587,6 +587,59 @@ def volume_cmd(
         raise typer.Exit(1)
 
 
+@analyze_app.command("pka")
+def pka_cmd(
+    input_folder: str = typer.Option(
+        ..., "-i", "--input", help="Input folder with production parquets"
+    ),
+    output_dir: str = typer.Option("analysis", "-o", "--output", help="Output directory"),
+    cutoff: float = typer.Option(0.97, "-c", "--cutoff", help="Lambda cutoff"),
+    bin_size: float = typer.Option(1000, "-t", "--bin-size", help="Bin size in ps"),
+    fix_hill: bool = typer.Option(False, "--h-fix/--no-h-fix", help="Fix Hill coefficient to +/-1"),
+    skip: float = typer.Option(0, "-s", "--skip", help="Skip first N ps"),
+    n_bootstrap: int = typer.Option(1000, "-n", "--bootstrap", help="Bootstrap samples"),
+    n_bootstrap_bin: int = typer.Option(
+        500, "--bootstrap-bin", help="Bootstrap samples per time bin"
+    ),
+    n_jobs: int = typer.Option(1, "-j", "--jobs", help="Parallel workers"),
+    transition_width: float = typer.Option(
+        2.0, "--transition-width", help="pH range for bootstrap focus"
+    ),
+    min_ph_points: int = typer.Option(3, "--min-pH", help="Minimum pH points for fitting"),
+):
+    """Compute pKa values from production lambda parquets."""
+    from cphmd.analysis.pka_analyzer import PKaAnalysisConfig, PKaAnalyzer
+
+    try:
+        config = PKaAnalysisConfig(
+            input_folder=input_folder,
+            output_dir=output_dir,
+            lambda_cutoff=cutoff,
+            bin_size_ps=bin_size,
+            fix_hill=fix_hill,
+            skip_ps=skip,
+            n_bootstrap=n_bootstrap,
+            n_bootstrap_bin=n_bootstrap_bin,
+            n_jobs=n_jobs,
+            transition_width=transition_width,
+            min_pH_points=min_ph_points,
+        )
+        analyzer = PKaAnalyzer(config)
+        results = analyzer.run()
+        console.print(f"[green]pKa analysis complete: {len(results.sites)} sites[/green]")
+        if results.pka_summary_file:
+            console.print(f"[green]Summary: {results.pka_summary_file}[/green]")
+    except (FileNotFoundError, ValueError) as e:
+        console.print(f"[red]Error: {e}[/red]")
+        raise typer.Exit(1)
+    except Exception as e:
+        import traceback
+
+        console.print(f"[red]Unexpected error: {e}[/red]")
+        console.print(f"[dim]{traceback.format_exc()}[/dim]")
+        raise typer.Exit(1)
+
+
 # Utility commands
 @utils_app.command("lambda-convert")
 def lambda_convert(

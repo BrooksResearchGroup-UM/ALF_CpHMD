@@ -39,6 +39,12 @@ from .ldin_parser import (
     StateInfo,
     parse_block_str,
 )
+from .pka_analyzer import (
+    PKaAnalysisConfig,
+    PKaAnalyzer,
+    PKaResults,
+    SitePKaResult,
+)
 from .plot_style import (
     apply_pub_style,
     clean_axes,
@@ -109,6 +115,11 @@ __all__ = [
     "StateInfo",
     "SiteInfo",
     "parse_block_str",
+    # pKa analysis
+    "PKaAnalysisConfig",
+    "PKaAnalyzer",
+    "PKaResults",
+    "SitePKaResult",
     # WHAM free energy profiles
     "plot_wham_profiles",
     # Plot styling
