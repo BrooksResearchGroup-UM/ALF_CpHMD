@@ -45,6 +45,35 @@ from .pka_analyzer import (
     PKaResults,
     SitePKaResult,
 )
+from .pka_data import (
+    apply_cutoff,
+    build_site_map,
+    compute_populations,
+    compute_total_population,
+    discover_parquets,
+    get_site_columns,
+    load_lambda_data,
+    prepare_fit_data,
+    skip_equilibration,
+)
+from .pka_fitting import (
+    FitResult,
+    MultiStateFitResult,
+    bootstrap_fit_2state,
+    bootstrap_fit_multistate,
+    build_2state_guess,
+    build_multistate_guess,
+    correct_pka,
+    identify_transition_region,
+    make_multi_sigmoid,
+    quick_prefit,
+    sigmoid,
+)
+from .pka_plots import (
+    RESNAME_LABELS,
+    plot_pka,
+    plot_pka_convergence,
+)
 from .plot_style import (
     apply_pub_style,
     clean_axes,
@@ -120,6 +149,32 @@ __all__ = [
     "PKaAnalyzer",
     "PKaResults",
     "SitePKaResult",
+    # pKa data loading
+    "discover_parquets",
+    "build_site_map",
+    "get_site_columns",
+    "load_lambda_data",
+    "apply_cutoff",
+    "skip_equilibration",
+    "compute_populations",
+    "compute_total_population",
+    "prepare_fit_data",
+    # pKa fitting
+    "FitResult",
+    "MultiStateFitResult",
+    "sigmoid",
+    "make_multi_sigmoid",
+    "build_2state_guess",
+    "build_multistate_guess",
+    "quick_prefit",
+    "correct_pka",
+    "identify_transition_region",
+    "bootstrap_fit_2state",
+    "bootstrap_fit_multistate",
+    # pKa plots
+    "RESNAME_LABELS",
+    "plot_pka",
+    "plot_pka_convergence",
     # WHAM free energy profiles
     "plot_wham_profiles",
     # Plot styling
