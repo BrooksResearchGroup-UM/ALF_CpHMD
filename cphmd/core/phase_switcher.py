@@ -95,6 +95,15 @@ class PhaseTransitionConfig:
     ewbs_2to3: float = 0.10
     ewbs_2to3_window: int = 5  # Consecutive runs below threshold
 
+    # Per-type EWBS thresholds for 2→3 transition.
+    # When set (not None), each bias type is checked against its own threshold
+    # instead of the global ewbs_2to3. Coupling biases (c) converge slower
+    # because they involve N×N off-diagonal elements with less per-element sampling.
+    ewbs_2to3_b: float | None = None
+    ewbs_2to3_c: float | None = None
+    ewbs_2to3_x: float | None = None
+    ewbs_2to3_s: float | None = None
+
     # Maximum worst-site population diff (at λ>0.97) for the LAST run
     # when using accumulated data for Phase 1→2 check. If the last run's
     # worst-site diff exceeds this, accumulated data is discarded and
