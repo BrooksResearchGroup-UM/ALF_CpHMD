@@ -1492,7 +1492,7 @@ def check_phase_transition(
                     f"phase2_runs={phase2_run_count}"
                     f"<{config.min_phase2_runs}")
 
-        # Check EWBS bias stability
+        # Check EWBS bias stability (per-type or global)
         ewbs_ok = True
         ewbs_reason = ""
         if ewbs_state is not None:
@@ -1501,16 +1501,47 @@ def check_phase_transition(
                 ewbs_reason = "ewbs: no history available"
             else:
                 window = min(config.ewbs_2to3_window, len(ewbs_state.history))
-                recent = ewbs_state.history[-window:]
                 if window < config.ewbs_2to3_window:
                     ewbs_ok = False
                     ewbs_reason = (
                         f"ewbs_history={window}<{config.ewbs_2to3_window}")
-                elif any(v > config.ewbs_2to3 for v in recent):
-                    ewbs_ok = False
-                    btn = ewbs_bottleneck_type(ewbs_state)
-                    ewbs_reason = (
-                        f"ewbs={ewbs_state.ewbs:.3f}>{config.ewbs_2to3}({btn})")
+                else:
+                    # Per-type check: each type against its own threshold (or global fallback)
+                    type_thresholds = {
+                        "b": (
+                            config.ewbs_2to3_b
+                            if config.ewbs_2to3_b is not None
+                            else config.ewbs_2to3
+                        ),
+                        "c": (
+                            config.ewbs_2to3_c
+                            if config.ewbs_2to3_c is not None
+                            else config.ewbs_2to3
+                        ),
+                        "x": (
+                            config.ewbs_2to3_x
+                            if config.ewbs_2to3_x is not None
+                            else config.ewbs_2to3
+                        ),
+                        "s": (
+                            config.ewbs_2to3_s
+                            if config.ewbs_2to3_s is not None
+                            else config.ewbs_2to3
+                        ),
+                    }
+                    type_emas = {
+                        "b": ewbs_state.ema_b,
+                        "c": ewbs_state.ema_c,
+                        "x": ewbs_state.ema_x,
+                        "s": ewbs_state.ema_s,
+                    }
+                    failed_types = []
+                    for t, thresh in type_thresholds.items():
+                        if type_emas[t] > thresh:
+                            failed_types.append(f"{t}={type_emas[t]:.3f}>{thresh}")
+                    if failed_types:
+                        ewbs_ok = False
+                        ewbs_reason = f"ewbs: {', '.join(failed_types)}"
 
         all_ok = (overlap_ok and samples_ok and pka_ok and conn_ok
                   and state_frac_ok and phase2_dur_ok and ewbs_ok)
