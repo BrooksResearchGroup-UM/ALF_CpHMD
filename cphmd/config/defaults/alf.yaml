@@ -6,6 +6,15 @@ restrains: SCAT
 restrain_hydrogens: false
 auto_phase_switch: true
 auto_stop: true
+# Phase transition thresholds (uncomment to override defaults)
+# phase_transition:
+#   ewbs_2to3: 0.10        # Global EWBS threshold for Phase 2→3
+#   ewbs_2to3_b: 0.20      # Per-type: diagonal bias
+#   ewbs_2to3_c: 2.00      # Per-type: coupling bias (converges slower)
+#   ewbs_2to3_x: 1.00      # Per-type: cross-term x
+#   ewbs_2to3_s: 0.50      # Per-type: shift-term s
+#   spread_2to3: 0.20      # Max spread tolerance
+#   min_phase2_runs: 15    # Min Phase 2 iterations before allowing 2→3
 analysis_method: wham
 elec_type: pmeex
 vdw_type: vswitch

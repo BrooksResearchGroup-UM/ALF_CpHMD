@@ -245,6 +245,14 @@ def config_to_alf(
         )
         cfg.pop("preset_config")
 
+    # Handle phase_transition: nested dict → PhaseTransitionConfig
+    if "phase_transition" in cfg:
+        pt_cfg = cfg["phase_transition"]
+        if isinstance(pt_cfg, dict):
+            from cphmd.core.phase_switcher import PhaseTransitionConfig
+
+            cfg["phase_transition"] = PhaseTransitionConfig(**pt_cfg)
+
     return ALFConfig(**cfg)
 
 
@@ -270,8 +278,7 @@ def config_to_patch(
         from cphmd.core.patching import LigandPatchDef
 
         cfg["ligand_patches"] = [
-            LigandPatchDef(**lp) if isinstance(lp, dict) else lp
-            for lp in cfg["ligand_patches"]
+            LigandPatchDef(**lp) if isinstance(lp, dict) else lp for lp in cfg["ligand_patches"]
         ]
 
     return PatchConfig(**cfg)
@@ -344,9 +351,7 @@ def run_workflow(
             if step == "all":
                 logger.info("Skipping %s (no config section)", current_step)
                 continue
-            raise ValueError(
-                f"Config file has no '{current_step}' section: {config_path}"
-            )
+            raise ValueError(f"Config file has no '{current_step}' section: {config_path}")
 
         logger.info("Running step: %s", current_step)
 
