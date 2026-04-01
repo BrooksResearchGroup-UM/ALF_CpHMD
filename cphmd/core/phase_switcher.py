@@ -10,6 +10,7 @@ Also implements Phase 3 → STOP criteria based on:
 - Balance across states (spread tolerance)
 - Bias parameter stability
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -23,7 +24,6 @@ if TYPE_CHECKING:
     import pandas as pd
 
     from .expected_populations import ExpectedPopulations  # noqa: F401
-
 
 
 @dataclass
@@ -99,10 +99,10 @@ class PhaseTransitionConfig:
     # When set (not None), each bias type is checked against its own threshold
     # instead of the global ewbs_2to3. Coupling biases (c) converge slower
     # because they involve N×N off-diagonal elements with less per-element sampling.
-    ewbs_2to3_b: float | None = None
-    ewbs_2to3_c: float | None = None
-    ewbs_2to3_x: float | None = None
-    ewbs_2to3_s: float | None = None
+    ewbs_2to3_b: float | None = 0.20  # b-terms converge fast
+    ewbs_2to3_c: float | None = 2.00  # c-terms: N×N coupling, converges 10-20x slower
+    ewbs_2to3_x: float | None = 1.00  # x-terms: moderate convergence
+    ewbs_2to3_s: float | None = 0.50  # s-terms: converges moderately fast
 
     # Maximum worst-site population diff (at λ>0.97) for the LAST run
     # when using accumulated data for Phase 1→2 check. If the last run's
@@ -162,7 +162,7 @@ class StopCriteriaConfig:
     # EWBS (Energy-Weighted Bias Stability) threshold
     # Max per-type smoothed RMS bias change for convergence
     max_ewbs: float = 0.03  # ~kT/20 at 300K
-    ewbs_window: int = 10   # Consecutive runs below threshold required
+    ewbs_window: int = 10  # Consecutive runs below threshold required
 
     # Scoring parameters (step5-style combined score)
     # score = avg_frac - alpha * frac_diff
@@ -188,6 +188,7 @@ class ReplicaLambdaData:
         lambda_data: Combined lambda array for this replica (samples x states)
         populations: Population fraction per state (after threshold)
     """
+
     replica_idx: int
     pH: float
     lambda_data: np.ndarray
@@ -206,6 +207,7 @@ class PKaFitResult:
         pH_values: Array of pH values used
         populations: Array of populations at each pH
     """
+
     fitted_pKa: float
     fit_type: str = "unknown"
     r_squared: float = 0.0
@@ -236,6 +238,7 @@ class StopCriteriaResult:
         block_variance: Worst per-state population variance across blocks
         reasons: List of reasons for not stopping (empty if should_stop)
     """
+
     should_stop: bool
     n_states: int
     n_samples: int = 0
@@ -271,7 +274,6 @@ def _per_site_ranges(nsubs: list[int]) -> list[tuple[int, int]]:
     return ranges
 
 
-
 def _organize_by_replica(data_dir: Path) -> dict[int, list[Path]] | None:
     """Discover and organize lambda files by replica index.
 
@@ -293,7 +295,7 @@ def _organize_by_replica(data_dir: Path) -> dict[int, list[Path]] | None:
     replica_files: dict[int, list[Path]] = {}
     for fpath in lambda_fpaths:
         try:
-            parts = fpath.name.split('.')
+            parts = fpath.name.split(".")
             if len(parts) >= 4:
                 replica_idx = int(parts[2])
                 if replica_idx not in replica_files:
@@ -373,9 +375,7 @@ def compute_worst_site_pop_diff(
             worst = max(worst, 1.0)
             continue
         if expected_pops is not None:
-            diff = float(np.max(np.abs(
-                site_norm - expected_pops.per_state[start:end]
-            )))
+            diff = float(np.max(np.abs(site_norm - expected_pops.per_state[start:end])))
         else:
             diff = float(np.max(site_norm) - np.min(site_norm))
         worst = max(worst, diff)
@@ -600,11 +600,13 @@ def load_lambda_data_per_replica(
                 continue
 
         if replica_lambda is not None and replica_lambda.size > 0:
-            result.append(ReplicaLambdaData(
-                replica_idx=replica_idx,
-                pH=replica_pH,
-                lambda_data=replica_lambda,
-            ))
+            result.append(
+                ReplicaLambdaData(
+                    replica_idx=replica_idx,
+                    pH=replica_pH,
+                    lambda_data=replica_lambda,
+                )
+            )
 
     return result
 
@@ -731,7 +733,6 @@ def calculate_populations(
     }
 
 
-
 @dataclass
 class EWBSState:
     """Exponentially Weighted Bias Stability tracking.
@@ -782,6 +783,7 @@ class EWBSState:
         with open(path) as f:
             data = json.load(f)
         state = cls()
+
         def _restore(v, default=0.0):
             """Restore None back to default (inf/nan were saved as None)."""
             return default if v is None else float(v)
@@ -1050,9 +1052,7 @@ def check_stop_criteria(
         fractions = _normalize_per_site(raw_fractions, nsubs)
         if expected_pops is not None:
             site_diffs = [
-                float(np.max(np.abs(
-                    fractions[s:e] - expected_pops.per_state[s:e]
-                )))
+                float(np.max(np.abs(fractions[s:e] - expected_pops.per_state[s:e])))
                 for s, e in _per_site_ranges(nsubs)
             ]
         else:
@@ -1064,9 +1064,7 @@ def check_stop_criteria(
     else:
         fractions = raw_fractions
         if expected_pops is not None:
-            frac_diff = float(np.max(np.abs(
-                fractions - expected_pops.per_state
-            )))
+            frac_diff = float(np.max(np.abs(fractions - expected_pops.per_state)))
         else:
             frac_diff = float(np.max(fractions) - np.min(fractions))
 
@@ -1085,7 +1083,7 @@ def check_stop_criteria(
 
         if bias_history.shape[0] >= config.bias_window:
             # Compute rolling std over last window iterations
-            window_data = bias_history[-config.bias_window:]
+            window_data = bias_history[-config.bias_window :]
             rolling_std = np.std(window_data, axis=0).max()
             bias_rolling_std = float(rolling_std)
             bias_stable = bias_rolling_std <= config.bias_max_std
@@ -1095,7 +1093,10 @@ def check_stop_criteria(
 
     # Compute block variance (catches drifting populations)
     block_var = compute_block_variance(
-        lambda_data, config.n_blocks, config.threshold_strict, nsubs,
+        lambda_data,
+        config.n_blocks,
+        config.threshold_strict,
+        nsubs,
     )
 
     # Determine if all criteria are met
@@ -1131,9 +1132,7 @@ def check_stop_criteria(
             window = min(config.ewbs_window, len(ewbs_state.history))
             recent = ewbs_state.history[-window:]
             if any(v > config.max_ewbs for v in recent):
-                reasons.append(
-                    f"ewbs={ewbs_val:.4f}>{config.max_ewbs}({ewbs_btn})"
-                )
+                reasons.append(f"ewbs={ewbs_val:.4f}>{config.max_ewbs}({ewbs_btn})")
 
     should_stop = len(reasons) == 0
 
@@ -1211,37 +1210,49 @@ def write_populations_file(
 
         # Summary statistics
         f.write("#\n")
-        f.write(f"# Raw summary (>{thresh_r}): "
-                f"min={pop_data['pop_relaxed_raw'].min():.4f}, "
-                f"max={pop_data['pop_relaxed_raw'].max():.4f}, "
-                f"spread={pop_data['pop_relaxed_raw'].max() - pop_data['pop_relaxed_raw'].min():.4f}\n")
-        f.write(f"# Raw summary (>{thresh_s}): "
-                f"min={pop_data['pop_strict_raw'].min():.4f}, "
-                f"max={pop_data['pop_strict_raw'].max():.4f}, "
-                f"spread={pop_data['pop_strict_raw'].max() - pop_data['pop_strict_raw'].min():.4f}\n")
+        f.write(
+            f"# Raw summary (>{thresh_r}): "
+            f"min={pop_data['pop_relaxed_raw'].min():.4f}, "
+            f"max={pop_data['pop_relaxed_raw'].max():.4f}, "
+            f"spread={pop_data['pop_relaxed_raw'].max() - pop_data['pop_relaxed_raw'].min():.4f}\n"
+        )
+        f.write(
+            f"# Raw summary (>{thresh_s}): "
+            f"min={pop_data['pop_strict_raw'].min():.4f}, "
+            f"max={pop_data['pop_strict_raw'].max():.4f}, "
+            f"spread={pop_data['pop_strict_raw'].max() - pop_data['pop_strict_raw'].min():.4f}\n"
+        )
         f.write("#\n")
         if nsubs is not None:
             # Per-site norm summaries
             for site_idx, (start, end) in enumerate(_per_site_ranges(nsubs)):
-                site_r = pop_data['pop_relaxed_norm'][start:end]
-                site_s = pop_data['pop_strict_norm'][start:end]
-                f.write(f"# Norm site {site_idx} (>{thresh_r}): "
-                        f"min={site_r.min():.4f}, "
-                        f"max={site_r.max():.4f}, "
-                        f"sum={site_r.sum():.4f}\n")
-                f.write(f"# Norm site {site_idx} (>{thresh_s}): "
-                        f"min={site_s.min():.4f}, "
-                        f"max={site_s.max():.4f}, "
-                        f"sum={site_s.sum():.4f}\n")
+                site_r = pop_data["pop_relaxed_norm"][start:end]
+                site_s = pop_data["pop_strict_norm"][start:end]
+                f.write(
+                    f"# Norm site {site_idx} (>{thresh_r}): "
+                    f"min={site_r.min():.4f}, "
+                    f"max={site_r.max():.4f}, "
+                    f"sum={site_r.sum():.4f}\n"
+                )
+                f.write(
+                    f"# Norm site {site_idx} (>{thresh_s}): "
+                    f"min={site_s.min():.4f}, "
+                    f"max={site_s.max():.4f}, "
+                    f"sum={site_s.sum():.4f}\n"
+                )
         else:
-            f.write(f"# Norm summary (>{thresh_r}): "
-                    f"min={pop_data['pop_relaxed_norm'].min():.4f}, "
-                    f"max={pop_data['pop_relaxed_norm'].max():.4f}, "
-                    f"sum={pop_data['pop_relaxed_norm'].sum():.4f}\n")
-            f.write(f"# Norm summary (>{thresh_s}): "
-                    f"min={pop_data['pop_strict_norm'].min():.4f}, "
-                    f"max={pop_data['pop_strict_norm'].max():.4f}, "
-                    f"sum={pop_data['pop_strict_norm'].sum():.4f}\n")
+            f.write(
+                f"# Norm summary (>{thresh_r}): "
+                f"min={pop_data['pop_relaxed_norm'].min():.4f}, "
+                f"max={pop_data['pop_relaxed_norm'].max():.4f}, "
+                f"sum={pop_data['pop_relaxed_norm'].sum():.4f}\n"
+            )
+            f.write(
+                f"# Norm summary (>{thresh_s}): "
+                f"min={pop_data['pop_strict_norm'].min():.4f}, "
+                f"max={pop_data['pop_strict_norm'].max():.4f}, "
+                f"sum={pop_data['pop_strict_norm'].sum():.4f}\n"
+            )
 
 
 def _compute_worst_pka_deviation(
@@ -1330,13 +1341,15 @@ def check_phase_transition(
     spread = float(np.max(col_fracs) - np.min(col_fracs))
 
     # Check if CpHMD parameters provided for pKa convergence
-    cphmd_params_available = all([
-        data_dir is not None,
-        patch_info is not None,
-        effective_pH is not None,
-        delta_pKa is not None,
-        nreps is not None and nreps > 3,
-    ])
+    cphmd_params_available = all(
+        [
+            data_dir is not None,
+            patch_info is not None,
+            effective_pH is not None,
+            delta_pKa is not None,
+            nreps is not None and nreps > 3,
+        ]
+    )
 
     # Phase 1 → 2 transition
     if current_phase == 1:
@@ -1360,8 +1373,8 @@ def check_phase_transition(
                 if n_visited < required:
                     visited_ok = False
                     visited_reason = (
-                        f"site{si + 1}: {n_visited}/{n_states} states visited "
-                        f"(need {required})")
+                        f"site{si + 1}: {n_visited}/{n_states} states visited " f"(need {required})"
+                    )
                     break
         else:
             n_visited = int(visited.sum())
@@ -1369,13 +1382,15 @@ def check_phase_transition(
             required = min(config.min_visited_1to2, n_total)
             if n_visited < required:
                 visited_ok = False
-                visited_reason = (
-                    f"{n_visited}/{n_total} states visited (need {required})")
+                visited_reason = f"{n_visited}/{n_total} states visited (need {required})"
 
         # Spread check on visited states only (per site)
         overlap_ok = good_overlap(
-            col_fracs, config.spread_1to2, nsubs=nsubs,
-            visited_mask=visited, expected_pops=expected_pops,
+            col_fracs,
+            config.spread_1to2,
+            nsubs=nsubs,
+            visited_mask=visited,
+            expected_pops=expected_pops,
         )
 
         # Transition events check on visited states only
@@ -1384,11 +1399,12 @@ def check_phase_transition(
         # Compute summary stats for reporting
         visited_fracs = col_fracs[visited]
         if len(visited_fracs) >= 2:
-            spread_visited = float(
-                np.max(visited_fracs) - np.min(visited_fracs))
+            spread_visited = float(np.max(visited_fracs) - np.min(visited_fracs))
         else:
             spread_visited = spread
-        min_trans_visited = int(count_transition_events(mask[:, visited]).min()) if visited.any() else 0
+        min_trans_visited = (
+            int(count_transition_events(mask[:, visited]).min()) if visited.any() else 0
+        )
 
         # Check pKa convergence if CpHMD
         pka_ok = True
@@ -1409,19 +1425,19 @@ def check_phase_transition(
         if visited_ok and overlap_ok and samples_ok and pka_ok:
             n_vis = int(visited.sum())
             n_tot = len(col_fracs)
-            return 2, (f"Phase 1→2: spread={spread_visited:.3f}, "
-                       f"min_trans={min_trans_visited}, "
-                       f"visited={n_vis}/{n_tot}")
+            return 2, (
+                f"Phase 1→2: spread={spread_visited:.3f}, "
+                f"min_trans={min_trans_visited}, "
+                f"visited={n_vis}/{n_tot}"
+            )
         else:
             reasons = []
             if not visited_ok:
                 reasons.append(visited_reason)
             if not overlap_ok:
-                reasons.append(
-                    f"spread={spread_visited:.3f}>={config.spread_1to2}")
+                reasons.append(f"spread={spread_visited:.3f}>={config.spread_1to2}")
             if not samples_ok:
-                reasons.append(
-                    f"min_trans={min_trans_visited}<{config.min_transitions_1to2}")
+                reasons.append(f"min_trans={min_trans_visited}<{config.min_transitions_1to2}")
             if not pka_ok:
                 reasons.append(pka_reason)
             return 1, f"Staying in phase 1: {', '.join(reasons)}"
@@ -1429,7 +1445,9 @@ def check_phase_transition(
     # Phase 2 → 3 transition
     elif current_phase == 2:
         overlap_ok = good_overlap(
-            col_fracs, config.spread_2to3, nsubs=nsubs,
+            col_fracs,
+            config.spread_2to3,
+            nsubs=nsubs,
             expected_pops=expected_pops,
         )
         samples_ok = enough_transitions(mask, config.min_transitions_2to3)
@@ -1456,8 +1474,7 @@ def check_phase_transition(
         if connectivity is not None:
             conn_ok = connectivity >= config.min_connectivity_2to3
             if not conn_ok:
-                conn_reason = (f"connectivity={connectivity:.2f}"
-                               f"<{config.min_connectivity_2to3}")
+                conn_reason = f"connectivity={connectivity:.2f}" f"<{config.min_connectivity_2to3}"
 
         # Check per-state minimum fraction at strict threshold
         # Prevents 2→3 when any state has near-zero physical-state population
@@ -1479,7 +1496,8 @@ def check_phase_transition(
                     worst_sub = int(np.argmin(site_norm))
                     state_frac_reason = (
                         f"site{si} sub{worst_sub} frac={min_frac:.1%}"
-                        f"<{config.min_state_fraction_2to3:.0%}")
+                        f"<{config.min_state_fraction_2to3:.0%}"
+                    )
                     break
 
         # Check minimum Phase 2 duration
@@ -1488,9 +1506,7 @@ def check_phase_transition(
         if phase2_run_count is not None:
             phase2_dur_ok = phase2_run_count >= config.min_phase2_runs
             if not phase2_dur_ok:
-                phase2_dur_reason = (
-                    f"phase2_runs={phase2_run_count}"
-                    f"<{config.min_phase2_runs}")
+                phase2_dur_reason = f"phase2_runs={phase2_run_count}" f"<{config.min_phase2_runs}"
 
         # Check EWBS bias stability (per-type or global)
         ewbs_ok = True
@@ -1503,8 +1519,7 @@ def check_phase_transition(
                 window = min(config.ewbs_2to3_window, len(ewbs_state.history))
                 if window < config.ewbs_2to3_window:
                     ewbs_ok = False
-                    ewbs_reason = (
-                        f"ewbs_history={window}<{config.ewbs_2to3_window}")
+                    ewbs_reason = f"ewbs_history={window}<{config.ewbs_2to3_window}"
                 else:
                     # Per-type check: each type against its own threshold (or global fallback)
                     type_thresholds = {
@@ -1543,8 +1558,15 @@ def check_phase_transition(
                         ewbs_ok = False
                         ewbs_reason = f"ewbs: {', '.join(failed_types)}"
 
-        all_ok = (overlap_ok and samples_ok and pka_ok and conn_ok
-                  and state_frac_ok and phase2_dur_ok and ewbs_ok)
+        all_ok = (
+            overlap_ok
+            and samples_ok
+            and pka_ok
+            and conn_ok
+            and state_frac_ok
+            and phase2_dur_ok
+            and ewbs_ok
+        )
         if all_ok:
             min_trans = int(count_transition_events(mask).min())
             return 3, f"Phase 2→3: spread={spread:.3f}, min_trans={min_trans}"
@@ -1604,8 +1626,12 @@ def check_phase3_stop(
         ...     print(f"Converged: diff={result.frac_diff_pct:.2f}%")
     """
     result = check_stop_criteria(
-        lambda_data, stop_config, bias_history, nsubs=nsubs,
-        ewbs_state=ewbs_state, expected_pops=expected_pops,
+        lambda_data,
+        stop_config,
+        bias_history,
+        nsubs=nsubs,
+        ewbs_state=ewbs_state,
+        expected_pops=expected_pops,
     )
 
     if result.should_stop:
@@ -1628,12 +1654,12 @@ def check_phase3_stop(
 
 def _hh_acidic(pH: np.ndarray, pKa: float, n: float = 1.0) -> np.ndarray:
     """Henderson-Hasselbalch for acidic residues (population of deprotonated state)."""
-    return 1.0 / (1.0 + 10**(n * (pKa - pH)))
+    return 1.0 / (1.0 + 10 ** (n * (pKa - pH)))
 
 
 def _hh_basic(pH: np.ndarray, pKa: float, n: float = 1.0) -> np.ndarray:
     """Henderson-Hasselbalch for basic residues (population of deprotonated state)."""
-    return 1.0 / (1.0 + 10**(n * (pH - pKa)))
+    return 1.0 / (1.0 + 10 ** (n * (pH - pKa)))
 
 
 def fit_pka_from_replicas(
@@ -1664,16 +1690,13 @@ def fit_pka_from_replicas(
         )
 
     # Compute populations for specified states
-    replica_data = compute_replica_populations(
-        replica_data, lambda_threshold, state_indices
-    )
+    replica_data = compute_replica_populations(replica_data, lambda_threshold, state_indices)
 
     # Extract pH and population arrays
     pH_values = np.array([rd.pH for rd in replica_data])
-    populations = np.array([
-        rd.populations[0] if len(rd.populations) > 0 else 0.0
-        for rd in replica_data
-    ])
+    populations = np.array(
+        [rd.populations[0] if len(rd.populations) > 0 else 0.0 for rd in replica_data]
+    )
 
     # Sort by pH
     sort_idx = np.argsort(pH_values)
@@ -1720,8 +1743,8 @@ def fit_pka_from_replicas(
 
         # Calculate R²
         y_pred = fit_func(pH_values, *popt)
-        ss_res = np.sum((populations - y_pred)**2)
-        ss_tot = np.sum((populations - np.mean(populations))**2)
+        ss_res = np.sum((populations - y_pred) ** 2)
+        ss_tot = np.sum((populations - np.mean(populations)) ** 2)
         r_squared = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0
 
         return PKaFitResult(
@@ -1779,9 +1802,7 @@ def check_pka_convergence(
         ncentral = nreps // 2
 
     # Load per-replica data
-    replica_data = load_lambda_data_per_replica(
-        data_dir, effective_pH, delta_pKa, nreps, ncentral
-    )
+    replica_data = load_lambda_data_per_replica(data_dir, effective_pH, delta_pKa, nreps, ncentral)
 
     if len(replica_data) < 3:
         # Not enough replicas for reliable fitting
@@ -1841,7 +1862,11 @@ def check_pka_convergence(
         fit_results[str(site_id)] = fit_result
 
         # Check convergence
-        if theoretical_pKa is not None and fit_result.fit_type not in ("constant", "insufficient_data", "fit_failed"):
+        if theoretical_pKa is not None and fit_result.fit_type not in (
+            "constant",
+            "insufficient_data",
+            "fit_failed",
+        ):
             deviation = abs(fit_result.fitted_pKa - theoretical_pKa)
             if deviation > tolerance:
                 all_converged = False
