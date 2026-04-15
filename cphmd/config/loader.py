@@ -12,11 +12,17 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import yaml
 
 from cphmd import TOPPAR_DIR
+
+if TYPE_CHECKING:
+    from cphmd.core.alf_runner import ALFConfig
+    from cphmd.core.patching import PatchConfig
+    from cphmd.setup.prepare_pdb import PreparePDBConfig
+    from cphmd.setup.solvate import SolvationConfig
 
 logger = logging.getLogger(__name__)
 
@@ -307,7 +313,30 @@ def config_to_solvation(
     elif "salt" in cfg:
         cfg.pop("salt")
 
+    prepare_cfg = _resolve_config_chain("prepare", config_path, None)
+    if "input_file" not in cfg and prepare_cfg.get("input_source"):
+        output_dir = prepare_cfg.get("output_dir", "pdb")
+        output_name = Path(prepare_cfg.get("output_name", "input")).with_suffix("").name
+        cfg["input_file"] = str(Path(output_dir) / output_name)
+
+    patch_cfg = _resolve_config_chain("patch", config_path, None)
+    if "selected_residues" not in cfg and "selected_residues" in patch_cfg:
+        cfg["selected_residues"] = patch_cfg["selected_residues"]
+    if "ligand_patches" not in cfg and "ligand_patches" in patch_cfg:
+        cfg["ligand_patches"] = patch_cfg["ligand_patches"]
+
     return SolvationConfig(**cfg)
+
+
+def config_to_prepare_pdb(
+    config_path: str | Path | None = None,
+    cli_overrides: dict[str, Any] | None = None,
+) -> "PreparePDBConfig":
+    """Build a PreparePDBConfig from the config chain."""
+    from cphmd.setup.prepare_pdb import PreparePDBConfig
+
+    cfg = _resolve_config_chain("prepare", config_path, cli_overrides)
+    return PreparePDBConfig(**cfg)
 
 
 def run_workflow(
@@ -317,12 +346,13 @@ def run_workflow(
     """Run one or more CpHMD workflow steps from a config file.
 
     Dispatches to the appropriate functions based on the step parameter.
-    Steps are executed in order: build → solvate → patch → alf.
+    Steps are executed in order: build → prepare → solvate → patch → alf.
 
     Args:
         config_path: Path to the YAML config file.
         step: Which step to run. One of:
             "build"    — Create amino acid template structures
+            "prepare"  — Prepare PSF/CRD/PDB from a PDB source
             "solvate"  — Solvate the system
             "patch"    — Apply CpHMD patches
             "alf"      — Run ALF simulation
@@ -332,14 +362,14 @@ def run_workflow(
         ValueError: If step is not recognized.
         FileNotFoundError: If config_path does not exist.
     """
-    valid_steps = {"build", "solvate", "patch", "alf", "all"}
+    valid_steps = {"build", "prepare", "solvate", "patch", "alf", "all"}
     if step not in valid_steps:
         raise ValueError(f"Unknown step {step!r}. Must be one of: {valid_steps}")
 
     config_path = Path(config_path)
     full_config = load_yaml_config(config_path)
 
-    steps = ["build", "solvate", "patch", "alf"] if step == "all" else [step]
+    steps = ["build", "prepare", "solvate", "patch", "alf"] if step == "all" else [step]
 
     # Map step names to YAML section names (step "solvate" → section "solvation")
     step_to_section = {"solvate": "solvation"}
@@ -357,6 +387,8 @@ def run_workflow(
 
         if current_step == "build":
             _run_build(section)
+        elif current_step == "prepare":
+            _run_prepare(config_path)
         elif current_step == "solvate":
             _run_solvate(config_path)
         elif current_step == "patch":
@@ -384,6 +416,15 @@ def _run_build(build_config: dict[str, Any]) -> None:
     )
     if result:
         logger.info("Created: %s", result)
+
+
+def _run_prepare(config_path: Path) -> None:
+    """Run the PDB preparation step."""
+    from cphmd.setup.prepare_pdb import prepare_pdb_system
+
+    config = config_to_prepare_pdb(config_path)
+    output_base = prepare_pdb_system(config)
+    logger.info("Preparation complete: %s", output_base)
 
 
 def _run_solvate(config_path: Path) -> None:

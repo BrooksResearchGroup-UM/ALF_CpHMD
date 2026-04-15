@@ -17,7 +17,7 @@ AUTO ANGLE DIHE
 !----------------------------------------------------------------------------
 
 pres ASH1 0           ! od1 protonated species
-! pKA = 3.37
+! pKA = 3.64
 ! HB1M   OD1M-HD1
 !  |     /
 ! -CBM--CGM
@@ -43,7 +43,7 @@ ic hd1 od1 cg od2 0 0 0 0 0
 
 
 pres ASH2 0           ! od2 protonated species
-! pKA = 3.37
+! pKA = 3.64
 ! HB1P   OD1P
 !  |     //
 ! -CBP--CGP
@@ -127,7 +127,7 @@ ic he2 oe2 cd oe1 0 0 0 0 0
 ! This is the patch for neutral Histidine with the proton on (HSD)
 
 pres HSPD 0
-! pKa = 6.6
+! pKa = 7.25
  !     |          HD1    HE1M
  !  HN-N           |     /
  !     |   HB1M   ND1M--CE1M

@@ -17,7 +17,7 @@ AUTO ANGLE DIHE
 !----------------------------------------------------------------------------
 
 pres ASH1 0           ! od1 protonated species
-! pKA = 3.67
+! pKA = 3.64
 ! HB1M   OD1M-HD1
 !  |     /
 ! -CBM--CGM
@@ -43,7 +43,7 @@ ic hd1 od1 cg od2 0 0 0 0 0
 
 
 pres ASH2 0           ! od2 protonated species
-! pKA = 3.67
+! pKA = 3.64
 ! HB1P   OD1P
 !  |     //
 ! -CBP--CGP
@@ -127,7 +127,7 @@ ic he2 oe2 cd oe1 0 0 0 0 0
 ! This is the patch for neutral Histidine with the proton on (HSD)
 
 pres HSPD 0
-! pKa = 6.6
+! pKa = 7.25
  !     |          HD1    HE1M
  !  HN-N           |     /
  !     |   HB1M   ND1M--CE1M
@@ -164,7 +164,7 @@ impr ce1 ne2 nd1 he1
 ! This is the patch for neutral Histidine with the proton on (HSE)
 
 pres HSPE 0
-! pKa = 7.0
+! pKa = 6.64
  !     |                 HE1P
  !  HN-N             __  /
  !     |   HB1P   ND1P--CE1P
@@ -231,7 +231,7 @@ dele atom hz3
 ! This is the patch for deprotonated tyrosine. The HH atom was deleted
 
 pres TYRU -1
-! pKA = 9.6
+! pKA = 9.84
 !     |        HD1  HE1M   
 !  HN-N         |    |   
 !     |   HB1  CD1--CE1M
@@ -259,7 +259,7 @@ dele atom hh
 !----------------------------------------------------------------------------
 
 pres ARU1 0.00
-! pKa = 12.5
+! pKA = 14.2
 !     |                      
 !  HN-N                       
 !     |   HB1 HG1 HD1 HE     NH1-H11
@@ -287,7 +287,7 @@ impr ne  cd cz he
 impr nh2 hh21 hh22 cz
 
 pres ARU2 0.00
-! pKa = 12.5
+! pKA = 14.2
 !     |                       HH11
 !  HN-N                       /
 !     |   HB1 HG1 HD1 HE     NH1-HH12
@@ -318,7 +318,7 @@ impr nh1 hh11 hh12 cz
 ! CYSTINE (CYS) PATCHES
 !----------------------------------------------------------------------------
 pres CYSD        -1.00 ! patch to deprotonate cysteine by kevo
-! pKa =  8.37
+! pKa =  8.55
 atom CB   CS     -0.38
 atom HB1  HA2     0.09
 atom HB2  HA2     0.09

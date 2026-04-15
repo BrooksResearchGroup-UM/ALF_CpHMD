@@ -52,7 +52,7 @@ class ConvergenceTracker:
         if self._expected_pops is not None:
             return self._expected_pops
 
-        if (self.config.pH and self.state.patch_info is not None
+        if (self.config.ph and self.state.patch_info is not None
                 and hasattr(self.config, "nreps") and self.config.nreps
                 and nsubs is not None):
             from cphmd.core.cphmd_params import compute_all_site_parameters
@@ -396,7 +396,7 @@ class ConvergenceTracker:
                                 regenerate_g_imp_fn):
         """Handle population-based phase transitions."""
         from .cphmd_params import get_delta_pKa_for_phase
-        delta_pKa = get_delta_pKa_for_phase(self.state.phase)
+        delta_pka = get_delta_pKa_for_phase(self.state.phase)
 
         # Pass patch_info always (used for expected_pops and sign arrays).
         # Pass pKa convergence kwargs only for Phase 2+ — in Phase 1, biases
@@ -405,7 +405,7 @@ class ConvergenceTracker:
         if self.state.patch_info is not None:
             cphmd_kwargs["patch_info"] = self.state.patch_info
         if (self.state.phase >= 2
-                and self.config.pH and self.config.nreps > 3
+            and self.config.ph and self.config.nreps > 3
                 and self.state.patch_info is not None):
             from .cphmd_params import compute_all_site_parameters
             cphmd_params = compute_all_site_parameters(
@@ -415,7 +415,7 @@ class ConvergenceTracker:
             cphmd_kwargs.update({
                 "data_dir": Path("data"),
                 "effective_pH": cphmd_params.effective_pH,
-                "delta_pKa": delta_pKa,
+                "delta_pKa": delta_pka,
                 "nreps": self.config.nreps,
             })
 

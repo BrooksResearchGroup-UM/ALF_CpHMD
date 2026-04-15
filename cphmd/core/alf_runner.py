@@ -36,6 +36,11 @@ from cphmd.core.alf_utils import (
     set_vars_from_analysis_dir,
 )
 from cphmd.core.bias_analyzer import BiasAnalyzer
+from cphmd.core.config_compat import (
+    deprecated_getattr,
+    deprecated_setattr,
+    init_dataclass_with_aliases,
+)
 from cphmd.core.convergence_tracker import ConvergenceTracker
 from cphmd.core.dynamics_runner import DynamicsRunner
 from cphmd.core.g_imp_provisioner import GImpProvisioner
@@ -49,7 +54,23 @@ AnalysisMethod = Literal["wham", "lmalf", "hybrid", "nonlinear"]
 ConvergenceMode = Literal["population", "rmsd"]
 
 
-@dataclass
+def _dedupe_extra_files(paths: list[str | Path]) -> list[str | Path]:
+    """Return paths with duplicate filesystem targets removed."""
+    seen: set[Path] = set()
+    result: list[str | Path] = []
+    for path in paths:
+        resolved = Path(path).resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        result.append(path)
+    return result
+
+
+_ALF_CONFIG_ALIASES = {"pH": "ph"}
+
+
+@dataclass(init=False)
 class ALFConfig:
     """Configuration for ALF simulation.
 
@@ -57,7 +78,7 @@ class ALFConfig:
         input_folder: Path to the prepared system folder (contains prep/ subdirectory)
         toppar_dir: Path to topology/parameter files
         temperature: Simulation temperature in Kelvin
-        pH: Enable CpHMD pH coupling (effective_pH auto-computed from macro-pKa)
+        ph: Enable CpHMD pH coupling (effective_pH auto-computed from macro-pKa)
         hmr: Whether to use hydrogen mass repartitioning (4fs timestep).
              None = auto (True for default prep, False for legacy prep).
         start: Starting run number
@@ -78,7 +99,7 @@ class ALFConfig:
     input_folder: str | Path
     toppar_dir: str | Path = "toppar"
     temperature: float = 298.15
-    pH: bool = False
+    ph: bool = False
     hmr: bool | None = None
     start: int = 1
     end: int = 20
@@ -98,7 +119,6 @@ class ALFConfig:
     no_s_bias: bool = False
     no_t_bias: bool = True   # Disable t-term bias updates (bcxstu)
     no_u_bias: bool = True   # Disable u-term bias updates (bcxstu)
-    no_pka_bias: bool = False  # Disable pKa-based bias shifts
     auto_phase_switch: bool = False  # Enable automatic phase switching
     auto_stop: bool = False  # Enable automatic stop when converged in Phase 3
     phase_transition: PhaseTransitionConfig = field(default_factory=PhaseTransitionConfig)
@@ -133,7 +153,7 @@ class ALFConfig:
 
     # Number of previous analysis windows to include in WHAM
     # int = same for all phases; list[int] = per-phase [phase1, phase2, phase3]
-    # Default: Phase 1=8, Phase 2=4, Phase 3=3
+    # Default: Phase 1=7, Phase 2=5, Phase 3=3
     analysis_window: int | list[int] | None = None
 
     # Lambda frame subsampling for WHAM analysis (every Nth frame)
@@ -173,7 +193,8 @@ class ALFConfig:
     endpoint_decay: float | list[float] = 2.0
 
     # gshift correction in WHAM Stage 2 profile extraction
-    use_gshift: bool = True  # Apply G_imp entropy shifts (recommended; see docs/WHAM/gshift_theory.md)
+    # Apply G_imp entropy shifts (recommended; see docs/WHAM/gshift_theory.md).
+    use_gshift: bool = True
 
     # Analysis method configuration
     analysis_method: AnalysisMethod = "wham"  # "wham", "lmalf", "hybrid", or "nonlinear"
@@ -211,6 +232,25 @@ class ALFConfig:
     prep_format: PrepFormat = "auto"
     # Legacy setup script (auto-discovered from prep/*.inp if not set)
     legacy_setup_script: str | None = None
+    # Legacy msld-py-prep import compatibility
+    legacy_auto_convert: bool = True
+    legacy_convert_dir: str | Path | None = None
+    legacy_force_convert: bool = False
+    legacy_replace_toppar: bool = False
+
+    def __init__(self, input_folder: str | Path, **kwargs: Any) -> None:
+        """Initialize ALFConfig, accepting deprecated mixed-case aliases."""
+        if "input_folder" in kwargs:
+            raise TypeError("ALFConfig got multiple values for 'input_folder'.")
+        kwargs["input_folder"] = input_folder
+        init_dataclass_with_aliases(self, ALFConfig, kwargs, _ALF_CONFIG_ALIASES)
+        self.__post_init__()
+
+    def __getattr__(self, name: str) -> Any:
+        return deprecated_getattr(self, name, _ALF_CONFIG_ALIASES)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        deprecated_setattr(self, name, value, _ALF_CONFIG_ALIASES)
 
     def __post_init__(self):
         """Validate configuration after initialization."""
@@ -233,6 +273,11 @@ class ALFConfig:
                     f"expected patches.dat (default) or alf_info.py (legacy)"
                 )
 
+        use_legacy_defaults = self.prep_format == "legacy"
+        if self.prep_format == "legacy" and self.legacy_auto_convert:
+            self._convert_legacy_input()
+            prep_dir = self.input_folder / "prep"
+
         # Validate based on format
         if self.prep_format == "default":
             for f in ["prep/system.psf", "prep/system.crd", "prep/patches.dat",
@@ -249,13 +294,12 @@ class ALFConfig:
 
         # Resolve None sentinels based on prep format.
         # Legacy (msld-py-prep) systems: no HMR PSF, use vfswitch, low friction.
-        is_legacy = self.prep_format == "legacy"
         if self.hmr is None:
-            self.hmr = not is_legacy           # True for default, False for legacy
+            self.hmr = not use_legacy_defaults  # True for default, False for legacy imports
         if self.vdw_type is None:
-            self.vdw_type = "vfswitch" if is_legacy else "vswitch"
+            self.vdw_type = "vfswitch" if use_legacy_defaults else "vswitch"
         if self.gscale is None:
-            self.gscale = 0.1 if is_legacy else 10.0
+            self.gscale = 0.1 if use_legacy_defaults else 10.0
 
         # Lambda mass/friction: HMR(4fs) keeps heavy/gentle defaults;
         # non-HMR(2fs) uses lighter mass (Kramers ∝ 1/M) with scaled friction
@@ -307,6 +351,29 @@ class ALFConfig:
         elif isinstance(self.replica_exchange, bool):
             from cphmd.core.replica_exchange import ReplicaExchangeConfig
             self.replica_exchange = ReplicaExchangeConfig(enabled=self.replica_exchange)
+
+    def _convert_legacy_input(self) -> None:
+        """Convert a legacy prep folder to the modern cached prep layout."""
+        from cphmd.setup.legacy_convert import LegacyConvertConfig, convert_legacy_system
+
+        result = convert_legacy_system(
+            LegacyConvertConfig(
+                input_folder=self.input_folder,
+                output_folder=self.legacy_convert_dir,
+                setup_script=self.legacy_setup_script,
+                force=self.legacy_force_convert,
+                ph_enabled=bool(self.ph),
+                temperature=self.temperature,
+                toppar_dir=self.toppar_dir,
+                topology_files=self.topology_files,
+                replace_legacy_toppar=self.legacy_replace_toppar,
+                debug=self.debug,
+            )
+        )
+        self.input_folder = result.output_folder.resolve()
+        self.prep_format = "default"
+        self.legacy_setup_script = result.setup_script
+        self.extra_files = _dedupe_extra_files([*self.extra_files, *result.extra_files])
 
     @property
     def ntriangle(self) -> int:
@@ -410,9 +477,9 @@ class SimulationState:
     alf_info: dict[str, Any] | None = None
 
     # CpHMD parameters
-    site_pH0: dict[str, float] = field(default_factory=dict)
-    site_pKa_shifts: dict[str, dict] = field(default_factory=dict)
-    delta_pKa: float = 0.0
+    site_ph0: dict[str, float] = field(default_factory=dict)
+    site_pka_shifts: dict[str, dict] = field(default_factory=dict)
+    delta_pka: float = 0.0
 
     # Phase transition tracking
     phase2_start_run: int | None = None  # Run index when Phase 2 started
@@ -453,7 +520,7 @@ class ALFSimulation:
     4. Henderson-Hasselbalch curve generation
 
     Example:
-        >>> config = ALFConfig(input_folder="my_system", pH=7.0, nreps=8)
+        >>> config = ALFConfig(input_folder="my_system", ph=True, nreps=8)
         >>> sim = ALFSimulation(config)
         >>> sim.run()
     """
@@ -517,40 +584,9 @@ class ALFSimulation:
         self.state.gpuid = self._get_gpu_id()
 
     def _get_gpu_id(self) -> int:
-        """Return the CUDA virtual device index for this MPI rank.
-
-        CUDA always remaps CUDA_VISIBLE_DEVICES to 0-based virtual indices:
-          CUDA_VISIBLE_DEVICES="3,5,7" → virtual 0=phys3, 1=phys5, 2=phys7
-        So cudaSetDevice() and ``blade on gpuid`` both take the virtual index,
-        which equals local_rank modulo the number of visible GPUs.
-
-        Multi-node example (2 GPUs from node A, 3 from node B):
-          Node A ranks 0,1: CUDA_VISIBLE_DEVICES="3,5" → gpuid 0,1
-          Node B ranks 2,3,4: CUDA_VISIBLE_DEVICES="1,4,7" → gpuid 0,1,2
-        """
-        local_rank = None
-        for env_var in [
-            "OMPI_COMM_WORLD_LOCAL_RANK",  # OpenMPI
-            "SLURM_LOCALID",               # SLURM
-            "MPI_LOCALRANKID",             # Intel MPI
-            "PMI_LOCAL_RANK",              # MPICH
-        ]:
-            if env_var in os.environ:
-                local_rank = int(os.environ[env_var])
-                break
-
-        if local_rank is None:
-            local_rank = self.state.rank
-
-        # When CUDA_VISIBLE_DEVICES is set, CUDA remaps to 0-based virtual IDs.
-        # Use local_rank modulo visible GPU count to get the correct virtual index.
-        cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES", "")
-        if cuda_visible:
-            n_visible = len([g for g in cuda_visible.split(",") if g.strip()])
-            if n_visible > 0:
-                return local_rank % n_visible
-
-        return local_rank
+        """Return the CUDA virtual device index for this MPI rank."""
+        from cphmd.core.charmm_utils import get_gpu_id
+        return get_gpu_id(self.state.rank)
 
     def _redirect_python_output(self):
         """Redirect Python stdout to per-rank log files.
@@ -636,7 +672,7 @@ class ALFSimulation:
         patches_path = self.config.input_folder / "prep" / "patches.dat"
         self.state.patch_info = pd.read_csv(patches_path)
 
-        # Extract site and subsite indices from SELECT column (e.g., "s1s1" or "S1S1" -> site=1, sub=1)
+        # Extract site/subsite indices from SELECT (e.g. "s1s1" -> site=1, sub=1).
         self.state.patch_info[["site", "sub"]] = (
             self.state.patch_info["SELECT"].str.extract(r"(?i)s(\d+)s(\d+)")
         )
@@ -660,7 +696,9 @@ class ALFSimulation:
             "engine": "charmm",
             "ntersite": self._ntersite(),  # Intersite biases [ms, msprof]
             "fnex": self.config.fnex,
-            "g_imp_bins": ALFConfig.resolve_g_imp_bins(self.config.g_imp_bins, self.state.phase) or 32,
+            "g_imp_bins": (
+                ALFConfig.resolve_g_imp_bins(self.config.g_imp_bins, self.state.phase) or 32
+            ),
             "cutlsum": self.config.cutlsum,
         }
 
@@ -745,22 +783,30 @@ class ALFSimulation:
         return res_types
 
     def _resolve_preset_config(self) -> str | None:
-        """Resolve preset configuration name from elec_type + vdw_type.
+        """Resolve preset configuration name from elec/vdw/restraint/hydrogen.
 
         Mapping: pmeex→pme_ex, pmeon→pme_on, pmenn→pme_nn,
-                 fshift→fshift, fswitch→fswitch; vswitch/vfswitch.
+                 fshift→fshift, fswitch→fswitch; vswitch/vfswitch;
+                 NOE→noe, SCAT/SCA→sca; restrain_hydrogens→h/nh.
 
         Returns:
-            Preset config name (e.g., "pme_ex_vswitch") or None if types unknown.
+            Preset config name (e.g., "pme_ex_vswitch_noe_h") or None.
         """
         elec_map = {
             "pmeex": "pme_ex", "pmeon": "pme_on", "pmenn": "pme_nn",
             "fshift": "fshift", "fswitch": "fswitch",
         }
+        restr_map = {"NOE": "noe", "SCA": "sca", "SCAT": "sca"}
         elec = elec_map.get(self.config.elec_type)
         vdw = self.config.vdw_type  # already "vswitch" or "vfswitch"
+        restr_key = self.config.restrains.upper()
+        restr = restr_map.get(restr_key, self.config.restrains.lower())
+        hydro = "h" if self.config.restrain_hydrogens else "nh"
         if elec and vdw:
-            return f"{elec}_{vdw}"
+            full_key = f"{elec}_{vdw}_{restr}_{hydro}"
+            from cphmd.presets.biases import PRESET_CONFIGS
+            if full_key in PRESET_CONFIGS:
+                return full_key
         return None
 
     def _init_alf_legacy(self):
@@ -893,10 +939,16 @@ class ALFSimulation:
 
         if self.state.rank == 0:
             import pycharmm.lingo as lingo
+            import pycharmm.read as charmm_read
             import pycharmm.settings as settings
+            import pycharmm.write as charmm_write
 
             from .alf_utils import init_vars
-            from .bias_guesser import guess_initial_biases_combined
+            from .bias_guesser import (
+                derive_site_keep_segids,
+                guess_initial_biases_combined,
+                parse_legacy_ligseg,
+            )
             from .charmm_utils import clear_block, clear_crystal
 
             nsubs = self.state.alf_info["nsubs"].astype(int).tolist()
@@ -933,24 +985,48 @@ class ALFSimulation:
             # 4. Minimise
             self._dynamics.run_minimization(self.config.start, replica_idx=0)
 
-            try:
+            analysis0 = self.config.input_folder / "analysis0"
+            analysis0.mkdir(exist_ok=True)
+            minimized_snapshot = analysis0 / ".bias_guess_minimized.crd"
+            charmm_write.coor_card(str(minimized_snapshot))
+
+            legacy_keep_segid = "LIG"
+            if is_legacy:
+                legacy_keep_segid = parse_legacy_ligseg(
+                    self.config.input_folder / "prep" / self.config.legacy_setup_script
+                )
+            site_keep_segids = derive_site_keep_segids(
+                self.state.patch_info,
+                nsubs,
+                legacy=is_legacy,
+                legacy_keep_segid=legacy_keep_segid,
+            )
+
+            def reload_bias_guess_system() -> None:
+                clear_block()
+                clear_crystal()
+                lingo.charmm_script("delete atom sele all end")
+                self.state.structure_loaded = False
                 if is_legacy:
-                    # Legacy MSLD: estimate c only from solvated energies.
-                    # Vacuum step (delete water + CUTNB=999) crashes CHARMM
-                    # with "MAKINB: Too many bonds" for large block counts.
-                    # Without ΔΔE_solvation, b includes solvent screening
-                    # and can have wrong sign — keep b=0 (default).
-                    from .bias_guesser import guess_initial_biases
-                    _, c = guess_initial_biases(
-                        self.state.patch_info, nsubs, fnex=self.config.fnex,
-                        legacy=True,
+                    self._dynamics.setup_legacy(
+                        run_idx=self.config.start, letter="", k=0, replica_idx=0
                     )
-                    c *= 5.0
-                    b = np.zeros((1, sum(nsubs)))
                 else:
-                    b, c = guess_initial_biases_combined(
-                        self.state.patch_info, nsubs, fnex=self.config.fnex,
+                    self._dynamics.setup_crystal(
+                        run_idx=self.config.start, letter="", k=0, replica_idx=0
                     )
+                charmm_read.coor_card(qpath(minimized_snapshot))
+
+            try:
+                b, c = guess_initial_biases_combined(
+                    self.state.patch_info,
+                    nsubs,
+                    fnex=self.config.fnex,
+                    legacy=is_legacy,
+                    reload_system=reload_bias_guess_system,
+                    site_keep_segids=site_keep_segids,
+                    legacy_keep_segid=legacy_keep_segid,
+                )
             except Exception as e:
                 print(f"  Bias guessing failed: {e}. Using zero biases.")
                 b, c = None, None
@@ -1068,6 +1144,9 @@ class ALFSimulation:
             if self._comm is not None:
                 self._comm.Abort(1)
             raise
+        finally:
+            from cphmd.core.alf_utils import _purge_stale_mmap_files
+            _purge_stale_mmap_files()
 
     def _run_impl(self):
         """Inner simulation loop (separated for MPI_Abort safety wrapper)."""
@@ -1443,7 +1522,7 @@ class ALFSimulation:
         self._exchanger.state.permutation = list(range(npairs + 1))
 
         nblocks = self.state.alf_info["nblocks"]
-        delta_pKa = get_delta_pKa_for_phase(self.state.phase)
+        delta_pka = get_delta_pKa_for_phase(self.state.phase)
 
         if n_segments == 0:
             # exchange_freq > nsteps_prod: fall back to regular dynamics
@@ -1496,7 +1575,7 @@ class ALFSimulation:
                 rst_path=rst_path,
                 nblocks=nblocks,
                 patch_info=self.state.patch_info,
-                delta_pKa=delta_pKa,
+                delta_pKa=delta_pka,
                 temperature=self.config.temperature,
             )
 
@@ -1505,6 +1584,17 @@ class ALFSimulation:
 
             # Next segment reads partner's restart if swapped, else own restart
             restart_override = partner_rst if partner_rst is not None else rst_path
+
+        remainder = nsteps_prod - n_segments * seg_steps
+        if remainder > 0:
+            self._dynamics.run_dynamics_segment(
+                run_idx, letter, k, replica_idx,
+                segment_idx=n_segments,
+                nsteps=remainder,
+                restart_from=restart_override,
+                is_first_segment=False,
+                blade_ready=True,
+            )
 
         # Turn off BLADE after all segments
         self._dynamics.finish_blade()
@@ -1978,7 +2068,7 @@ class ALFSimulation:
             from .cphmd_params import get_delta_pKa_for_phase
 
             pre_transition_phase = self.state.phase
-            pre_transition_delta_pKa = get_delta_pKa_for_phase(pre_transition_phase)
+            pre_transition_delta_pka = get_delta_pKa_for_phase(pre_transition_phase)
 
             self._convergence.check_and_update_phase(
                 run_idx, lambda_data, nsubs, cut_params, trans_matrices,
@@ -1990,14 +2080,14 @@ class ALFSimulation:
             self._convergence.check_stop(run_idx, lambda_data, nsubs, confirmation)
 
             if (self.config.generate_hh_plots and
-                self.config.pH and
+                self.config.ph and
                 self.config.nreps >= 3 and
                 self.state.patch_info is not None):
                 from cphmd.analysis.henderson_hasselbalch import generate_hh_analysis
 
                 from .cphmd_params import compute_all_site_parameters
 
-                delta_pKa = pre_transition_delta_pKa
+                delta_pka = pre_transition_delta_pka
                 cphmd_params = compute_all_site_parameters(
                     self.state.patch_info,
                     self.config.temperature,
@@ -2014,7 +2104,7 @@ class ALFSimulation:
                     data_dir=Path("data"),
                     patch_info=self.state.patch_info,
                     pH=cphmd_params.effective_pH,
-                    delta_pKa=delta_pKa,
+                    delta_pKa=delta_pka,
                     nreps=self.config.nreps,
                     output_dir=Path(self.config.input_folder) / "plots",
                     ncentral=self.state.alf_info.get("ncentral", self.config.nreps // 2),
@@ -2054,7 +2144,7 @@ def run_alf_simulation(config: ALFConfig) -> None:
     Example:
         >>> config = ALFConfig(
         ...     input_folder="my_system",
-        ...     pH=7.0,
+        ...     ph=True,
         ...     temperature=298.15,
         ...     nreps=8,
         ...     start=1,
@@ -2064,5 +2154,3 @@ def run_alf_simulation(config: ALFConfig) -> None:
     """
     sim = ALFSimulation(config)
     sim.run()
-
-

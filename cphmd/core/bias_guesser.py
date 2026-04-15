@@ -8,6 +8,9 @@ minimized structure. Used when presets are unavailable.
 from __future__ import annotations
 
 import logging
+import re
+from collections.abc import Callable
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -62,7 +65,8 @@ def compute_c_from_midpoints(
         nsubs: Number of substates per site.
 
     Returns:
-        c array with shape (nblocks, nblocks), symmetric, zero diagonal.
+        c array with shape (nblocks, nblocks), upper triangle populated and
+        zero elsewhere. The quadratic c terms are consumed once per pair.
     """
     nblocks = sum(nsubs)
     c = np.zeros((nblocks, nblocks))
@@ -75,7 +79,6 @@ def compute_c_from_midpoints(
         for (i, j), e_mid in mids.items():
             linear_interp = 0.5 * (e[i] + e[j])
             val = -(e_mid - linear_interp)
-            # Upper triangle only (i < j) — WHAM convention
             c[offset + i, offset + j] = val
 
         offset += n
@@ -157,6 +160,150 @@ def _generate_legacy_call_statements(nsubs: list[int]) -> str:
     return "\n".join(lines) + "\n\n"
 
 
+def _generate_named_call_statements(selection_names: list[str]) -> str:
+    """Generate CALL statements from pre-defined CHARMM selection names."""
+    lines = [
+        "!----------------------------------------",
+        "! Set up l-dynamics by setting BLOCK parameters",
+        "!----------------------------------------\n",
+    ]
+    for idx, selection_name in enumerate(selection_names):
+        lines.append(f"CALL {idx + 2} sele {selection_name} end")
+    return "\n".join(lines) + "\n\n"
+
+
+def _ensure_site_columns(patch_info: pd.DataFrame) -> pd.DataFrame:
+    """Return patch_info with integer site/sub columns and contiguous index."""
+    df = patch_info.copy()
+    if "site" not in df.columns or "sub" not in df.columns:
+        df[["site", "sub"]] = df["SELECT"].str.extract(r"(?i)s(\d+)s(\d+)")
+    df["site"] = df["site"].astype(int)
+    df["sub"] = df["sub"].astype(int)
+    return df.reset_index(drop=True)
+
+
+def _site_numbers(patch_info: pd.DataFrame) -> list[int]:
+    """Return site numbers in deterministic ALF order."""
+    return sorted(int(site) for site in patch_info["site"].unique())
+
+
+def derive_site_keep_segids(
+    patch_info: pd.DataFrame | None,
+    nsubs: list[int],
+    *,
+    legacy: bool = False,
+    legacy_keep_segid: str = "LIG",
+) -> list[tuple[str, ...]]:
+    """Derive the vacuum keep-segids for each titratable site."""
+    if legacy or patch_info is None:
+        keep = legacy_keep_segid.strip().upper()
+        if not keep:
+            raise ValueError("legacy_keep_segid must not be empty")
+        return [(keep,) for _ in nsubs]
+
+    df = _ensure_site_columns(patch_info)
+    if "SEGID" not in df.columns:
+        raise ValueError("patch_info must contain SEGID for segment-isolated vacuum")
+
+    site_keep_segids: list[tuple[str, ...]] = []
+    for site in _site_numbers(df):
+        segids: list[str] = []
+        for raw in df.loc[df["site"] == site, "SEGID"]:
+            segid = str(raw).strip().upper()
+            if segid and segid not in segids:
+                segids.append(segid)
+        if not segids:
+            raise ValueError(f"No SEGID values found for site {site}")
+        site_keep_segids.append(tuple(segids))
+
+    if len(site_keep_segids) != len(nsubs):
+        raise ValueError(
+            "patch_info site count does not match nsubs: "
+            f"{len(site_keep_segids)} != {len(nsubs)}"
+        )
+    return site_keep_segids
+
+
+def parse_legacy_ligseg(setup_script: str | Path, default: str = "LIG") -> str:
+    """Parse the legacy ligand segment variable from an msld-py-prep script."""
+    script_path = Path(setup_script)
+    match = re.search(
+        r"(?im)^\s*set\s+ligseg\s*=\s*([^\s!]+)",
+        script_path.read_text(),
+    )
+    segid = match.group(1) if match else default
+    return segid.strip().upper()
+
+
+def _delete_except_segids_command(keep_segids: tuple[str, ...] | list[str]) -> str:
+    """Build CHARMM command that keeps only the selected segids."""
+    segids = [str(segid).strip().upper() for segid in keep_segids if str(segid).strip()]
+    if not segids:
+        raise ValueError("At least one segid must be kept for vacuum evaluation")
+    clause = " .or. ".join(f"segid {segid}" for segid in segids)
+    return f"delete atom sele .not. ({clause}) end"
+
+
+def _context_site_indices(
+    target_site_idx: int,
+    site_keep_segids: list[tuple[str, ...]],
+) -> list[int]:
+    """Sites retained in the same segment context as the target site."""
+    target = set(site_keep_segids[target_site_idx])
+    return [
+        site_idx
+        for site_idx, segids in enumerate(site_keep_segids)
+        if target.intersection(segids)
+    ]
+
+
+def _local_default_context(
+    patch_info: pd.DataFrame,
+    context_site_indices: list[int],
+) -> tuple[pd.DataFrame, list[int]]:
+    """Build a contiguous local patch_info/nsubs view for default prep."""
+    df = _ensure_site_columns(patch_info)
+    site_numbers = _site_numbers(df)
+    context_sites = [site_numbers[idx] for idx in context_site_indices]
+
+    rows = []
+    local_nsubs: list[int] = []
+    for local_site, site in enumerate(context_sites, start=1):
+        site_rows = df[df["site"] == site].sort_values("sub").copy()
+        local_nsubs.append(len(site_rows))
+        for local_sub, (_, row) in enumerate(site_rows.iterrows(), start=1):
+            row = row.copy()
+            row["site"] = local_site
+            row["sub"] = local_sub
+            row["SELECT"] = f"s{local_site}s{local_sub}"
+            rows.append(row)
+
+    return pd.DataFrame(rows).reset_index(drop=True), local_nsubs
+
+
+def _local_legacy_context(
+    nsubs: list[int],
+    context_site_indices: list[int],
+) -> tuple[pd.DataFrame, list[int], list[str]]:
+    """Build local patch_info plus original legacy selection names."""
+    rows = []
+    call_selection_names: list[str] = []
+    local_nsubs: list[int] = []
+    for local_site, original_site_idx in enumerate(context_site_indices, start=1):
+        n = nsubs[original_site_idx]
+        local_nsubs.append(n)
+        for local_sub in range(1, n + 1):
+            rows.append({
+                "SELECT": f"s{local_site}s{local_sub}",
+                "site": local_site,
+                "sub": local_sub,
+            })
+            call_selection_names.append(
+                f"site{original_site_idx + 1}_sub{local_sub}"
+            )
+    return pd.DataFrame(rows), local_nsubs, call_selection_names
+
+
 def _generate_zero_ldbv(patch_info: pd.DataFrame, fnex: float = 5.5) -> str:
     """Generate LDBI/LDBV statements with zero coefficients.
 
@@ -223,6 +370,7 @@ def _build_energy_block_command(
     nsubs: list[int],
     fnex: float = 5.5,
     legacy: bool = False,
+    call_selection_names: list[str] | None = None,
 ) -> str:
     """Build a BLOCK command for single-point energy evaluation.
 
@@ -257,11 +405,10 @@ def _build_energy_block_command(
         patch_info = _synthetic_patch_info(nsubs)
 
     # Ensure site/sub columns exist (derived from SELECT, e.g. "s1s2" → site=1, sub=2)
-    if "site" not in patch_info.columns:
-        patch_info = patch_info.copy()
-        patch_info[["site", "sub"]] = patch_info["SELECT"].str.extract(r"(?i)s(\d+)s(\d+)")
-        patch_info["site"] = patch_info["site"].astype(int)
-        patch_info["sub"] = patch_info["sub"].astype(int)
+    patch_info = _ensure_site_columns(patch_info)
+
+    if call_selection_names is not None and len(call_selection_names) != len(patch_info):
+        raise ValueError("call_selection_names length must match patch_info rows")
 
     n_blocks = len(patch_info) + 1  # +1 for environment
 
@@ -288,10 +435,12 @@ def _build_energy_block_command(
     dynamics_setup = "QLDM THETA\nLANG TEMP 298.15\nSOFT ON\n\n"
 
     # CALL statements: legacy uses siteX_subY selections, default uses patches.dat
-    call_str = (
-        _generate_legacy_call_statements(nsubs) if legacy
-        else generate_call_statements(patch_info)
-    )
+    if call_selection_names is not None:
+        call_str = _generate_named_call_statements(call_selection_names)
+    elif legacy:
+        call_str = _generate_legacy_call_statements(nsubs)
+    else:
+        call_str = generate_call_statements(patch_info)
 
     parts = [
         generate_block_header(n_blocks),
@@ -408,13 +557,59 @@ def guess_initial_biases(
     return b, c
 
 
+def _evaluate_site_in_context(
+    patch_info: pd.DataFrame,
+    nsubs: list[int],
+    local_site_idx: int,
+    fnex: float = 5.5,
+    call_selection_names: list[str] | None = None,
+) -> tuple[np.ndarray, dict[tuple[int, int], float]]:
+    """Evaluate one local site while keeping the rest of its context in BLOCK."""
+    from .charmm_utils import clear_block, execute_block_command
+
+    configs = generate_lambda_configs(nsubs)
+    site_cfg = configs[local_site_idx]
+    n = nsubs[local_site_idx]
+
+    site_e = np.zeros(n)
+    for sub_idx, lam in enumerate(site_cfg["endpoints"]):
+        clear_block()
+        block_cmd = _build_energy_block_command(
+            patch_info,
+            {local_site_idx: lam},
+            nsubs,
+            fnex=fnex,
+            call_selection_names=call_selection_names,
+        )
+        execute_block_command(block_cmd)
+        site_e[sub_idx] = _evaluate_energy()
+
+    site_mids: dict[tuple[int, int], float] = {}
+    for (i, j), lam in site_cfg["midpoints"]:
+        clear_block()
+        block_cmd = _build_energy_block_command(
+            patch_info,
+            {local_site_idx: lam},
+            nsubs,
+            fnex=fnex,
+            call_selection_names=call_selection_names,
+        )
+        execute_block_command(block_cmd)
+        site_mids[(i, j)] = _evaluate_energy()
+
+    clear_block()
+    return site_e, site_mids
+
+
 def _setup_vacuum_nonbonded(
     patch_info: pd.DataFrame | None,
     nsubs: list[int],
     fnex: float = 5.5,
     legacy: bool = False,
+    keep_segids: tuple[str, ...] | list[str] | None = None,
+    call_selection_names: list[str] | None = None,
 ):
-    """Delete solvent/ions and switch to vacuum nonbonded settings.
+    """Delete non-kept segments and switch to vacuum nonbonded settings.
 
     Sets up a full BLOCK (CALL, LDIN, exclusions, MSLD) before NBONDS
     so CHARMM knows block assignments and excluded atom pairs during
@@ -428,9 +623,12 @@ def _setup_vacuum_nonbonded(
     # Lower bomb level through entire transition
     settings.set_bomb_level(-6)
 
-    lingo.charmm_script(
-        "delete atom sele resn TIP3 .or. segid SOLV .or. segid IONS end"
-    )
+    if keep_segids:
+        lingo.charmm_script(_delete_except_segids_command(keep_segids))
+    else:
+        lingo.charmm_script(
+            "delete atom sele resn TIP3 .or. segid SOLV .or. segid IONS end"
+        )
 
     # Clear crystal (removes PBC and PME)
     lingo.charmm_script("CRYSTAL FREE")
@@ -440,6 +638,7 @@ def _setup_vacuum_nonbonded(
     clear_block()
     block_cmd = _build_energy_block_command(
         patch_info, {}, nsubs, fnex=fnex, legacy=legacy,
+        call_selection_names=call_selection_names,
     )
     execute_block_command(block_cmd)
 
@@ -454,11 +653,93 @@ def _setup_vacuum_nonbonded(
     settings.set_bomb_level(0)
 
 
+def guess_initial_biases_segment_vacuum(
+    patch_info: pd.DataFrame | None,
+    nsubs: list[int],
+    *,
+    reload_system: Callable[[], None],
+    site_keep_segids: list[tuple[str, ...]] | None = None,
+    legacy: bool = False,
+    legacy_keep_segid: str = "LIG",
+    fnex: float = 5.5,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Estimate vacuum biases while keeping only the current site's segment context."""
+    import pycharmm.lingo as lingo
+    import pycharmm.settings as settings
+
+    from .charmm_utils import clear_block
+
+    lingo.charmm_script("blade off")
+
+    if site_keep_segids is None:
+        site_keep_segids = derive_site_keep_segids(
+            patch_info,
+            nsubs,
+            legacy=legacy,
+            legacy_keep_segid=legacy_keep_segid,
+        )
+
+    nblocks = sum(nsubs)
+    b = np.zeros(nblocks)
+    c = np.zeros((nblocks, nblocks))
+    offsets = np.cumsum([0] + nsubs[:-1])
+
+    for target_site_idx, keep_segids in enumerate(site_keep_segids):
+        context_indices = _context_site_indices(target_site_idx, site_keep_segids)
+        local_site_idx = context_indices.index(target_site_idx)
+
+        if legacy:
+            local_patch_info, local_nsubs, call_names = _local_legacy_context(
+                nsubs, context_indices
+            )
+        else:
+            if patch_info is None:
+                raise ValueError("patch_info is required for default segment vacuum")
+            local_patch_info, local_nsubs = _local_default_context(
+                patch_info, context_indices
+            )
+            call_names = None
+
+        reload_system()
+        _setup_vacuum_nonbonded(
+            local_patch_info,
+            local_nsubs,
+            fnex=fnex,
+            keep_segids=keep_segids,
+            call_selection_names=call_names,
+        )
+
+        settings.set_bomb_level(-6)
+        try:
+            site_e, site_mids = _evaluate_site_in_context(
+                local_patch_info,
+                local_nsubs,
+                local_site_idx,
+                fnex=fnex,
+                call_selection_names=call_names,
+            )
+        finally:
+            settings.set_bomb_level(0)
+            clear_block()
+
+        site_nsubs = [nsubs[target_site_idx]]
+        b_site = compute_b_from_endpoints({0: site_e}, site_nsubs).reshape(-1)
+        c_site = compute_c_from_midpoints({0: site_mids}, {0: site_e}, site_nsubs)
+
+        offset = offsets[target_site_idx]
+        n = nsubs[target_site_idx]
+        b[offset:offset + n] = b_site
+        c[offset:offset + n, offset:offset + n] = c_site
+
+    return b.reshape(1, -1), c
+
+
 def guess_initial_biases_vacuum(
     patch_info: pd.DataFrame | None,
     nsubs: list[int],
     fnex: float = 5.5,
     legacy: bool = False,
+    keep_segids: tuple[str, ...] | list[str] | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Estimate initial biases in vacuum (no solvent).
 
@@ -480,7 +761,9 @@ def guess_initial_biases_vacuum(
     """
     import pycharmm.settings as settings
 
-    _setup_vacuum_nonbonded(patch_info, nsubs, fnex=fnex, legacy=legacy)
+    _setup_vacuum_nonbonded(
+        patch_info, nsubs, fnex=fnex, legacy=legacy, keep_segids=keep_segids,
+    )
 
     # Keep bomb level low during vacuum energy evaluations — the first
     # nonbond list rebuild after clearing PME may still trigger residual
@@ -505,6 +788,9 @@ def guess_initial_biases_combined(
     nsubs: list[int],
     fnex: float = 5.5,
     legacy: bool = False,
+    reload_system: Callable[[], None] | None = None,
+    site_keep_segids: list[tuple[str, ...]] | None = None,
+    legacy_keep_segid: str = "LIG",
 ) -> tuple[np.ndarray, np.ndarray]:
     """Estimate initial biases from solvated−vacuum energy difference.
 
@@ -533,8 +819,21 @@ def guess_initial_biases_combined(
     b_solv, c_solv = guess_initial_biases(patch_info, nsubs, fnex=fnex, legacy=legacy)
     clear_block()
 
-    # Vacuum evaluation (destructive — deletes solvent)
-    b_vac, c_vac = guess_initial_biases_vacuum(patch_info, nsubs, fnex=fnex, legacy=legacy)
+    # Vacuum evaluation (destructive — deletes atoms)
+    if reload_system is None:
+        b_vac, c_vac = guess_initial_biases_vacuum(
+            patch_info, nsubs, fnex=fnex, legacy=legacy,
+        )
+    else:
+        b_vac, c_vac = guess_initial_biases_segment_vacuum(
+            patch_info,
+            nsubs,
+            reload_system=reload_system,
+            site_keep_segids=site_keep_segids,
+            legacy=legacy,
+            legacy_keep_segid=legacy_keep_segid,
+            fnex=fnex,
+        )
     clear_block()
 
     # ΔΔE_solvation: isolates differential solvation contribution

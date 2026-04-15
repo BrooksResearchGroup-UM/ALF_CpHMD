@@ -18,11 +18,12 @@ convergence monitoring, and pKa prediction -- all from a single CLI command.
 ## Key Features
 
 ### Automated System Preparation
+- **PDB preparation** -- build `PSF/CRD/PDB` inputs from a local PDB file or RCSB entry before solvation
 - **Titratable residue patching** -- auto-detects GLU, ASP, HIS, LYS, CYS and applies
   MSLD patches with correct protonation states
 - **Ligand support** -- custom RTF/PRM files for non-standard titratable groups
 - **Hydrogen mass repartitioning** (HMR) -- 4 fs timesteps for faster sampling
-- **Solvation** -- automated waterbox setup with octahedral crystal, ion placement (SLTCAP)
+- **Solvation** -- `crimm`-backed cubic or octahedral water boxes with mapped AN/SLTCAP ion placement
 
 ### Three-Phase ALF Optimization
 
@@ -148,6 +149,7 @@ pip install -e ".[dev]"
 
 - Python >= 3.9
 - pyCHARMM with BLaDE GPU support
+- crimm (for explicit-solvent box construction and ion placement)
 - NVIDIA GPU with CUDA (for WHAM/LMALF solver and BLaDE MD)
 - mpi4py (for parallel replica simulations; install separately or via `pip install -e ".[mpi]"`)
 - NumPy >= 1.20, SciPy >= 1.7, Pandas >= 1.3
@@ -155,6 +157,7 @@ pip install -e ".[dev]"
 - Typer >= 0.9, Rich >= 12.0 (CLI)
 - Matplotlib >= 3.4 (visualization)
 - PyArrow >= 10.0 (optional, for Parquet lambda files; install via `pip install -e ".[analysis]"`)
+- crimm (optional, for `setup prepare-pdb` and `setup solvate`; install via `pip install -e ".[setup]"`)
 
 ### CUDA Libraries
 
@@ -187,7 +190,7 @@ patch_system(config)
 ### 2. Run ALF simulation
 
 ```bash
-mpirun -np 5 cphmd run alf -i solvated --pH 7.0 \
+mpirun -np 5 cphmd run alf -i solvated --pH \
     --start 1 --end 100 \
     --auto-phase --auto-stop \
     --hh-plots
@@ -199,7 +202,7 @@ from cphmd.core import ALFConfig, run_alf_simulation
 
 config = ALFConfig(
     input_folder="solvated",
-    pH=7.0,
+    pH=True,
     start=1, end=100,
     auto_phase_switch=True,
     auto_stop=True,
@@ -216,6 +219,10 @@ Create a `cphmd_config.yaml` and run the full pipeline:
 cphmd run workflow -c cphmd_config.yaml              # all steps
 cphmd run workflow -c cphmd_config.yaml --step patch  # single step
 ```
+
+If a `prepare:` section is present, the workflow runs `build -> prepare -> solvate -> patch -> alf`.
+When `solvation.input_file` is omitted, it defaults to the prepared output base
+from `prepare.output_dir` and `prepare.output_name`.
 
 ### 4. Analyze results
 
@@ -234,7 +241,8 @@ cphmd run bias-search -i solvated
 
 ```
 cphmd setup create-aa         Create amino acid / nucleic acid template structures
-cphmd setup solvate           Solvate a molecular system in a water box
+cphmd setup prepare-pdb       Prepare PSF/CRD/PDB from a local PDB or RCSB entry
+cphmd setup solvate           Solvate a molecular system in a crimm water box
 
 cphmd run patch               Apply CpHMD patches to titratable residues
 cphmd run alf                 Run ALF simulation (requires MPI + GPU)
@@ -248,6 +256,36 @@ cphmd analyze volume          Calculate molecular volume (requires pyCHARMM)
 cphmd utils lambda-convert    Convert CHARMM binary .lmd files to Parquet
 cphmd utils lambda-info       Show metadata for a lambda file (.lmd or .parquet)
 ```
+
+### Prepare From PDB
+
+```bash
+# Local PDB
+cphmd setup prepare-pdb -i input.pdb -o pdb --name input
+
+# RCSB entry
+cphmd setup prepare-pdb -i 1aki -o pdb --name input
+
+# Protein-only preparation from an RCSB entry with crystallographic ligands
+cphmd setup prepare-pdb -i 2lzt -o pdb --name input --drop-ligands
+```
+
+This step is intentionally separate from `solvate`. It creates the `PSF/CRD/PDB`
+input set consumed by the existing solvation workflow. Ligand-containing PDB
+entries require explicit CGenFF support, or `--drop-ligands` if the intended
+system is protein/nucleic-acid only.
+
+### Solvation
+
+```bash
+cphmd setup solvate -i pdb/input -o solvated --pad 10
+cphmd setup solvate -i pdb/input -o solvated --minimize
+```
+
+The `crimm` solvation step builds cubic or octahedral boxes and places ions.
+Post-solvation pyCHARMM minimization is skipped by default because ALF/CpHMD
+equilibration performs its own minimization. Use `--minimize` or YAML
+`solvation.minimize: true` to opt in.
 
 ### Key ALF Options
 
@@ -307,7 +345,7 @@ cphmd/
 │   └── volume.py                     # Molecular volume calculation
 ├── setup/                        # System preparation
 │   ├── create_aa.py                  # Amino acid / nucleic acid template generation
-│   └── solvate.py                    # Solvation with ions (SLTCAP)
+│   └── solvate.py                    # crimm-backed solvation + ion placement
 ├── config/                       # Configuration system
 │   ├── loader.py                     # YAML config loader with CLI override merging
 │   └── defaults/                     # Default YAML configs (alf, patch, solvation)

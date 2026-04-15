@@ -3,6 +3,7 @@ Main CLI for CpHMD package.
 
 Usage:
     cphmd setup create-aa    # Create amino acid structures
+    cphmd setup prepare-pdb  # Prepare PSF/CRD/PDB from PDB or RCSB
     cphmd setup solvate      # Solvate a system
     cphmd run patch          # Apply CpHMD patches
     cphmd run alf            # Run ALF simulation
@@ -77,13 +78,25 @@ def solvate(
     output: str = typer.Option(None, "-o", "--output", help="Output folder"),
     padding: float = typer.Option(None, "--pad", help="Padding around molecule (Angstroms)"),
     salt: float = typer.Option(None, "-s", "--salt", help="Salt concentration (M)"),
-    crystal_type: str = typer.Option(None, "--crystal", help="Crystal type"),
+    crystal_type: str = typer.Option(
+        None, "--crystal", help="Crystal type (supported: CUBIC or OCTAHEDRAL)"
+    ),
     temperature: float = typer.Option(None, "-t", "--temp", help="Temperature (K)"),
     no_ions: bool = typer.Option(None, "--no-ions", help="Skip ion placement"),
-    ion_method: str = typer.Option(None, "--ion-method", help="Ion method: AN or SLTCAP"),
+    ion_method: str = typer.Option(
+        None, "--ion-method", help="Ion method: AN or SLTCAP"
+    ),
+    toppar_dir: str = typer.Option(
+        None, "--toppar-dir", help="Topology/parameter directory (default: bundled toppar)"
+    ),
+    minimize: bool = typer.Option(
+        None,
+        "--minimize/--no-minimize",
+        help="Run optional pyCHARMM minimization after solvation",
+    ),
     config: str = typer.Option(None, "-c", "--config", help="YAML config file"),
 ):
-    """Solvate a molecular system in a water box."""
+    """Solvate a molecular system in a crimm water box."""
     from cphmd.config import config_to_solvation
 
     cli = {
@@ -95,6 +108,8 @@ def solvate(
         "temperature": temperature,
         "skip_ions": no_ions,
         "ion_method": ion_method,
+        "toppar_dir": toppar_dir,
+        "minimize": minimize,
     }
     solvation_config = config_to_solvation(config, cli)
 
@@ -106,6 +121,59 @@ def solvate(
 
     result_dir = solvate_system(solvation_config)
     console.print(f"[green]Solvation complete: {result_dir}/solvated.pdb[/green]")
+
+
+@setup_app.command("prepare-pdb")
+def prepare_pdb(
+    input_source: str = typer.Option(
+        None, "-i", "--input", help="Local PDB path or 4-character RCSB ID"
+    ),
+    output: str = typer.Option(None, "-o", "--output", help="Output folder"),
+    output_name: str = typer.Option(
+        None, "--name", help="Output base name for PSF/CRD/PDB files"
+    ),
+    source_type: str = typer.Option(
+        None, "--source", help="Input source type: auto, file, or rcsb"
+    ),
+    include_solvent: bool = typer.Option(
+        None, "--include-solvent/--no-solvent", help="Keep crystallographic solvent"
+    ),
+    include_hydrogens: bool = typer.Option(
+        None, "--hydrogens/--no-hydrogens", help="Include deposited hydrogens when fetching RCSB"
+    ),
+    drop_ligands: bool = typer.Option(
+        None,
+        "--drop-ligands/--keep-ligands",
+        help="Drop ligand-like RCSB heterogens before topology generation",
+    ),
+    cgenff: str = typer.Option(
+        None, "--cgenff", help="Path to the CGenFF executable for ligand topology"
+    ),
+    config: str = typer.Option(None, "-c", "--config", help="YAML config file"),
+):
+    """Prepare PSF/CRD/PDB inputs from a local PDB file or RCSB entry."""
+    from cphmd.config import config_to_prepare_pdb
+
+    cli = {
+        "input_source": input_source,
+        "output_dir": output,
+        "output_name": output_name,
+        "source_type": source_type,
+        "include_solvent": include_solvent,
+        "include_hydrogens": include_hydrogens,
+        "drop_ligands": drop_ligands,
+        "cgenff_executable_path": cgenff,
+    }
+    prepare_config = config_to_prepare_pdb(config, cli)
+
+    console.print(
+        f"[cyan]Preparing {prepare_config.input_source} → {prepare_config.output_dir}/[/cyan]"
+    )
+
+    from cphmd.setup import prepare_pdb_system
+
+    output_base = prepare_pdb_system(prepare_config)
+    console.print(f"[green]Preparation complete: {output_base}.pdb[/green]")
 
 
 # Run commands
@@ -169,7 +237,7 @@ def alf(
         None, "-i", "--input", help="Input folder with prep/ directory"
     ),
     temperature: float = typer.Option(None, "-t", "--temp", help="Temperature (K)"),
-    pH: bool = typer.Option(
+    ph: bool = typer.Option(
         None, "--pH/--no-pH", help="Enable CpHMD pH coupling (effective_pH auto-computed from pKa)"
     ),
     hmr: bool = typer.Option(None, "--hmr/--no-hmr", help="Use hydrogen mass repartitioning"),
@@ -180,9 +248,6 @@ def alf(
     restrains: str = typer.Option(None, "-r", "--restrains", help="Restraint type: SCAT or NOE"),
     restrain_hydrogens: bool = typer.Option(
         None, "--hydrogens/--no-hydrogens", help="Include hydrogens in restraints"
-    ),
-    no_pka_bias: bool = typer.Option(
-        None, "--no-pka-bias/--pka-bias", help="Disable pKa-based bias shifts (use zero shifts)"
     ),
     auto_phase: bool = typer.Option(
         None, "--auto-phase/--no-auto-phase", help="Enable automatic phase switching"
@@ -238,6 +303,26 @@ def alf(
         help="G_imp bins: single int or comma-separated per-phase (e.g. '16,32,32')",
     ),
     cutlsum: float = typer.Option(None, "--cutlsum", help="G12 conditional threshold"),
+    legacy_auto_convert: bool = typer.Option(
+        None,
+        "--legacy-auto-convert/--no-legacy-auto-convert",
+        help="Auto-convert legacy msld-py-prep input folders",
+    ),
+    legacy_convert_dir: str = typer.Option(
+        None,
+        "--legacy-convert-dir",
+        help="Output folder for generated modern prep files",
+    ),
+    legacy_force_convert: bool = typer.Option(
+        None,
+        "--force-legacy-convert/--no-force-legacy-convert",
+        help="Regenerate cached legacy conversion output",
+    ),
+    legacy_replace_toppar: bool = typer.Option(
+        None,
+        "--replace-legacy-toppar/--keep-legacy-toppar",
+        help="Use configured topology files instead of legacy prep/toppar.str during conversion",
+    ),
     config: str = typer.Option(None, "-c", "--config", help="YAML config file"),
 ):
     """Run ALF simulation with optional CpHMD.
@@ -254,7 +339,7 @@ def alf(
     cli = {
         "input_folder": input_folder,
         "temperature": temperature,
-        "pH": pH,
+        "ph": ph,
         "hmr": hmr,
         "start": start,
         "end": end,
@@ -262,7 +347,6 @@ def alf(
         "nreps": nreps,
         "restrains": restrains,
         "restrain_hydrogens": restrain_hydrogens,
-        "no_pka_bias": no_pka_bias,
         "auto_phase": auto_phase,
         "auto_stop": auto_stop,
         "convergence_mode": convergence_mode,
@@ -283,6 +367,10 @@ def alf(
         "extra_files": extra_files,
         "g_imp_bins": _parse_g_imp_bins(g_imp_bins),
         "cutlsum": cutlsum,
+        "legacy_auto_convert": legacy_auto_convert,
+        "legacy_convert_dir": legacy_convert_dir,
+        "legacy_force_convert": legacy_force_convert,
+        "legacy_replace_toppar": legacy_replace_toppar,
     }
     alf_config = config_to_alf(config, cli)
 
@@ -290,16 +378,16 @@ def alf(
     comm = MPI.COMM_WORLD
     if comm.Get_rank() == 0:
         console.print(f"[cyan]Starting ALF simulation for {alf_config.input_folder}/[/cyan]")
-        cphmd_str = "CpHMD" if alf_config.pH else "ALF"
+        cphmd_str = "CpHMD" if alf_config.ph else "ALF"
         console.print(
-            f"[dim]Temp: {alf_config.temperature}K, Mode: {cphmd_str}, Phase: {alf_config.phase}, Runs: {alf_config.start}-{alf_config.end}[/dim]"
+            "[dim]Temp: "
+            f"{alf_config.temperature}K, Mode: {cphmd_str}, "
+            f"Phase: {alf_config.phase}, Runs: {alf_config.start}-{alf_config.end}[/dim]"
         )
         console.print(f"[dim]HMR: {alf_config.hmr}, Restraints: {alf_config.restrains}[/dim]")
         console.print(
             f"[dim]Electrostatics: {alf_config.elec_type}, VDW: {alf_config.vdw_type}[/dim]"
         )
-        if alf_config.no_pka_bias:
-            console.print("[yellow]pKa bias disabled[/yellow]")
         if alf_config.auto_phase_switch:
             console.print("[green]Automatic phase switching enabled[/green]")
         if alf_config.auto_stop:
@@ -328,9 +416,9 @@ def production(
     prod_id: int = typer.Option(1, "--prod-id", help="Production run ID (creates prod_N/)"),
     ns: float = typer.Option(10.0, "--ns", help="Total nanoseconds"),
     ns_per_chunk: float = typer.Option(1.0, "--chunk-ns", help="Nanoseconds per iteration chunk"),
-    pH_start: float = typer.Option(7.0, "--pH-start", help="Starting pH"),
-    pH_end: float = typer.Option(7.0, "--pH-end", help="Ending pH"),
-    pH: float = typer.Option(None, "--pH", help="Single pH (sets both start and end)"),
+    ph_start: float = typer.Option(7.0, "--pH-start", help="Starting pH"),
+    ph_end: float = typer.Option(7.0, "--pH-end", help="Ending pH"),
+    ph: float = typer.Option(None, "--pH", help="Single pH (sets both start and end)"),
     nreps: int = typer.Option(1, "--nreps", help="Number of pH replicas"),
     use_presets: bool = typer.Option(False, "--presets/--no-presets", help="Use preset biases"),
     variables_dir: str = typer.Option(None, "-v", "--var-dir", help="Variables directory"),
@@ -338,6 +426,9 @@ def production(
     vdw_type: str = typer.Option(None, "--vdw", help="VDW method: vswitch or vfswitch"),
     hmr: bool = typer.Option(None, "--hmr/--no-hmr", help="Hydrogen mass repartitioning"),
     restrains: str = typer.Option("SCAT", "--restrain-type", help="Restraint method"),
+    restrain_hydrogens: bool = typer.Option(
+        False, "--hydrogens/--no-hydrogens", help="Include hydrogens in restraints"
+    ),
     temperature: float = typer.Option(298.15, "-t", "--temp", help="Temperature (K)"),
     nsavc: int = typer.Option(500, "--nsavc", help="DCD save frequency (frames)"),
     seed: int = typer.Option(None, "--seed", help="Random seed"),
@@ -346,6 +437,26 @@ def production(
     ),
     prep_format: str = typer.Option(
         "auto", "--prep-format", help="Prep format: default, legacy, auto"
+    ),
+    legacy_auto_convert: bool = typer.Option(
+        True,
+        "--legacy-auto-convert/--no-legacy-auto-convert",
+        help="Auto-convert legacy msld-py-prep input folders",
+    ),
+    legacy_convert_dir: str = typer.Option(
+        None,
+        "--legacy-convert-dir",
+        help="Output folder for generated modern prep files",
+    ),
+    legacy_force_convert: bool = typer.Option(
+        False,
+        "--force-legacy-convert/--no-force-legacy-convert",
+        help="Regenerate cached legacy conversion output",
+    ),
+    legacy_replace_toppar: bool = typer.Option(
+        False,
+        "--replace-legacy-toppar/--keep-legacy-toppar",
+        help="Use configured topology files instead of legacy prep/toppar.str during conversion",
     ),
     extra_files: list[str] = typer.Option([], "--extra", help="Extra topology files"),
     debug: bool = typer.Option(False, "--debug/--no-debug", help="Debug mode"),
@@ -357,9 +468,9 @@ def production(
     from cphmd.core.replica_exchange import ReplicaExchangeConfig
 
     # Handle --pH shorthand
-    if pH is not None:
-        pH_start = pH
-        pH_end = pH
+    if ph is not None:
+        ph_start = ph
+        ph_end = ph
 
     # Handle --exchange-freq -> ReplicaExchangeConfig
     rex = None
@@ -377,8 +488,8 @@ def production(
             ns=ns,
             ns_per_chunk=ns_per_chunk,
             temperature=temperature,
-            pH_start=pH_start,
-            pH_end=pH_end,
+            ph_start=ph_start,
+            ph_end=ph_end,
             nreps=nreps,
             use_presets=use_presets,
             variables_dir=variables_dir,
@@ -386,10 +497,15 @@ def production(
             vdw_type=vdw_type,
             hmr=hmr,
             restrains=restrains,
+            restrain_hydrogens=restrain_hydrogens,
             nsavc=nsavc,
             seed=seed,
             replica_exchange=rex,
             prep_format=prep_format,
+            legacy_auto_convert=legacy_auto_convert,
+            legacy_convert_dir=legacy_convert_dir,
+            legacy_force_convert=legacy_force_convert,
+            legacy_replace_toppar=legacy_replace_toppar,
             extra_files=extra_files,
             debug=debug,
         )
@@ -491,7 +607,8 @@ def energy_profiles_cmd(
 
         result = analyze_energy_profiles(config)
         console.print(
-            f"[green]Analyzed {len(result.iterations)} iterations ({result.n_states} states)[/green]"
+            "[green]Analyzed "
+            f"{len(result.iterations)} iterations ({result.n_states} states)[/green]"
         )
         console.print(f"[green]Final RMSD: {result.rmsd_values[-1]:.4f} kcal/mol[/green]")
         console.print(f"[green]RMSD plot: {result.rmsd_plot}[/green]")
@@ -622,7 +739,7 @@ def pka_cmd(
             n_bootstrap_bin=n_bootstrap_bin,
             n_jobs=n_jobs,
             transition_width=transition_width,
-            min_pH_points=min_ph_points,
+            min_ph_points=min_ph_points,
         )
         analyzer = PKaAnalyzer(config)
         results = analyzer.run()
@@ -719,12 +836,12 @@ def lambda_info(
 def workflow(
     config: str = typer.Option(..., "-c", "--config", help="YAML config file"),
     step: str = typer.Option(
-        "all", "--step", help="Step to run: build, solvate, patch, alf, or all"
+        "all", "--step", help="Step to run: build, prepare, solvate, patch, alf, or all"
     ),
 ):
     """Run a CpHMD workflow from a YAML config file.
 
-    Executes one or more workflow steps in order: build -> solvate -> patch -> alf.
+    Executes one or more workflow steps in order: build -> prepare -> solvate -> patch -> alf.
     Use --step to run a single step, or "all" to run the full pipeline.
     Steps without a config section are skipped when running "all".
     """

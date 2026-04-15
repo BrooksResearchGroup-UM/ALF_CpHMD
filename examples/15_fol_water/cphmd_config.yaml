@@ -48,7 +48,6 @@ alf:
   auto_phase_switch: true
   auto_stop: true
   cleanup: false
-  no_pka_bias: true
   extra_files:
     - toppar/folpp.cgenff.rtf
     - toppar/folpp.cgenff.prm

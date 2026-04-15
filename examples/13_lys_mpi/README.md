@@ -56,6 +56,6 @@ For multi-site proteins with different macro-pKas (e.g., ASP + LYS),
 |---|---|---|
 | GPUs | 1 | 5 (configurable) |
 | Replicas | 1 | 5 (auto from MPI size) |
-| pH coupling | off (`no_pka_bias`) | on (`pH: true`, auto pKa=10.5) |
+| pH coupling | off (`pH` omitted) | on (`pH: true`, auto pKa=10.5) |
 | Launch | `python run.py alf` | `mpirun -np 5 cphmd run alf -c cphmd_config.yaml --pH` |
 | SLURM | `--gres=gpu:1` | `--ntasks=5 --gpus-per-task=1` |

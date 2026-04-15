@@ -11,9 +11,28 @@ import math
 import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from cphmd.core import ElecType, PrepFormat, RestrainType, VdwType
+from cphmd.core.config_compat import (
+    deprecated_getattr,
+    deprecated_setattr,
+    init_dataclass_with_aliases,
+)
 from cphmd.core.replica_exchange import ReplicaExchangeConfig
+
+
+def _dedupe_extra_files(paths: list[str | Path]) -> list[str | Path]:
+    """Return paths with duplicate filesystem targets removed."""
+    seen: set[Path] = set()
+    result: list[str | Path] = []
+    for path in paths:
+        resolved = Path(path).resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        result.append(path)
+    return result
 
 
 def build_nsubsites_str(nsubs: list[int]) -> str:
@@ -34,9 +53,10 @@ def build_parquet_metadata(
     delta_t: float,
     npriv: int,
     n_frames: int,
-    pH: float,
-    prod_id: int,
-    name: str,
+    ph: float | None = None,
+    prod_id: int | None = None,
+    name: str | None = None,
+    **deprecated_aliases: Any,
 ) -> dict[str, str]:
     """Build metadata dict for production parquet files.
 
@@ -47,6 +67,19 @@ def build_parquet_metadata(
     n_frames : int
         Number of lambda frames (rows) in the parquet file.
     """
+    if "pH" in deprecated_aliases:
+        from cphmd.core.config_compat import warn_deprecated_alias
+
+        if ph is not None:
+            raise TypeError("Cannot pass both 'pH' and 'ph'.")
+        warn_deprecated_alias("pH", "ph", stacklevel=3)
+        ph = deprecated_aliases.pop("pH")
+    if deprecated_aliases:
+        unexpected = next(iter(deprecated_aliases))
+        raise TypeError(f"Unexpected argument: {unexpected!r}.")
+    if ph is None or prod_id is None or name is None:
+        raise TypeError("build_parquet_metadata requires ph, prod_id, and name.")
+
     nblocks = 1 + sum(nsubs)
     nsites = len(nsubs)
     time_step = delta_t * nsavl
@@ -66,7 +99,7 @@ def build_parquet_metadata(
         "Start Step": str(npriv),
         "Total Steps": str(n_frames * nsavl),
         "End Step": str(npriv + (n_frames - 1) * nsavl),
-        "pH": str(pH),
+        "pH": str(ph),
         "Simulation": f"prod_{prod_id}",
         "Name": name,
     }
@@ -143,7 +176,14 @@ def find_restart_for_chunk(
     )
 
 
-@dataclass
+_PRODUCTION_CONFIG_ALIASES = {
+    "pH_start": "ph_start",
+    "pH_end": "ph_end",
+    "delta_pKa": "delta_pka",
+}
+
+
+@dataclass(init=False)
 class ProductionConfig:
     """Configuration for a production CpHMD simulation with fixed biases.
 
@@ -169,6 +209,7 @@ class ProductionConfig:
         vdw_type: VDW method (``None`` = auto-detect from prep format).
         hmr: Hydrogen mass repartitioning (``None`` = auto-detect).
         restrains: Restraint method for titratable atoms.
+        restrain_hydrogens: Include hydrogens in generated restraints and preset lookup.
         scat_force_constant: SCAT restraint force constant.
         fnex: FNEX softmax constraint parameter.
         chi_offset: LDBV class 8 REF (s-term).
@@ -207,8 +248,8 @@ class ProductionConfig:
     temperature: float = 298.15
 
     # pH replicas
-    pH_start: float = 7.0
-    pH_end: float = 7.0
+    ph_start: float = 7.0
+    ph_end: float = 7.0
     nreps: int = 1
 
     # ------------------------------------------------------------------
@@ -225,6 +266,7 @@ class ProductionConfig:
     vdw_type: VdwType | None = None
     hmr: bool | None = None
     restrains: RestrainType = "SCAT"
+    restrain_hydrogens: bool = False
     scat_force_constant: float = 300.0
     fnex: float = 5.5
 
@@ -269,6 +311,10 @@ class ProductionConfig:
 
     # Prep format
     prep_format: PrepFormat = "auto"
+    legacy_auto_convert: bool = True
+    legacy_convert_dir: str | Path | None = None
+    legacy_force_convert: bool = False
+    legacy_replace_toppar: bool = False
 
     # Recentering
     cent_ncres: int | bool = False
@@ -279,6 +325,22 @@ class ProductionConfig:
     # ------------------------------------------------------------------
     # Validation
     # ------------------------------------------------------------------
+
+    def __init__(self, input_folder: str | Path, **kwargs: Any) -> None:
+        """Initialize ProductionConfig, accepting deprecated mixed-case aliases."""
+        if "input_folder" in kwargs:
+            raise TypeError("ProductionConfig got multiple values for 'input_folder'.")
+        kwargs["input_folder"] = input_folder
+        init_dataclass_with_aliases(
+            self, ProductionConfig, kwargs, _PRODUCTION_CONFIG_ALIASES
+        )
+        self.__post_init__()
+
+    def __getattr__(self, name: str) -> Any:
+        return deprecated_getattr(self, name, _PRODUCTION_CONFIG_ALIASES)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        deprecated_setattr(self, name, value, _PRODUCTION_CONFIG_ALIASES)
 
     def __post_init__(self) -> None:
         """Validate configuration after initialization."""
@@ -302,6 +364,17 @@ class ProductionConfig:
                     f"Cannot detect prep format in {prep_dir}: "
                     f"expected patches.dat (default) or alf_info.py (legacy)"
                 )
+
+        use_legacy_defaults = self.prep_format == "legacy"
+        if self.prep_format == "legacy" and self.legacy_auto_convert:
+            self._convert_legacy_input()
+            prep_dir = self.input_folder / "prep"
+
+        if self.prep_format == "legacy":
+            raise ValueError(
+                "ProductionRunner does not support legacy prep format yet. "
+                "Convert the system to the default prep layout before production."
+            )
 
         # --- Required files ---
         if self.prep_format == "default":
@@ -356,33 +429,54 @@ class ProductionConfig:
             )
 
         # --- pH warnings ---
-        if self.nreps > 1 and self.pH_start == self.pH_end:
+        if self.nreps > 1 and self.ph_start == self.ph_end:
             warnings.warn(
-                f"nreps={self.nreps} but all replicas at same pH " f"({self.pH_start})",
+                f"nreps={self.nreps} but all replicas at same pH " f"({self.ph_start})",
                 UserWarning,
                 stacklevel=2,
             )
-        if self.nreps == 1 and self.pH_start != self.pH_end:
+        if self.nreps == 1 and self.ph_start != self.ph_end:
             warnings.warn(
-                f"pH_end ignored when nreps=1 " f"(pH_start={self.pH_start}, pH_end={self.pH_end})",
+                f"pH_end ignored when nreps=1 "
+                f"(pH_start={self.ph_start}, pH_end={self.ph_end})",
                 UserWarning,
                 stacklevel=2,
             )
 
         # --- Auto-detect sentinels from prep format ---
-        is_legacy = self.prep_format == "legacy"
         if self.hmr is None:
-            self.hmr = not is_legacy
+            self.hmr = not use_legacy_defaults
         if self.vdw_type is None:
-            self.vdw_type = "vfswitch" if is_legacy else "vswitch"
+            self.vdw_type = "vfswitch" if use_legacy_defaults else "vswitch"
         if self.gscale is None:
-            self.gscale = 0.1 if is_legacy else 10.0
+            self.gscale = 0.1 if use_legacy_defaults else 10.0
 
         # Lambda mass/friction: HMR(4fs) → heavy/gentle; non-HMR(2fs) → lighter
         if self.lambda_mass is None:
             self.lambda_mass = 12.0 if self.hmr else 5.0
         if self.lambda_fbeta is None:
             self.lambda_fbeta = 5.0 if self.hmr else 7.0
+
+    def _convert_legacy_input(self) -> None:
+        """Convert a legacy prep folder to the modern cached prep layout."""
+        from cphmd.setup.legacy_convert import LegacyConvertConfig, convert_legacy_system
+
+        result = convert_legacy_system(
+            LegacyConvertConfig(
+                input_folder=self.input_folder,
+                output_folder=self.legacy_convert_dir,
+                force=self.legacy_force_convert,
+                ph_enabled=True,
+                temperature=self.temperature,
+                toppar_dir=self.toppar_dir,
+                topology_files=self.topology_files,
+                replace_legacy_toppar=self.legacy_replace_toppar,
+                debug=self.debug,
+            )
+        )
+        self.input_folder = result.output_folder.resolve()
+        self.prep_format = "default"
+        self.extra_files = _dedupe_extra_files([*self.extra_files, *result.extra_files])
 
     # ------------------------------------------------------------------
     # Properties
@@ -411,10 +505,10 @@ class ProductionConfig:
         return steps_per_chunk
 
     @property
-    def delta_pKa(self) -> float:
+    def delta_pka(self) -> float:
         """pH spacing between replicas (0.0 when single replica)."""
         if self.nreps > 1:
-            return (self.pH_end - self.pH_start) / (self.nreps - 1)
+            return (self.ph_end - self.ph_start) / (self.nreps - 1)
         return 0.0
 
     # ------------------------------------------------------------------
@@ -473,13 +567,14 @@ class ProductionConfig:
         return base + iteration
 
     def _resolve_preset_config(self) -> str | None:
-        """Resolve preset configuration name from elec_type + vdw_type.
+        """Resolve preset configuration name from elec/vdw/restraint/hydrogen.
 
-        Mapping: pmeex -> pme_ex, pmeon -> pme_on, pmenn -> pme_nn,
-                 fshift -> fshift, fswitch -> fswitch; combined with vdw_type.
+        Mapping: pmeex→pme_ex, pmeon→pme_on, pmenn→pme_nn,
+                 fshift→fshift, fswitch→fswitch; vswitch/vfswitch;
+                 NOE→noe, SCAT/SCA→sca; restrain_hydrogens→h/nh.
 
         Returns:
-            Preset config name (e.g., "pme_ex_vswitch") or None if types unknown.
+            Preset config name (e.g., "pme_ex_vswitch_noe_h") or None.
         """
         elec_map = {
             "pmeex": "pme_ex",
@@ -488,10 +583,17 @@ class ProductionConfig:
             "fshift": "fshift",
             "fswitch": "fswitch",
         }
+        restr_map = {"NOE": "noe", "SCA": "sca", "SCAT": "sca"}
         elec = elec_map.get(self.elec_type)
         vdw = self.vdw_type
         if elec and vdw:
-            return f"{elec}_{vdw}"
+            from cphmd.presets.biases import PRESET_CONFIGS
+            restr_key = self.restrains.upper()
+            restr = restr_map.get(restr_key, self.restrains.lower())
+            hydro = "h" if self.restrain_hydrogens else "nh"
+            full_key = f"{elec}_{vdw}_{restr}_{hydro}"
+            if full_key in PRESET_CONFIGS:
+                return full_key
         return None
 
     def _patch_to_restype(self, patch_name: str) -> str:
@@ -662,9 +764,10 @@ class ProductionRunner:
                 input_folder=str(self._prod_dir),
                 variables_dir=str(temp_dir),
                 restrain_type=self.config.restrains,
+                include_hydrogens=self.config.restrain_hydrogens,
                 electrostatics=self.config.elec_type,
                 temperature=self.config.temperature,
-                pH=self.config.pH_start,
+                ph=self.config.ph_start,
                 lambda_mass=self.config.lambda_mass,
                 lambda_fbeta=self.config.lambda_fbeta,
                 chi_offset=self.config.chi_offset,
@@ -738,7 +841,7 @@ class ProductionRunner:
 
         from cphmd.core.charmm_utils import (
             BoxParameters,
-            FFTConfig,
+            FFTParameters,
             NonBondedConfig,
             clear_block,
             clear_crystal,
@@ -755,8 +858,7 @@ class ProductionRunner:
 
         if not self._system_loaded:
             # Load topology and parameter files
-            toppar = config.input_folder / config.toppar_dir
-            read_topology_files(toppar, config.topology_files, verbose=config.debug)
+            read_topology_files(config.toppar_dir, config.topology_files, verbose=config.debug)
 
             # Load extra files (custom ligand topologies)
             for extra in config.extra_files:
@@ -774,7 +876,7 @@ class ProductionRunner:
 
         # Set up crystal and nonbonded
         box_params = BoxParameters.from_file(config.input_folder / "prep" / "box.dat")
-        fft_config = FFTConfig.from_file(config.input_folder / "prep" / "fft.dat")
+        fft = FFTParameters.from_file(config.input_folder / "prep" / "fft.dat")
         nb_config = NonBondedConfig(
             cutnb=config.cutnb,
             cutim=config.cutnb,
@@ -782,7 +884,9 @@ class ProductionRunner:
             ctonnb=config.ctonnb,
             elec_type=config.elec_type,
             vdw_type=config.vdw_type,
-            fft_config=fft_config,
+            fftx=fft.fftx,
+            ffty=fft.ffty,
+            fftz=fft.fftz,
         )
         setup_crystal(box_params, nb_config)
         setup_nonbonded(nb_config)
@@ -796,8 +900,8 @@ class ProductionRunner:
         execute_block_command(block_str)
 
         # Override pH for this replica (block.str has a default pH from generation)
-        pH = self._get_replica_pH(replica)
-        lingo.charmm_script(f"phmd pH {pH}")
+        ph_value = self._get_replica_ph(replica)
+        lingo.charmm_script(f"phmd pH {ph_value}")
 
         # Stream restraints
         restraint_file = prep_dir / "restrains.str"
@@ -823,7 +927,6 @@ class ProductionRunner:
         lingo.charmm_script(f"blade on gpuid {self._gpuid}")
         self._natom = psf.get_natom()
         dyn.set_fbetas(np.full(self._natom, self.config.gscale, dtype=float))
-        lingo.charmm_script("energy blade")
         self._blade_ready = True
 
     def _build_dyn_params(
@@ -855,9 +958,10 @@ class ProductionRunner:
             "iasors": 1,
             "iasvel": 1,
             "iscvel": 0,
-            "inbfrq": -1,
+            "inbfrq": 0,
             "ilbfrq": 0,
-            "imgfrq": -1,
+            "imgfrq": 0,
+            "ihbfrq": 0,
             "ntrfrq": 0,
             "echeck": -1,
             "iunldm": lmd_unit,
@@ -1019,7 +1123,7 @@ class ProductionRunner:
         data, meta = read_lambda_binary(lmd_fn)
 
         # Build metadata
-        pH = self._get_replica_pH(replica)
+        ph_value = self._get_replica_ph(replica)
         metadata = build_parquet_metadata(
             nsubs=self._nsubs,
             temperature=self.config.temperature,
@@ -1027,7 +1131,7 @@ class ProductionRunner:
             delta_t=meta.delta_t,
             npriv=meta.npriv,
             n_frames=len(data),
-            pH=pH,
+            ph=ph_value,
             prod_id=self.config.prod_id,
             name=self.config.input_folder.name,
         )
@@ -1045,15 +1149,15 @@ class ProductionRunner:
 
         return parquet_fn
 
-    def _get_replica_pH(self, replica: int) -> float:
+    def _get_replica_ph(self, replica: int) -> float:
         """Compute pH value for a given replica index.
 
         For a single replica, returns ``pH_start``.  For multiple replicas,
         linearly interpolates between ``pH_start`` and ``pH_end``.
         """
         if self.config.nreps == 1:
-            return self.config.pH_start
-        return self.config.pH_start + replica * self.config.delta_pKa
+            return self.config.ph_start
+        return self.config.ph_start + replica * self.config.delta_pka
 
     # ------------------------------------------------------------------
     # Exchange dynamics
@@ -1201,7 +1305,7 @@ class ProductionRunner:
         self._exchanger.state.ensure_size(npairs)
         self._exchanger.state.permutation = list(range(config.nreps))
 
-        delta_pKa = config.delta_pKa
+        delta_pka = config.delta_pka
 
         restart_override: Path | None = None
         if iteration > 1 or self._resumed:
@@ -1227,7 +1331,7 @@ class ProductionRunner:
                 rst_path=rst_path,
                 nblocks=nblocks,
                 patch_info=self._patch_info,
-                delta_pKa=delta_pKa,
+                delta_pKa=delta_pka,
                 temperature=config.temperature,
             )
 
@@ -1290,7 +1394,7 @@ class ProductionRunner:
         _, first_meta = read_lambda_binary(seg_files[0])
         all_data = concatenate_lambda_files(sorted(seg_files))
 
-        pH = self._get_replica_pH(replica)
+        ph_value = self._get_replica_ph(replica)
         metadata = build_parquet_metadata(
             nsubs=self._nsubs,
             temperature=self.config.temperature,
@@ -1298,7 +1402,7 @@ class ProductionRunner:
             delta_t=first_meta.delta_t,
             npriv=first_meta.npriv,
             n_frames=len(all_data),
-            pH=pH,
+            ph=ph_value,
             prod_id=self.config.prod_id,
             name=self.config.input_folder.name,
         )
@@ -1348,6 +1452,7 @@ class ProductionRunner:
         """Execute production dynamics.
 
         MPI safety: wraps _run_impl in try/except -> comm.Abort.
+        Cleans up mmap temp files on exit (success or failure).
         """
         try:
             self._run_impl()
@@ -1363,10 +1468,12 @@ class ProductionRunner:
             if self._comm is not None:
                 self._comm.Abort(1)
             raise
+        finally:
+            from cphmd.core.alf_utils import _purge_stale_mmap_files
+            _purge_stale_mmap_files()
 
     def _run_impl(self):
         """Inner production loop."""
-        import os
         import time
 
         if self._nsubs is None:
@@ -1392,11 +1499,8 @@ class ProductionRunner:
         self._rank = rank
 
         # GPU assignment
-        if "CUDA_VISIBLE_DEVICES" in os.environ:
-            devices = os.environ["CUDA_VISIBLE_DEVICES"].split(",")
-            self._gpuid = int(devices[rank % len(devices)])
-        else:
-            self._gpuid = rank
+        from cphmd.core.charmm_utils import get_gpu_id
+        self._gpuid = get_gpu_id(rank)
 
         print(f"Production run: {config.ns} ns in {n_chunks} chunks of {config.ns_per_chunk} ns")
         print(f"Starting from chunk {start_iteration}/{n_chunks}")

@@ -11,8 +11,14 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
-import pyarrow.parquet as pq
+
+
+def _parquet():
+    import pyarrow.parquet as pq
+
+    return pq
 
 # ---------------------------------------------------------------------------
 # Discovery
@@ -26,6 +32,7 @@ def _get_parquet_metadata(file_path: str | Path) -> dict[str, str]:
     embedded in the Arrow schema metadata.
     """
     try:
+        pq = _parquet()
         parquet_file = pq.ParquetFile(str(file_path))
         raw = parquet_file.schema_arrow.metadata
         if raw:
@@ -130,6 +137,7 @@ def get_site_columns(site_map: pd.DataFrame, site_index: int) -> list[str]:
 def _read_parquet_columns(file_path: str, columns: list[str]) -> pd.DataFrame:
     """Read specific columns from a parquet file into a DataFrame."""
     try:
+        pq = _parquet()
         table = pq.read_table(file_path, columns=columns)
         return table.to_pandas()
     except Exception:

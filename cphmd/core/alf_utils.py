@@ -182,7 +182,7 @@ def _load_preset_biases(
         alf_info: ALF simulation information.
         preset_residue: Residue name for single-site presets. Ignored when
             site_residue_types is provided.
-        preset_config: Preset configuration name (e.g., "pme_ex_vswitch").
+        preset_config: Preset configuration name (e.g., "pme_ex_vswitch_sca_nh").
             If None, uses default.
         site_residue_types: List of residue type names, one per site.
             E.g., ["ASP", "ASP", "GLU", "HSP", "LYS", "TYR"].
@@ -291,7 +291,7 @@ def init_vars(
         use_presets: If True, use preset biases instead of zeros.
         preset_residue: Residue name for presets (ASP, GLU, etc.).
             If None and use_presets=True, uses alf_info.name.
-        preset_config: Preset configuration name (e.g., "pme_ex_vswitch").
+        preset_config: Preset configuration name (e.g., "pme_ex_vswitch_sca_nh").
             If None, uses default.
         site_residue_types: For multi-site systems, list of residue type
             names (one per site). Overrides preset_residue.
@@ -1094,6 +1094,51 @@ def compute_wham_inputs_distributed(
 # --------------------------------------------------------------------------
 
 
+def _purge_stale_mmap_files() -> None:
+    """Remove stale WHAM mmap files from /tmp owned by this user.
+
+    Builds a set of open file paths via readlink on /proc/*/fd (single
+    scan, NFS-safe — never stats target files), then removes mmap files
+    not in that set.  Safe for concurrent jobs sharing the same node.
+    """
+    import glob
+    import os
+
+    my_uid = os.getuid()
+    candidates = []
+    for path in glob.glob("/tmp/tmp*.mmap"):
+        try:
+            if os.stat(path).st_uid == my_uid:
+                candidates.append(os.path.abspath(path))
+        except OSError:
+            pass
+
+    if not candidates:
+        return
+
+    # Build set of open file paths — single /proc scan via readlink (no NFS stat)
+    open_paths: set[str] = set()
+    for pid_dir in os.listdir("/proc"):
+        if not pid_dir.isdigit():
+            continue
+        fd_dir = f"/proc/{pid_dir}/fd"
+        try:
+            for fd in os.listdir(fd_dir):
+                try:
+                    open_paths.add(os.readlink(f"{fd_dir}/{fd}"))
+                except OSError:
+                    continue
+        except OSError:
+            continue
+
+    for path in candidates:
+        if path not in open_paths:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+
 def compute_packed_wham_data(
     alf_info: ALFInfo | dict,
     start_cycle: int,
@@ -1152,6 +1197,7 @@ def compute_packed_wham_data(
     _MEMMAP_THRESHOLD = 512 * 1024 * 1024  # 512 MB
     if d_bytes > _MEMMAP_THRESHOLD:
         import tempfile
+        _purge_stale_mmap_files()
         _d_tmpfile = tempfile.NamedTemporaryFile(suffix=".mmap", delete=True)
         D = np.memmap(_d_tmpfile, dtype=np.float64, mode="w+",
                       shape=(total_frames, ndim))
@@ -1280,6 +1326,7 @@ def compute_packed_wham_data_distributed(
         _MEMMAP_THRESHOLD = 512 * 1024 * 1024  # 512 MB
         if d_bytes > _MEMMAP_THRESHOLD:
             import tempfile
+            _purge_stale_mmap_files()
             _d_tmpfile = tempfile.NamedTemporaryFile(suffix=".mmap", delete=True)
             D = np.memmap(_d_tmpfile, dtype=np.float64, mode="w+",
                           shape=(total_frames, ndim))

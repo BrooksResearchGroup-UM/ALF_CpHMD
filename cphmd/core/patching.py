@@ -155,6 +155,8 @@ class PatchConfig:
         # Check that we have valid input specification
         has_folder = self.input_folder is not None
         has_files = self.psf_file is not None and self.crd_file is not None
+        if self.toppar_dir is not None:
+            self.toppar_dir = Path(self.toppar_dir)
 
         if not has_folder and not has_files:
             raise ValueError(
@@ -448,6 +450,8 @@ class PatchParser:
 
         # Set all atoms for the residue (union of atoms + deleted atoms)
         self.atom_groups[resname] = list(all_atoms)
+        if ligand_def.reference_patch:
+            self.reference_patches[resname] = ligand_def.reference_patch.upper()
 
         print(f"Registered ligand {resname} with patches: {self.patches[resname]}")
         print(f"  Deleted atoms to include: {[a for p in deleted_atoms.values() for a in p]}")
@@ -968,7 +972,14 @@ def patch_system(config: PatchConfig) -> Path:
         write.psf_card(str(output_folder / "system_hmr.psf"))
         write.coor_card(str(output_folder / "system_hmr.crd"))
 
-    # Calculate box parameters
+    # Copy box.dat from input folder if it exists (preserves crystal type from solvation)
+    if config.input_folder is not None:
+        src_box = Path(config.input_folder) / "box.dat"
+        dst_box = output_folder / "box.dat"
+        if src_box.exists() and not dst_box.exists():
+            shutil.copy(src_box, dst_box)
+
+    # Calculate box parameters (only creates box.dat if not already present)
     _write_box_params(output_folder)
 
     # Write selection file

@@ -161,9 +161,9 @@ class NonBondedConfig:
             # Force shift (no PME)
             params["fshift"] = True
         else:  # fswitch
-            # Force switch (no PME)
+            # Force switch (no PME) — fswitch alone; do NOT add switch
+            # (CHARMM nbutil.F90:870 treats FSWI+SWIT as a conflict)
             params["fswitch"] = True
-            params["switch"] = True
 
         return params
 
@@ -253,10 +253,31 @@ def setup_crystal(
     import pycharmm.crystal as crystal
     import pycharmm.lingo as lingo
 
-    # Define crystal
-    dim_str = " ".join(map(str, box_params.dimensions))
-    ang_str = " ".join(map(str, box_params.angles))
-    lingo.charmm_script(f"CRYSTAL DEFINE {box_params.crystal_type} {dim_str} {ang_str}")
+    crystal_type = box_params.crystal_type.strip().upper()
+    a, b, c = box_params.dimensions
+    alpha, beta, gamma = box_params.angles
+
+    crystal.free()
+    if crystal_type in {"CUBIC", "CUBI"}:
+        crystal.define_cubic(a)
+    elif crystal_type in {"TETRAGONAL", "TETR"}:
+        crystal.define_tetra(a, c)
+    elif crystal_type in {"ORTHORHOMBIC", "ORTH"}:
+        crystal.define_ortho(a, b, c)
+    elif crystal_type in {"MONOCLINIC", "MONO"}:
+        crystal.define_mono(a, b, c, beta)
+    elif crystal_type in {"TRICLINIC", "TRIC"}:
+        crystal.define_tri(a, b, c, alpha, beta, gamma)
+    elif crystal_type in {"HEXAGONAL", "HEXA"}:
+        crystal.define_hexa(a, c)
+    elif crystal_type in {"RHOMBOHEDRAL", "RHOM"}:
+        crystal.define_rhombo(a, alpha)
+    elif crystal_type in {"OCTAHEDRAL", "OCTA"}:
+        crystal.define_octa(a)
+    elif crystal_type == "RHDO":
+        crystal.define_rhdo(a)
+    else:
+        raise ValueError(f"Unsupported crystal type for CHARMM setup: {box_params.crystal_type!r}")
 
     # Build crystal images
     crystal.build(nb_config.cutim)
@@ -327,8 +348,9 @@ def clear_block() -> None:
 
 def clear_crystal() -> None:
     """Free crystal setup."""
-    import pycharmm.lingo as lingo
-    lingo.charmm_script("CRYSTAL FREE")
+    import pycharmm.crystal as crystal
+
+    crystal.free()
 
 
 def clear_noe() -> None:
@@ -371,6 +393,39 @@ def setup_shake(fast: bool = True, bonh: bool = True, tol: float = 1e-7) -> None
     """
     import pycharmm.shake as shake
     shake.on(fast=fast, bonh=bonh, param=True, tol=tol)
+
+
+def get_gpu_id(rank: int) -> int:
+    """Return the CUDA virtual device index for an MPI rank.
+
+    CUDA remaps CUDA_VISIBLE_DEVICES to 0-based virtual indices, so
+    ``blade on gpuid`` takes the virtual index = local_rank % n_visible.
+    Detects local rank from MPI environment variables (OpenMPI, SLURM,
+    Intel MPI, MPICH); falls back to global rank.
+    """
+    import os
+
+    local_rank = None
+    for env_var in [
+        "OMPI_COMM_WORLD_LOCAL_RANK",
+        "SLURM_LOCALID",
+        "MPI_LOCALRANKID",
+        "PMI_LOCAL_RANK",
+    ]:
+        if env_var in os.environ:
+            local_rank = int(os.environ[env_var])
+            break
+
+    if local_rank is None:
+        local_rank = rank
+
+    cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES", "")
+    if cuda_visible:
+        n_visible = len([g for g in cuda_visible.split(",") if g.strip()])
+        if n_visible > 0:
+            return local_rank % n_visible
+
+    return local_rank
 
 
 def enable_blade(gpuid: int = 0) -> None:

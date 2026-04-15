@@ -1,0 +1,6 @@
+output_dir: pdb
+output_name: input
+source_type: auto
+include_solvent: false
+use_bio_assembly: true
+drop_ligands: false

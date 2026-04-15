@@ -1,10 +1,11 @@
-# 02 - Protein Lysozyme (Multi-Site CpHMD)
+# 10 - Protein Lysozyme (Multi-Site CpHMD)
 
 Hen egg-white lysozyme (2LZT) with all titratable residues at pH 4.0.
 
 This example demonstrates CpHMD on a full protein with multiple titratable
-sites and inter-site coupling. No build step is needed — the pre-built
-protein PSF/CRD are provided in `pdb/`.
+sites and inter-site coupling. The workflow fetches 2LZT from RCSB, prepares
+`PSF/CRD/PDB` inputs with CRIMM, solvates the system, patches titratable
+residues, and then runs ALF.
 
 ## Titratable Residues
 
@@ -23,13 +24,16 @@ Key validation targets:
 ## Workflow
 
 ```bash
-# Step 1: Solvate the protein
+# Step 1: Fetch 2LZT from RCSB and prepare PSF/CRD/PDB inputs
+python run.py prepare
+
+# Step 2: Solvate the protein
 python run.py solvate
 
-# Step 2: Apply titratable patches (all residues)
+# Step 3: Apply titratable patches (all residues)
 python run.py patch
 
-# Step 3: Run ALF simulation
+# Step 4: Run ALF simulation
 python run.py alf
 
 # Or run all steps:
@@ -39,7 +43,8 @@ python run.py all
 ## SLURM Submission
 
 ```bash
-# Run solvation + patching locally (fast, no GPU needed):
+# Run preparation, solvation, and patching locally:
+python run.py prepare
 python run.py solvate
 python run.py patch
 
@@ -50,18 +55,21 @@ sbatch submit.sh alf
 ## Configuration
 
 See `cphmd_config.yaml` for all settings. Key options:
-- `alf.pH: true` — enable CpHMD (effective pH auto-computed from macro-pKa values)
-- `alf.coupling: 1` — full inter-site coupling (c/x/s terms)
-- `patch.selected_residues: []` — empty list patches all titratable residues
-- `alf.hh_plots: true` — generate Henderson-Hasselbalch titration curves
+- `prepare.input_source: 2lzt` - fetch hen egg-white lysozyme from RCSB
+- `prepare.drop_ligands: true` - remove nitrate heterogens before topology generation
+- `alf.pH: true` - enable CpHMD (effective pH auto-computed from macro-pKa values)
+- `alf.coupling: 1` - full inter-site coupling (c/x/s terms)
+- `patch.selected_residues: []` - empty list patches all titratable residues
+- `alf.hh_plots: true` - generate Henderson-Hasselbalch titration curves
 
 ## Files
 
 ```
-02_protein_lysozyme/
+10_protein_lysozyme/
 ├── pdb/
-│   ├── molecule.psf          # Pre-built lysozyme PSF
-│   └── molecule.crd          # Pre-built lysozyme coordinates
+│   ├── molecule.psf          # Prepared lysozyme PSF from RCSB 2LZT
+│   ├── molecule.crd          # Prepared lysozyme coordinates
+│   └── molecule.pdb          # Prepared visualization PDB
 ├── cphmd_config.yaml         # Workflow configuration
 ├── run.py                    # Unified workflow runner
 ├── submit.sh                 # SLURM submission template
@@ -73,6 +81,10 @@ See `cphmd_config.yaml` for all settings. Key options:
 After solvation and patching:
 ```
 solvated/
+├── solvated.psf, solvated.crd, solvated.pdb
+├── waterbox.psf, waterbox.crd
+├── molecule.psf, molecule.crd
+├── box.dat
 └── prep/
     ├── system.psf, system.crd     # Patched structure
     ├── system_hmr.psf/crd         # HMR variant

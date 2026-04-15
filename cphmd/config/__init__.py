@@ -3,6 +3,7 @@
 from .loader import (
     config_to_alf,
     config_to_patch,
+    config_to_prepare_pdb,
     config_to_solvation,
     load_yaml_config,
     merge_configs,
@@ -12,6 +13,7 @@ from .loader import (
 __all__ = [
     "config_to_alf",
     "config_to_patch",
+    "config_to_prepare_pdb",
     "config_to_solvation",
     "load_yaml_config",
     "merge_configs",

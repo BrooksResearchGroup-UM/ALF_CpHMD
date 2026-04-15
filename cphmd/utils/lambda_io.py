@@ -220,7 +220,7 @@ def read_lambda(filepath: str | Path) -> np.ndarray:
     """Read lambda file (auto-detect format).
 
     Args:
-        filepath: Path to lambda file (.lmd or .parquet)
+        filepath: Path to lambda file (.lmd, .parquet, or .dat)
 
     Returns:
         Lambda data array
@@ -232,6 +232,11 @@ def read_lambda(filepath: str | Path) -> np.ndarray:
         return data
     elif filepath.suffix == '.parquet':
         return read_lambda_parquet(filepath)
+    elif filepath.suffix == '.dat':
+        data = np.loadtxt(filepath)
+        if data.ndim == 1:
+            data = data.reshape(1, -1)
+        return data
     else:
         raise ValueError(f"Unknown lambda file format: {filepath.suffix}")
 
@@ -378,20 +383,24 @@ def read_lambda_columns(
 
 
 def find_lambda_files(data_dir: Path, pattern: str = "Lambda.*.*") -> list[Path]:
-    """Find lambda data files, preferring .parquet over .dat (backwards compat).
+    """Find lambda data files, preferring .parquet, then .dat, then .lmd.
 
     Args:
         data_dir: Directory containing lambda files.
         pattern: Base glob pattern without extension.
 
     Returns:
-        Sorted list of lambda file paths (.parquet preferred, .dat fallback).
+        Sorted list of lambda file paths.
     """
+    data_dir = Path(data_dir)
     parquet_files = sorted(data_dir.glob(f"{pattern}.parquet"))
     if parquet_files:
         return parquet_files
     # Fallback to text format for old runs
-    return sorted(data_dir.glob(f"{pattern}.dat"))
+    dat_files = sorted(data_dir.glob(f"{pattern}.dat"))
+    if dat_files:
+        return dat_files
+    return sorted(data_dir.glob(f"{pattern}.lmd"))
 
 
 def convert_lambda_to_parquet(
@@ -426,7 +435,7 @@ def concatenate_lambda_files(
     """Concatenate multiple lambda files.
 
     Args:
-        filepaths: List of lambda files (can mix .lmd and .parquet)
+        filepaths: List of lambda files (can mix .lmd, .parquet, and .dat)
         output_path: Optional output path for combined parquet
 
     Returns:

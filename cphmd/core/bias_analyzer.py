@@ -80,8 +80,8 @@ class BiasAnalyzer:
         Returns:
             nf: Number of frames for WHAM
         """
-        # Number of analysis windows: config override or phase defaults (8, 4, 3)
-        defaults = {1: 8, 2: 4, 3: 3}
+        # Number of analysis windows: config override or phase defaults (7, 5, 3)
+        defaults = {1: 7, 2: 5, 3: 3}
         aw = getattr(self.config, "analysis_window", None)
         if aw is None:
             n_win = defaults[phase]
@@ -200,19 +200,19 @@ class BiasAnalyzer:
         return cut_params
 
     def _phase1_cutoffs(self, run_idx: int, xs_enabled: bool = False) -> dict:
-        """Compute fixed staged cutoffs for Phase 1."""
+        """Compute fixed staged cutoffs for Phase 1.
+
+        Note: cutx/cuts are always enabled from the start (no coverage gate).
+        """
         if run_idx < 20:
             cutb, cutc = 5.0, 20.0
         else:
             cutb, cutc = 2.5, 10.0
-        if xs_enabled:
-            cutx = self.config.phase1_xs_cutoff
-            cuts = self.config.phase1_xs_cutoff
-        else:
-            cutx, cuts = 0.0, 0.0
+        cutx = self.config.phase1_xs_cutoff
+        cuts = self.config.phase1_xs_cutoff
         cutt, cutu = 0.0, 0.0
-        xs_tag = f" cutx=cuts={cutx:.1f}" if xs_enabled else ""
-        print(f"  Phase 1 cutoffs: cutb={cutb:.1f} cutc={cutc:.1f}{xs_tag} (fixed, run {run_idx})")
+        print(f"  Phase 1 cutoffs: cutb={cutb:.1f} cutc={cutc:.1f}"
+              f" cutx=cuts={cutx:.1f} (fixed, run {run_idx})")
 
         cut_params = {
             "cutb": cutb, "cutc": cutc, "cutx": cutx, "cuts": cuts,
@@ -361,6 +361,11 @@ class BiasAnalyzer:
         log_file = analysis_dir / "analysis.log"
         is_distributed = self._nranks > 1 and self._comm is not None
         is_rank0 = self._rank == 0
+        if is_distributed and method != "wham":
+            raise ValueError(
+                f"analysis_method='{method}' is not supported in distributed MPI mode. "
+                "Use analysis_method='wham' or run single-rank analysis."
+            )
 
         for attempt in range(max_attempts):
             # --- Log attempt (rank 0 only) ---
@@ -376,12 +381,6 @@ class BiasAnalyzer:
                 if is_distributed:
                     # Distributed: ALL ranks must enter _run_wham together
                     # (MPI collectives inside require all ranks to participate).
-                    # Only WHAM supports distributed mode; warn if user expected otherwise.
-                    if method != "wham" and is_rank0:
-                        logger.warning(
-                            "analysis_method='%s' is not supported in distributed MPI mode; "
-                            "falling back to WHAM", method
-                        )
                     # Log redirect must not prevent entry — open log defensively.
                     _log_f = None
                     _redirect_ctx = None

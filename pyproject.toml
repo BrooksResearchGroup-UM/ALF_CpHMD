@@ -21,6 +21,7 @@ dependencies = [
 
 [project.optional-dependencies]
 mpi = ["mpi4py>=3.1"]
+setup = ["crimm"]
 dev = [
     "pytest>=7.0",
     "pytest-cov",
@@ -41,7 +42,7 @@ where = ["."]
 include = ["cphmd*"]
 
 [tool.setuptools.package-data]
-"cphmd.config" = ["*.yaml"]
+"cphmd.config" = ["*.yaml", "defaults/*.yaml"]
 
 [tool.black]
 line-length = 100
@@ -50,6 +51,7 @@ target-version = ["py39"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-v --tb=short"
+norecursedirs = ["tests/tests"]
 markers = [
     "integration: end-to-end tests requiring pyCHARMM and example systems",
 ]

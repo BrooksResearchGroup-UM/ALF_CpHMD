@@ -19,10 +19,18 @@ import itertools
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 
+from cphmd.core.config_compat import (
+    deprecated_getattr,
+    deprecated_setattr,
+    init_dataclass_with_aliases,
+)
+
 _CHARMM_MAX_LINE = 200
+_BLOCK_GENERATOR_CONFIG_ALIASES = {"pH": "ph"}
 
 
 def _wrap_charmm_line(line: str, max_len: int = _CHARMM_MAX_LINE) -> str:
@@ -48,7 +56,7 @@ def _wrap_cats_line(atom: str, segid: str, resid: str, resname_clause: str) -> s
     return _wrap_charmm_line(full)
 
 
-@dataclass
+@dataclass(init=False)
 class BlockGeneratorConfig:
     """Configuration for block/restraint file generation.
 
@@ -66,12 +74,27 @@ class BlockGeneratorConfig:
     include_hydrogens: bool = False
     electrostatics: str = "pmeex"
     temperature: float = 298.15
-    pH: float = 7.0
+    ph: float = 7.0
     variables_dir: str = "variables"
     lambda_mass: float = 12.0    # Lambda mass in amu·Å² (BIMLAM)
     lambda_fbeta: float = 5.0    # Lambda Langevin friction in ps⁻¹ (BIBLAM)
     chi_offset: float | None = None   # LDBV class 8 REF (default: 0.017)
     omega_decay: float | None = None  # LDBV class 10 REF, negative (default: -5.56)
+
+    def __init__(self, input_folder: str, **kwargs: Any) -> None:
+        if "input_folder" in kwargs:
+            raise TypeError("BlockGeneratorConfig got multiple values for 'input_folder'.")
+        kwargs["input_folder"] = input_folder
+        init_dataclass_with_aliases(
+            self, BlockGeneratorConfig, kwargs, _BLOCK_GENERATOR_CONFIG_ALIASES
+        )
+        self.__post_init__()
+
+    def __getattr__(self, name: str) -> Any:
+        return deprecated_getattr(self, name, _BLOCK_GENERATOR_CONFIG_ALIASES)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        deprecated_setattr(self, name, value, _BLOCK_GENERATOR_CONFIG_ALIASES)
 
     def __post_init__(self):
         self.input_folder = Path(self.input_folder)
@@ -161,12 +184,11 @@ def _generate_block_str(
     lambda_fbeta: float = 5.0,
     chi_offset: float | None = None,
     omega_decay: float | None = None,
-    pH: float = 7.0,
+    ph: float = 7.0,
 ) -> str:
     """Generate MSLD BLOCK command string."""
     from .bias_constants import derive_bias_constants
     constants = derive_bias_constants(fnex, chi_offset=chi_offset, omega_decay=omega_decay)
-    lines = []
 
     # Initialize BLOCK components
     block_count = 1
@@ -269,7 +291,8 @@ def _generate_block_str(
             s_key = f"ss1s{s1}s1s{s2}"
             s_val = var_df.get(s_key, 0.0)
             ldbv_lines.append(
-                f"LDBV {{idx:<3}} {b1:>4} {b2:>4} {8:>4} {constants.chi_offset:>8.5f} {s_val:>10} {0:>5}"
+                f"LDBV {{idx:<3}} {b1:>4} {b2:>4} {8:>4} "
+                f"{constants.chi_offset:>8.5f} {s_val:>10} {0:>5}"
             )
 
         ldbv_lines.append("")
@@ -281,7 +304,8 @@ def _generate_block_str(
             x_key = f"xs1s{s1}s1s{s2}"
             x_val = var_df.get(x_key, 0.0)
             ldbv_lines.append(
-                f"LDBV {{idx:<3}} {b1:>4} {b2:>4} {10:>4} {constants.omega_decay:>8} {x_val:>10} {0:>5}"
+                f"LDBV {{idx:<3}} {b1:>4} {b2:>4} {10:>4} "
+                f"{constants.omega_decay:>8} {x_val:>10} {0:>5}"
             )
 
         ldbv_lines.append("")
@@ -329,7 +353,7 @@ def _generate_block_str(
     output.append("!------------------------------------------")
     output.append("!Setup initial pH from PHMD")
     output.append("!------------------------------------------\n")
-    output.append(f"phmd pH {pH}\n")
+    output.append(f"phmd pH {ph}\n")
 
     output.append("!------------------------------------------")
     output.append("!Soft Core Potential")
@@ -364,7 +388,9 @@ def _generate_block_str(
     output.append(msld_line)
 
     output.append("!------------------------------------------")
-    output.append("! Constructs the interaction matrix and assigns lambda & theta values for each block")
+    output.append(
+        "! Constructs the interaction matrix and assigns lambda & theta values for each block"
+    )
     output.append("!------------------------------------------\n")
     output.append("msma\n")
 
@@ -391,7 +417,9 @@ def _generate_block_str(
     output.append("! Enables bias potential on lambda variables")
     output.append("! INDEX, I,J(Bias between I & J)), CLASS, REF, CFORCE, NPOWER, Identity flag")
     output.append("! CLASS: Functional Form of bias, REF: Cut off for physical lambda states")
-    output.append("! NPOWER: Power of functional form, CFORCE: kbias on Fvar, residue specific value")
+    output.append(
+        "! NPOWER: Power of functional form, CFORCE: kbias on Fvar, residue specific value"
+    )
     output.append("!------------------------------------------\n")
     output.append(f"LDBI {ldbv_count}")
     output.extend(indexed_ldbv)
@@ -528,7 +556,7 @@ def generate_block_files(config: BlockGeneratorConfig) -> BlockGeneratorResult:
         lambda_fbeta=config.lambda_fbeta,
         chi_offset=config.chi_offset,
         omega_decay=config.omega_decay,
-        pH=config.pH,
+        ph=config.ph,
     )
 
     block_file = config.input_folder / "prep" / "block.str"

@@ -18,15 +18,17 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-# CALL line: CALL <idx> SELEct segid <segid> .and. resid <resid> .and. resname <resname> end
+# Standard CALL line:
+# CALL <idx> SELEct segid <segid> .and. resid <resid> .and. resname <resname> end
 _CALL_RE = re.compile(
     r"^\s*CALL\s+(\d+)\s+SELEct\s+.*segid\s+(\w+)\s+.*resid\s+(\d+)\s+.*resname\s+(\w+)\s+end",
     re.IGNORECASE,
 )
 
-# LDIN line: LDIN <idx> <lambda_init> <val> <val> <val> <val> <tag> [<pKa>]
-_LDIN_RE = re.compile(
-    r"^\s*LDIN\s+(\d+)\s+(\S+)\s+\S+\s+\S+\s+\S+\s+\S+\s+(\S+)\s*(\S+)?",
+# Legacy msld-py-prep CALL line:
+# CALL <idx> sele site<site>_sub<sub> show end
+_LEGACY_CALL_RE = re.compile(
+    r"^\s*CALL\s+(\d+)\s+SELE(?:ct)?\s+site(\d+)_sub(\d+)\b",
     re.IGNORECASE,
 )
 
@@ -77,8 +79,8 @@ def parse_block_str(block_path: Path) -> dict[str, SiteInfo]:
 
     lines = block_path.read_text().splitlines()
 
-    # Parse CALL lines: idx -> (segid, resid, resname)
-    call_data: dict[int, tuple[str, str, str]] = {}
+    # Parse CALL lines: idx -> metadata
+    call_data: dict[int, dict[str, str | int]] = {}
     # Parse LDIN lines: idx -> (lambda_init, tag, model_pka)
     ldin_data: dict[int, tuple[float, str, float | None]] = {}
 
@@ -90,36 +92,50 @@ def parse_block_str(block_path: Path) -> dict[str, SiteInfo]:
         m = _CALL_RE.match(stripped)
         if m:
             idx = int(m.group(1))
-            segid = m.group(2)
-            resid = m.group(3)
-            resname = m.group(4)
-            call_data[idx] = (segid, resid, resname)
+            call_data[idx] = {
+                "segid": m.group(2),
+                "resid": m.group(3),
+                "resname": m.group(4),
+                "group": m.group(3),
+            }
             continue
 
-        m = _LDIN_RE.match(stripped)
+        m = _LEGACY_CALL_RE.match(stripped)
         if m:
             idx = int(m.group(1))
-            lambda_init = float(m.group(2))
-            tag = m.group(3).upper()
-            model_pka = float(m.group(4)) if m.group(4) and tag != "NONE" else None
+            site = int(m.group(2))
+            sub = int(m.group(3))
+            call_data[idx] = {
+                "segid": "LIG",
+                "resid": str(site),
+                "resname": f"site{site}_sub{sub}",
+                "group": f"site{site}",
+                "legacy_site": site,
+            }
+            continue
+
+        parsed_ldin = _parse_ldin_line(stripped)
+        if parsed_ldin is not None:
+            idx, lambda_init, tag, model_pka = parsed_ldin
             ldin_data[idx] = (lambda_init, tag, model_pka)
 
     # Skip LDIN index 1 (environment block).
     # Group by resid: consecutive CALL indices sharing the same resid form a site.
     sites_raw: dict[str, list[dict]] = {}
-    segid_map: dict[str, str] = {}
+    site_meta: dict[str, dict[str, str | int]] = {}
     for idx in sorted(call_data.keys()):
-        segid, resid, resname = call_data[idx]
+        call = call_data[idx]
         if idx not in ldin_data:
             continue
         lambda_init, tag, model_pka = ldin_data[idx]
-        if resid not in sites_raw:
-            sites_raw[resid] = []
-            segid_map[resid] = segid
-        sites_raw[resid].append(
+        group = str(call["group"])
+        if group not in sites_raw:
+            sites_raw[group] = []
+            site_meta[group] = call
+        sites_raw[group].append(
             {
                 "idx": idx,
-                "resname": resname,
+                "resname": str(call["resname"]),
                 "lambda_init": lambda_init,
                 "tag": tag,
                 "model_pka": model_pka,
@@ -131,8 +147,10 @@ def parse_block_str(block_path: Path) -> dict[str, SiteInfo]:
     site_counter = 0
     resid_seen: dict[str, int] = {}
 
-    for resid, raw_states in sites_raw.items():
+    for group, raw_states in sites_raw.items():
         site_counter += 1
+        meta = site_meta[group]
+        resid = str(meta["resid"])
         n_states = len(raw_states)
 
         # Determine slope direction from first non-NONE tag.
@@ -170,7 +188,9 @@ def parse_block_str(block_path: Path) -> dict[str, SiteInfo]:
         ]
 
         # Handle duplicate resids.
-        if resid in resid_seen:
+        if "legacy_site" in meta:
+            key = f"site{meta['legacy_site']}"
+        elif resid in resid_seen:
             resid_seen[resid] += 1
             key = f"{resid}_site{resid_seen[resid]}"
         else:
@@ -179,7 +199,7 @@ def parse_block_str(block_path: Path) -> dict[str, SiteInfo]:
 
         result[key] = SiteInfo(
             resid=resid,
-            segid=segid_map[resid],
+            segid=str(meta["segid"]),
             site_index=site_counter,
             n_states=n_states,
             main_slope_sign=main_slope_sign,
@@ -201,3 +221,43 @@ def parse_block_str(block_path: Path) -> dict[str, SiteInfo]:
         )
 
     return result
+
+
+def _parse_ldin_line(line: str) -> tuple[int, float, str, float | None] | None:
+    """Parse standard LDIN lines and legacy ``!RX!`` annotations."""
+    if not line.lower().startswith("ldin"):
+        return None
+
+    if "!RX!" in line:
+        head, rx = line.split("!RX!", 1)
+        head_tokens = head.split()
+        if len(head_tokens) < 3:
+            return None
+        idx = int(head_tokens[1])
+        lambda_init = _parse_float(head_tokens[2])
+        rx_tokens = rx.split()
+        tag = rx_tokens[0].upper() if rx_tokens else "NONE"
+        model_pka = _parse_model_pka(tag, rx_tokens[1] if len(rx_tokens) > 1 else None)
+        return idx, lambda_init, tag, model_pka
+
+    tokens = line.split()
+    if len(tokens) < 3:
+        return None
+    idx = int(tokens[1])
+    lambda_init = _parse_float(tokens[2])
+    tag = tokens[7].upper() if len(tokens) > 7 else "NONE"
+    model_pka = _parse_model_pka(tag, tokens[8] if len(tokens) > 8 else None)
+    return idx, lambda_init, tag, model_pka
+
+
+def _parse_model_pka(tag: str, token: str | None) -> float | None:
+    if tag == "NONE" or token is None:
+        return None
+    return _parse_float(token)
+
+
+def _parse_float(token: str) -> float:
+    try:
+        return float(token)
+    except ValueError:
+        return float("nan")

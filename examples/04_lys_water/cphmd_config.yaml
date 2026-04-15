@@ -30,5 +30,4 @@ alf:
   auto_phase_switch: true
   auto_stop: true
   restrain_hydrogens: true
-  no_pka_bias: true
   g_imp_bins: [20, 32, 32]
