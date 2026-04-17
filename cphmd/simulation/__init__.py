@@ -3,6 +3,7 @@
 from .archiver import Archiver
 from .checkpoint import CheckpointManager, CheckpointMismatchError
 from .context import LoopHooks, LoopState, RunContext
+from .loop import SimulationLoop
 from .shrinker import LambdaPrecision, ShrinkerMetadata, write_segment_parquet
 
 __all__ = [
@@ -13,6 +14,7 @@ __all__ = [
     "LoopHooks",
     "LoopState",
     "RunContext",
+    "SimulationLoop",
     "ShrinkerMetadata",
     "write_segment_parquet",
 ]
