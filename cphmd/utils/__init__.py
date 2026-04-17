@@ -6,6 +6,7 @@ Provides utilities for:
 - File operations
 """
 
+from . import native_fingerprint, seeds
 from .charmm_path import qpath
 from .lambda_io import (
     LambdaFileMetadata,
@@ -23,6 +24,9 @@ from .lambda_io import (
 __all__ = [
     # CHARMM path quoting
     "qpath",
+    # Invariant helpers
+    "seeds",
+    "native_fingerprint",
     # Lambda I/O
     "LambdaFileMetadata",
     "read_lambda",
