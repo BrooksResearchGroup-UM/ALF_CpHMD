@@ -1,6 +1,38 @@
-"""cphmd.native -- thin pycharmm shim (Phase 0 placeholder).
+"""Native pyCHARMM boundary for CpHMD."""
 
-This package is the only intended boundary between CpHMD and pyCHARMM. Phase 0
-starts with package scaffolding; later tasks add the version guard, MPI helper,
-and error hierarchy.
-"""
+from importlib import metadata
+
+from packaging.version import InvalidVersion, Version
+
+PYCHARMM_MIN_VERSION = "0.5.1"
+
+
+def _require_pycharmm_version() -> Version:
+    """Validate that the installed pyCHARMM distribution meets the floor."""
+    try:
+        version_str = metadata.version("pycharmm")
+    except metadata.PackageNotFoundError as exc:
+        raise RuntimeError(
+            f"cphmd.native requires pyCHARMM >= {PYCHARMM_MIN_VERSION}, "
+            "but the 'pycharmm' distribution is not installed."
+        ) from exc
+
+    try:
+        version = Version(version_str)
+    except InvalidVersion as exc:
+        raise RuntimeError(
+            f"cphmd.native requires pyCHARMM >= {PYCHARMM_MIN_VERSION}, "
+            f"but the installed pycharmm version {version_str!r} is invalid."
+        ) from exc
+
+    minimum = Version(PYCHARMM_MIN_VERSION)
+    if version < minimum:
+        raise RuntimeError(
+            f"cphmd.native requires pyCHARMM >= {PYCHARMM_MIN_VERSION}, "
+            f"but found {version_str}."
+        )
+
+    return version
+
+
+PYCHARMM_VERSION = _require_pycharmm_version()
