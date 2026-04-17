@@ -51,8 +51,10 @@ class ShrinkerMetadata:
         self.nsubsites = tuple(int(value) for value in self.nsubsites)
         if len(self.nsubsites) != self.nblocks:
             raise ValueError("nsubsites length must equal nblocks")
-        if any(value < 1 or value > self.nsites for value in self.nsubsites):
-            raise ValueError("nsubsites values must be in [1, nsites]")
+        if self.nsubsites[0] != 0:
+            raise ValueError("nsubsites must start with 0 for the environment block")
+        if any(value < 1 or value > self.nsites for value in self.nsubsites[1:]):
+            raise ValueError("nsubsites values after the environment block must be in [1, nsites]")
 
     def to_parquet_kv(self) -> dict[str, str]:
         metadata = {
@@ -161,10 +163,15 @@ def write_segment_parquet(
         raise ValueError("timestamps length must match lambda_matrix rows")
     if len(column_headers) != ncols:
         raise ValueError("column_headers length must match lambda_matrix columns")
-    if metadata.nblocks != ncols:
-        raise ValueError("metadata.nblocks must equal the number of lambda columns")
-    if len(metadata.nsubsites) != ncols:
-        raise ValueError("metadata.nsubsites length must equal the number of lambda columns")
+    if metadata.nblocks != ncols + 1:
+        raise ValueError(
+            "metadata.nblocks must equal the number of lambda columns plus the "
+            "environment block"
+        )
+    if len(metadata.nsubsites) != ncols + 1:
+        raise ValueError(
+            "metadata.nsubsites length must equal lambda columns plus the environment block"
+        )
 
     _validate_column_headers(column_headers)
 

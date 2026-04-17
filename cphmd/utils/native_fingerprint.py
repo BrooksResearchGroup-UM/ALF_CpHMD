@@ -70,6 +70,36 @@ def _default_repr(field: Field) -> str:
     return "<missing>"
 
 
+def _class_member_entries(module_name: str, qualname: str, cls: type) -> list[_SurfaceEntry]:
+    entries: list[_SurfaceEntry] = []
+    for member_name, member in sorted(cls.__dict__.items()):
+        if member_name.startswith("_"):
+            continue
+
+        member_qualname = f"{qualname}.{member_name}"
+        if isinstance(member, staticmethod):
+            payload = f"signature={_signature_repr(member.__func__)}"
+            entries.append(_SurfaceEntry(module_name, "staticmethod", member_qualname, payload))
+        elif isinstance(member, classmethod):
+            payload = f"signature={_signature_repr(member.__func__)}"
+            entries.append(_SurfaceEntry(module_name, "classmethod", member_qualname, payload))
+        elif isinstance(member, property):
+            fget = _callable_repr(member.fget) if member.fget is not None else "<missing>"
+            fset = _callable_repr(member.fset) if member.fset is not None else "<missing>"
+            entries.append(
+                _SurfaceEntry(module_name, "property", member_qualname, f"fget={fget};fset={fset}")
+            )
+        elif inspect.isfunction(member):
+            payload = f"signature={_signature_repr(member)}"
+            entries.append(_SurfaceEntry(module_name, "method", member_qualname, payload))
+        else:
+            entries.append(
+                _SurfaceEntry(module_name, "class-attribute", member_qualname, repr(member))
+            )
+
+    return entries
+
+
 def _iter_exported_names(module: ModuleType) -> list[str]:
     exported = module.__dict__.get("__all__")
     if exported is not None:
@@ -112,42 +142,41 @@ def _module_surface(module: ModuleType) -> list[_SurfaceEntry]:
             continue
 
         if inspect.isfunction(value) or inspect.ismethod(value) or inspect.isbuiltin(value):
-            if explicit_exports or getattr(value, "__module__", None) == module.__name__:
-                surface.append(
-                    _SurfaceEntry(
-                        module.__name__,
-                        "function",
-                        qualname,
-                        f"signature={_signature_repr(value)}",
-                    )
+            surface.append(
+                _SurfaceEntry(
+                    module.__name__,
+                    "function",
+                    qualname,
+                    f"signature={_signature_repr(value)}",
                 )
+            )
             continue
 
         if inspect.isclass(value):
-            if explicit_exports or getattr(value, "__module__", None) == module.__name__:
-                class_signature = f"signature={_signature_repr(value)}"
-                bases = (
-                    ",".join(base.__qualname__ for base in value.__bases__ if base is not object)
-                    or "object"
-                )
-                payload = f"{class_signature};bases={bases}"
-                surface.append(_SurfaceEntry(module.__name__, "class", qualname, payload))
+            class_signature = f"signature={_signature_repr(value)}"
+            bases = (
+                ",".join(base.__qualname__ for base in value.__bases__ if base is not object)
+                or "object"
+            )
+            payload = f"{class_signature};bases={bases}"
+            surface.append(_SurfaceEntry(module.__name__, "class", qualname, payload))
+            surface.extend(_class_member_entries(module.__name__, qualname, value))
 
-                if dataclasses.is_dataclass(value):
-                    for field in dataclasses.fields(value):
-                        field_name = f"{qualname}.{field.name}"
-                        payload = (
-                            f"type={_annotation_repr(field.type)};"
-                            f"default={_default_repr(field)}"
+            if dataclasses.is_dataclass(value):
+                for field in dataclasses.fields(value):
+                    field_name = f"{qualname}.{field.name}"
+                    payload = (
+                        f"type={_annotation_repr(field.type)};"
+                        f"default={_default_repr(field)}"
+                    )
+                    surface.append(
+                        _SurfaceEntry(
+                            module.__name__,
+                            "dataclass-field",
+                            field_name,
+                            payload,
                         )
-                        surface.append(
-                            _SurfaceEntry(
-                                module.__name__,
-                                "dataclass-field",
-                                field_name,
-                                payload,
-                            )
-                        )
+                    )
             continue
 
         surface.append(_SurfaceEntry(module.__name__, "constant", qualname, repr(value)))

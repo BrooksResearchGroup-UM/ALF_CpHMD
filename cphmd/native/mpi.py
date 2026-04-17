@@ -48,10 +48,10 @@ def gpu_id_for_rank(comm) -> int:
 
 def _local_rank(comm) -> int | None:
     for env_var in (
-        "SLURM_LOCALID",
         "OMPI_COMM_WORLD_LOCAL_RANK",
         "MPI_LOCALRANKID",
         "PMI_LOCAL_RANK",
+        "SLURM_LOCALID",
     ):
         value = os.environ.get(env_var)
         if value is not None:
@@ -59,7 +59,25 @@ def _local_rank(comm) -> int | None:
                 return int(value)
             except ValueError as exc:
                 raise MPIInitError(f"Invalid {env_var} value {value!r}") from exc
+    shared_rank = _shared_memory_local_rank(comm)
+    if shared_rank is not None:
+        return shared_rank
     return None
+
+
+def _shared_memory_local_rank(comm) -> int | None:
+    try:
+        mpi_module = importlib.import_module("mpi4py.MPI")
+        local_comm = comm.Split_type(mpi_module.COMM_TYPE_SHARED)
+    except Exception:
+        return None
+
+    try:
+        return local_comm.Get_rank()
+    finally:
+        free = getattr(local_comm, "Free", None)
+        if free is not None:
+            free()
 
 
 def _fallback_local_rank(comm, visible_devices: list[str]) -> int:
