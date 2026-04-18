@@ -38,6 +38,11 @@ class Archiver:
             )
 
         label = self._archive_label(state)
+        if not 0 <= label < len(self.ctx.replica_ph_values):
+            raise ValueError(
+                "replica_label must be within replica_ph_values for REX archive metadata "
+                f"(got {label}, ladder size {len(self.ctx.replica_ph_values)})"
+            )
         return ShrinkerMetadata(
             ph=self.ctx.replica_ph_values[label],
             nblocks=len(self.ctx.lambda_headers) + 1,
