@@ -95,6 +95,8 @@ class LoopState:
         )
 
     def with_initial_label(self, replica_label: int) -> "LoopState":
+        if self.replica_label is not None:
+            return self
         return replace(self, replica_label=replica_label)
 
     def with_rex_result(
