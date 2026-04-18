@@ -11,7 +11,6 @@ PYCHARMM_IMPORT_ALLOWLIST = (
     "cphmd/core/patching.py",
     "cphmd/core/production_runner.py",
     "cphmd/core/replica_exchange.py",
-    "cphmd/setup/legacy_convert.py",
 )
 
 BARE_RNG_ALLOWLIST = (

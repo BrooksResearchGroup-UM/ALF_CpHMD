@@ -19,6 +19,9 @@ from typing import Any
 
 import numpy as np
 
+from cphmd.native import system
+from cphmd.native.types import AtomSelection
+
 MANIFEST_VERSION = 5
 _REQUIRED_PREP_FILES = (
     "system.psf",
@@ -433,9 +436,7 @@ def _write_patches_dat(path: Path, rows: list[dict[str, str]]) -> None:
     with path.open("w") as f:
         f.write("SEGID,RESID,PATCH,SELECT,ATOMS,TAG\n")
         for row in rows:
-            f.write(
-                "{SEGID},{RESID},{PATCH},{SELECT},{ATOMS},{TAG}\n".format(**row)
-            )
+            f.write("{SEGID},{RESID},{PATCH},{SELECT},{ATOMS},{TAG}\n".format(**row))
 
 
 def _write_box_files(output_prep: Path, box: float) -> None:
@@ -503,6 +504,19 @@ def _write_scalar_files(
         (output_prep / key).write_text(f"{value}\n")
 
 
+def _load_replacement_toppar(toppar_dir: Path, topology_files: list[str]) -> None:
+    prm_files = [f for f in topology_files if f.endswith(".prm")]
+    rtf_files = [f for f in topology_files if f.endswith(".rtf")]
+    str_files = [f for f in topology_files if f.endswith(".str")]
+
+    for index, filename in enumerate(rtf_files):
+        system.read_rtf(toppar_dir / filename, append=index > 0)
+    for index, filename in enumerate(prm_files):
+        system.read_param(toppar_dir / filename, append=index > 0)
+    for filename in str_files:
+        system.stream_file(toppar_dir / filename)
+
+
 def _write_legacy_structure(
     config: LegacyConvertConfig,
     prep_dir: Path,
@@ -512,33 +526,17 @@ def _write_legacy_structure(
     metadata: LegacySetupMetadata,
     patch_rows: list[dict[str, str]],
 ) -> None:
-    try:
-        import pycharmm.lingo as lingo
-        import pycharmm.settings as settings
-        import pycharmm.write as charmm_write
-    except ImportError as exc:
-        raise RuntimeError(
-            "Legacy conversion requires pyCHARMM when no valid converted cache exists."
-        ) from exc
-
-    from cphmd.core.charmm_utils import read_topology_files
-    from cphmd.utils.charmm_path import qpath
-
-    verbosity = settings.set_verbosity(0) if not config.debug else None
-    warn_level = settings.set_warn_level(-1) if not config.debug else None
-    settings.set_bomb_level(-2)
     if not config.debug:
-        lingo.charmm_script("prnlev -1")
-        lingo.charmm_script("wrnlev -1")
-    lingo.charmm_script("delete atom sele all end")
+        system.set_prnlev(-1)
+        system.set_warn_level(-1)
+    system.set_bomb_level(-2)
+    system.delete_atoms(AtomSelection())
 
     skip_legacy_toppar = config.replace_legacy_toppar
     if skip_legacy_toppar:
         if not config.toppar_dir or not config.topology_files:
-            raise ValueError(
-                "replace_legacy_toppar=True requires toppar_dir and topology_files."
-            )
-        read_topology_files(config.toppar_dir, config.topology_files, verbose=config.debug)
+            raise ValueError("replace_legacy_toppar=True requires toppar_dir and topology_files.")
+        _load_replacement_toppar(Path(config.toppar_dir), config.topology_files)
 
     script = _structure_only_script(
         setup_path.read_text(),
@@ -551,10 +549,10 @@ def _write_legacy_structure(
     processed = output_prep / ".legacy_structure_build.inp"
     processed.write_text(script)
     try:
-        lingo.charmm_script(f"stream {qpath(processed)}")
-        charmm_write.psf_card(str(output_prep / "system.psf"))
-        charmm_write.coor_card(str(output_prep / "system.crd"))
-        charmm_write.coor_pdb(str(output_prep / "system.pdb"))
+        system.stream_file(processed)
+        system.write_psf(output_prep / "system.psf")
+        system.write_coor(output_prep / "system.crd")
+        system.write_coor_pdb(output_prep / "system.pdb")
         _rewrite_legacy_state_resnames(output_prep / "system.psf", patch_rows, "psf")
         _rewrite_legacy_state_resnames(output_prep / "system.crd", patch_rows, "crd")
         _rewrite_legacy_state_resnames(output_prep / "system.pdb", patch_rows, "pdb")
@@ -562,13 +560,12 @@ def _write_legacy_structure(
             _rewrite_legacy_state_resnames(output_prep / "system_min.crd", patch_rows, "crd")
     finally:
         processed.unlink(missing_ok=True)
-        lingo.charmm_script("crystal free")
-        lingo.charmm_script("delete atom sele all end")
-        settings.set_bomb_level(0)
-        if warn_level is not None:
-            settings.set_warn_level(warn_level)
-        if verbosity is not None:
-            settings.set_verbosity(verbosity)
+        system.crystal_free()
+        system.delete_atoms(AtomSelection())
+        system.set_bomb_level(0)
+        if not config.debug:
+            system.set_warn_level(5)
+            system.set_prnlev(5)
 
 
 def _structure_only_script(
@@ -630,7 +627,10 @@ def _legacy_state_resname_queues(
 ) -> dict[tuple[str, str, str], deque[tuple[str, int]]]:
     assignments: dict[tuple[str, str, str], deque[tuple[str, int]]] = defaultdict(deque)
     for state_offset, row in enumerate(patch_rows, start=1):
-        key_prefix = (row["SEGID"].upper(), str(row["RESID"]),)
+        key_prefix = (
+            row["SEGID"].upper(),
+            str(row["RESID"]),
+        )
         patch = row["PATCH"].upper()
         for atom in row["ATOMS"].split():
             assignments[(*key_prefix, atom.upper())].append((patch, state_offset))
