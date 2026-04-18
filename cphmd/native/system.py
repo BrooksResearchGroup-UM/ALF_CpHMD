@@ -572,6 +572,7 @@ def nbonds_setup(
     inbfrq: int = -1,
     imgfrq: int = -1,
     nbxmod: int | None = None,
+    **extra: Any,
 ) -> None:
     params: dict[str, Any] = {
         "cutnb": cutnb,
@@ -598,6 +599,7 @@ def nbonds_setup(
         params["elec"] = elec
     if nbxmod is not None:
         params["nbxmod"] = nbxmod
+    params.update(extra)
     try:
         _pycharmm_root().NonBondedScript(**params).run()
     except Exception as exc:
@@ -624,9 +626,15 @@ def shake_off() -> None:
         raise wrap_exception(exc, SystemLoadError, "disabling SHAKE") from exc
 
 
-def blade_on() -> None:
+def blade_on(*, gpu_id: int | None = None, faster: bool = False) -> None:
     try:
-        _pycharmm_lingo().charmm_script("blade on")
+        lingo = _pycharmm_lingo()
+        if faster:
+            lingo.charmm_script("faster on")
+        if gpu_id is None:
+            lingo.charmm_script("blade on")
+        else:
+            lingo.charmm_script(f"blade on gpuid {gpu_id}")
     except Exception as exc:
         raise wrap_exception(exc, SystemLoadError, "enabling BLaDE") from exc
 

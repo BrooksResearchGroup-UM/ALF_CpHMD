@@ -10,13 +10,16 @@ that are used throughout the CpHMD workflow:
 - Selection definitions for titratable groups
 """
 
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import pandas as pd
 
 from cphmd.core import ElecType, VdwType
-from cphmd.utils.charmm_path import qpath
+from cphmd.native import system
+from cphmd.native.types import AtomSelection
+from cphmd.utils.charmm_path import qpath as qpath  # noqa: F401 - re-exported helper
 
 # pyCHARMM imports are deferred to function bodies so that mpi4py can
 # initialize MPI first (pyCHARMM also calls MPI_Init on import).
@@ -31,6 +34,7 @@ class BoxParameters:
         dimensions: Box dimensions [A, B, C] in Angstroms
         angles: Box angles [alpha, beta, gamma] in degrees
     """
+
     crystal_type: str
     dimensions: list[float]
     angles: list[float] = field(default_factory=lambda: [90.0, 90.0, 90.0])
@@ -61,6 +65,7 @@ class FFTParameters:
     Attributes:
         fftx, ffty, fftz: Grid dimensions
     """
+
     fftx: int
     ffty: int
     fftz: int
@@ -76,7 +81,6 @@ class FFTParameters:
             ffty=int(values[1]),
             fftz=int(values[2]),
         )
-
 
 
 @dataclass
@@ -104,6 +108,7 @@ class NonBondedConfig:
         - vswitch: Potential switch - baseline
         - vfswitch: Force switch - +4%
     """
+
     cutnb: float = 14.0
     cutim: float = 14.0
     ctofnb: float = 12.0
@@ -146,13 +151,15 @@ class NonBondedConfig:
         # Electrostatics method
         if self.elec_type in ("pmeex", "pmeon", "pmenn"):
             # PME methods
-            params.update({
-                "switch": True,
-                "ewald": True,
-                "pmewald": True,
-                "kappa": self.kappa,
-                "order": self.order,
-            })
+            params.update(
+                {
+                    "switch": True,
+                    "ewald": True,
+                    "pmewald": True,
+                    "kappa": self.kappa,
+                    "order": self.order,
+                }
+            )
             if self.fftx is not None:
                 params["fftx"] = self.fftx
                 params["ffty"] = self.ffty
@@ -168,6 +175,13 @@ class NonBondedConfig:
         return params
 
 
+def _stream_charmm_script(script: str, prefix: str = "charmm_utils") -> None:
+    with tempfile.TemporaryDirectory(prefix=f"cphmd_{prefix}_") as tmp:
+        script_path = Path(tmp) / "script.inp"
+        script_path.write_text(script.rstrip() + "\n")
+        system.stream_file(script_path)
+
+
 def read_topology_files(
     toppar_dir: Path | str,
     topology_files: list[str],
@@ -180,14 +194,10 @@ def read_topology_files(
         topology_files: List of file names relative to toppar_dir
         verbose: Whether to print verbose output
     """
-    import pycharmm.lingo as lingo
-    import pycharmm.read as read
-    import pycharmm.settings as settings
-
     toppar_dir = Path(toppar_dir)
 
     if not verbose:
-        lingo.charmm_script("prnlev -1")
+        system.set_prnlev(-1)
 
     # Categorize files
     rtf_files = [f for f in topology_files if f.endswith(".rtf")]
@@ -195,32 +205,32 @@ def read_topology_files(
     str_files = [f for f in topology_files if f.endswith(".str")]
 
     # Set permissive error handling
-    lingo.charmm_script("bomblevel -2")
-    settings.set_warn_level(-1)
+    system.set_bomb_level(-2)
+    system.set_warn_level(-1)
 
     # Load RTF files
     if rtf_files:
-        read.rtf(qpath(toppar_dir / rtf_files[0]))
+        system.read_rtf(toppar_dir / rtf_files[0])
         for f in rtf_files[1:]:
-            read.rtf(qpath(toppar_dir / f), append=True)
+            system.read_rtf(toppar_dir / f, append=True)
 
     # Load PRM files
     if prm_files:
-        read.prm(qpath(toppar_dir / prm_files[0]), flex=True)
+        system.read_param(toppar_dir / prm_files[0])
         for f in prm_files[1:]:
-            read.prm(qpath(toppar_dir / f), flex=True, append=True)
+            system.read_param(toppar_dir / f, append=True)
 
     # Stream STR files
     for f in str_files:
-        lingo.charmm_script(f"stream {qpath(toppar_dir / f)}")
+        system.stream_file(toppar_dir / f)
 
     # Restore settings
-    settings.set_warn_level(5)
-    lingo.charmm_script("bomblevel 0")
+    system.set_warn_level(5)
+    system.set_bomb_level(0)
     if not verbose:
-        lingo.charmm_script("prnlev 5")
+        system.set_prnlev(5)
 
-    lingo.charmm_script("IOFOrmat EXTEnded")
+    system.set_iofmt(extended=True)
 
 
 def read_structure(
@@ -233,9 +243,8 @@ def read_structure(
         psf_file: Path to PSF file
         crd_file: Path to CRD file
     """
-    import pycharmm.read as read
-    read.psf_card(qpath(psf_file))
-    read.coor_card(qpath(crd_file))
+    system.read_psf(psf_file)
+    system.read_coor(crd_file)
 
 
 def setup_crystal(
@@ -250,42 +259,31 @@ def setup_crystal(
         nb_config: Non-bonded configuration
         use_image_centering: Apply image centering for solvent/ions
     """
-    import pycharmm.crystal as crystal
-    import pycharmm.lingo as lingo
-
     crystal_type = box_params.crystal_type.strip().upper()
     a, b, c = box_params.dimensions
     alpha, beta, gamma = box_params.angles
 
-    crystal.free()
-    if crystal_type in {"CUBIC", "CUBI"}:
-        crystal.define_cubic(a)
-    elif crystal_type in {"TETRAGONAL", "TETR"}:
-        crystal.define_tetra(a, c)
-    elif crystal_type in {"ORTHORHOMBIC", "ORTH"}:
-        crystal.define_ortho(a, b, c)
-    elif crystal_type in {"MONOCLINIC", "MONO"}:
-        crystal.define_mono(a, b, c, beta)
-    elif crystal_type in {"TRICLINIC", "TRIC"}:
-        crystal.define_tri(a, b, c, alpha, beta, gamma)
-    elif crystal_type in {"HEXAGONAL", "HEXA"}:
-        crystal.define_hexa(a, c)
-    elif crystal_type in {"RHOMBOHEDRAL", "RHOM"}:
-        crystal.define_rhombo(a, alpha)
-    elif crystal_type in {"OCTAHEDRAL", "OCTA"}:
-        crystal.define_octa(a)
-    elif crystal_type == "RHDO":
-        crystal.define_rhdo(a)
-    else:
-        raise ValueError(f"Unsupported crystal type for CHARMM setup: {box_params.crystal_type!r}")
+    system.crystal_free()
+    system.crystal_define(
+        shape=crystal_type,
+        a=a,
+        b=b,
+        c=c,
+        alpha=alpha,
+        beta=beta,
+        gamma=gamma,
+    )
 
     # Build crystal images
-    crystal.build(nb_config.cutim)
+    system.crystal_build(cutoff=nb_config.cutim)
 
     # Set up image centering
     if use_image_centering:
-        lingo.charmm_script("IMAGE BYRESid SELE segid SOLV .or. segid IONS END")
-        lingo.charmm_script("IMAGE BYSEGid SELE .not. (segid SOLV .or. segid IONS) END")
+        system.image_setup(byres=True, segid_list=["SOLV", "IONS"])
+        system.image_setup(
+            byres=False,
+            selection=AtomSelection(raw=".not. (segid SOLV .or. segid IONS)"),
+        )
 
 
 def setup_nonbonded(nb_config: NonBondedConfig) -> None:
@@ -294,9 +292,8 @@ def setup_nonbonded(nb_config: NonBondedConfig) -> None:
     Args:
         nb_config: Non-bonded configuration
     """
-    import pycharmm
     params = nb_config.to_dict()
-    pycharmm.NonBondedScript(**params).run()
+    system.nbonds_setup(**params)
 
 
 def define_selections(patch_info: pd.DataFrame) -> None:
@@ -309,7 +306,7 @@ def define_selections(patch_info: pd.DataFrame) -> None:
         patch_info: DataFrame from patches.dat with columns:
             SELECT, SEGID, RESID, PATCH, ATOMS
     """
-    import pycharmm.lingo as lingo
+    lines: list[str] = []
     for _, row in patch_info.iterrows():
         name = row["SELECT"]
         segid = row["SEGID"]
@@ -327,7 +324,8 @@ def define_selections(patch_info: pd.DataFrame) -> None:
             f"SEGID {segid} .AND. RESId {resid} .AND. RESName {resname} "
             f".AND. {atom_selection} END"
         )
-        lingo.charmm_script(cmd)
+        lines.append(cmd)
+    _stream_charmm_script("\n".join(lines), "define_selections")
 
 
 def execute_block_command(block_cmd: str) -> None:
@@ -336,27 +334,22 @@ def execute_block_command(block_cmd: str) -> None:
     Args:
         block_cmd: Complete BLOCK command string
     """
-    import pycharmm
-    pycharmm.charmm_script(block_cmd)
+    _stream_charmm_script(block_cmd, "block")
 
 
 def clear_block() -> None:
     """Clear existing BLOCK setup."""
-    import pycharmm.lingo as lingo
-    lingo.charmm_script("BLOCK\n CLEAR\n END")
+    system.clear_block()
 
 
 def clear_crystal() -> None:
     """Free crystal setup."""
-    import pycharmm.crystal as crystal
-
-    crystal.free()
+    system.crystal_free()
 
 
 def clear_noe() -> None:
     """Reset NOE restraints."""
-    import pycharmm.lingo as lingo
-    lingo.charmm_script("NOE\n RESET\n END")
+    _stream_charmm_script("NOE\n RESET\n END", "noe")
 
 
 def reset_io_unit(unit: int = 91) -> None:
@@ -366,21 +359,17 @@ def reset_io_unit(unit: int = 91) -> None:
     reads fail with "Sequential READ not allowed after EOF marker".
     Force-reset by opening/closing with /dev/null.
     """
-    import pycharmm.lingo as lingo
-    lingo.charmm_script(f"open unit {unit} write form name /dev/null")
-    lingo.charmm_script(f"close unit {unit}")
+    system.reset_io_unit(unit)
 
 
 def get_natom() -> int:
     """Get number of atoms in PSF."""
-    import pycharmm.psf as psf
-    return psf.get_natom()
+    return system.get_natom()
 
 
 def show_energy() -> None:
     """Display current energy."""
-    import pycharmm.energy as energy
-    energy.show()
+    system.energy_show()
 
 
 def setup_shake(fast: bool = True, bonh: bool = True, tol: float = 1e-7) -> None:
@@ -391,8 +380,7 @@ def setup_shake(fast: bool = True, bonh: bool = True, tol: float = 1e-7) -> None
         bonh: Constrain bonds with hydrogens
         tol: Convergence tolerance
     """
-    import pycharmm.shake as shake
-    shake.on(fast=fast, bonh=bonh, param=True, tol=tol)
+    system.shake_on(fast=fast, bonh=bonh, params=True, tol=tol)
 
 
 def get_gpu_id(rank: int) -> int:
@@ -434,9 +422,7 @@ def enable_blade(gpuid: int = 0) -> None:
     Args:
         gpuid: GPU device ID
     """
-    import pycharmm.lingo as lingo
-    lingo.charmm_script("faster on")
-    lingo.charmm_script(f"blade on gpuid {gpuid}")
+    system.blade_on(gpu_id=gpuid, faster=True)
 
 
 class CHARMMSession:

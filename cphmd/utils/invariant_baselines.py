@@ -4,7 +4,6 @@ from __future__ import annotations
 
 PYCHARMM_IMPORT_ALLOWLIST = (
     "cphmd/core/alf_runner.py",
-    "cphmd/core/charmm_utils.py",
     "cphmd/core/dynamics_runner.py",
     "cphmd/core/production_runner.py",
     "cphmd/core/replica_exchange.py",
