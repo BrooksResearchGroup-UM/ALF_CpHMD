@@ -78,6 +78,8 @@ class LoopState:
     segment_idx: int = 0
     chunk_idx: int = 0
     run_idx: int = 0
+    cycle_idx: int = 0
+    phase: int = 1
     stop_requested: bool = False
     replica_label: int | None = None
     rex_attempt_idx: int = 0
@@ -118,6 +120,13 @@ class LoopState:
             rex_accepted=tuple(accepted),
         )
 
+    def with_cycle_result(self, *, phase: int | None = None) -> "LoopState":
+        return replace(
+            self,
+            cycle_idx=self.cycle_idx + 1,
+            phase=self.phase if phase is None else phase,
+        )
+
 
 class LoopHooks(Protocol):
     def after_segment(
@@ -128,3 +137,9 @@ class LoopHooks(Protocol):
     ) -> None: ...
 
     def is_done(self, state: LoopState) -> bool: ...
+
+
+class CycleLoopHooks(LoopHooks, Protocol):
+    def should_trigger_cycle(self, state: LoopState) -> bool: ...
+
+    def run_cycle(self, state: LoopState): ...

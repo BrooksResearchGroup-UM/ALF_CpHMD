@@ -59,6 +59,13 @@ class SimulationLoop:
                     attempted=rex_result.attempted,
                     accepted=rex_result.accepted,
                 )
+            if self._should_trigger_cycle(state):
+                snapshot = self.hooks.run_cycle(state)
+                self.checkpoint.write_training_sidecars(
+                    cache=getattr(self.hooks, "cache", None),
+                    bias_snapshot=snapshot,
+                )
+                state = state.with_cycle_result()
             if state.segment_idx % self.ctx.checkpoint_every_segments == 0:
                 self.checkpoint.write(state, rng_state=rng_state)
         self.checkpoint.write_final(state, rng_state=rng_state)
@@ -71,6 +78,12 @@ class SimulationLoop:
         from cphmd.simulation.rex_driver import REXDriver
 
         return REXDriver(self.ctx)
+
+    def _should_trigger_cycle(self, state: LoopState) -> bool:
+        trigger = getattr(self.hooks, "should_trigger_cycle", None)
+        if trigger is None:
+            return False
+        return bool(trigger(state))
 
     @staticmethod
     def _run_native_segment(**kwargs) -> tuple[np.ndarray, np.ndarray]:
