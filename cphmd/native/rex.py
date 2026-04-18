@@ -23,7 +23,6 @@ def build_exchanger(comm=None, seed: int | None = None):
 
 def snapshot_state(
     exchanger,
-    *,
     label: int,
     ldin_blocks: Sequence[int],
     include_lambdas: bool = True,
@@ -52,7 +51,6 @@ def snapshot_state(
 
 def attempt_neighbor_swap(
     exchanger,
-    *,
     attempt_idx: int,
     state,
     acceptance_fn: Callable[[Any, Any], float],
