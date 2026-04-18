@@ -264,8 +264,6 @@ def _residue_index_for_atom(ibase: Sequence[int], atom_index: int) -> int:
         end = int(ibase[res_index + 1])
         if start <= atom_index < end:
             return res_index
-        if start < atom_index + 1 <= end:
-            return res_index
     return min(atom_index, max(len(ibase) - 2, 0))
 
 
@@ -324,6 +322,13 @@ def get_topology_snapshot(*, include_cell: bool = False) -> TopologySnapshot:
 
 
 def get_cell_parameters() -> CellParameters:
+    """Return current unit-cell lengths and angles.
+
+    pyCHARMM exposes the scalar cell values through energy variables but does
+    not provide an authoritative crystal-shape getter here, so ``shape`` is
+    reported as ``None`` instead of fabricating a discriminated type.
+    """
+
     global _CELL_CACHE
     if _CELL_CACHE is not None:
         return _CELL_CACHE
@@ -336,7 +341,7 @@ def get_cell_parameters() -> CellParameters:
             alpha=float(lingo.get_energy_value("XTLALPHA")),
             beta=float(lingo.get_energy_value("XTLBETA")),
             gamma=float(lingo.get_energy_value("XTLGAMMA")),
-            shape="tric",
+            shape=None,
         )
         return _CELL_CACHE
     except Exception as exc:
@@ -567,12 +572,19 @@ def nbonds_setup(
     vswitch: bool = True,
     fshift: bool = False,
     fswitch: bool = False,
+    vfswitch: bool = False,
+    ewald: bool = False,
+    pmewald: bool = False,
+    kappa: float | None = None,
+    order: int | None = None,
+    fftx: int | None = None,
+    ffty: int | None = None,
+    fftz: int | None = None,
     bycc: bool = False,
     bygr: bool = False,
     inbfrq: int = -1,
     imgfrq: int = -1,
     nbxmod: int | None = None,
-    **extra: Any,
 ) -> None:
     params: dict[str, Any] = {
         "cutnb": cutnb,
@@ -588,6 +600,9 @@ def nbonds_setup(
         "vswitch": vswitch,
         "fshift": fshift,
         "fswitch": fswitch,
+        "vfswitch": vfswitch,
+        "ewald": ewald,
+        "pmewald": pmewald,
         "bycc": bycc,
         "bygr": bygr,
         "inbfrq": inbfrq,
@@ -599,7 +614,16 @@ def nbonds_setup(
         params["elec"] = elec
     if nbxmod is not None:
         params["nbxmod"] = nbxmod
-    params.update(extra)
+    if kappa is not None:
+        params["kappa"] = kappa
+    if order is not None:
+        params["order"] = order
+    if fftx is not None:
+        params["fftx"] = fftx
+    if ffty is not None:
+        params["ffty"] = ffty
+    if fftz is not None:
+        params["fftz"] = fftz
     try:
         _pycharmm_root().NonBondedScript(**params).run()
     except Exception as exc:

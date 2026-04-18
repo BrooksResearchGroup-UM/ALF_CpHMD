@@ -38,7 +38,7 @@ class CellParameters:
     alpha: float
     beta: float
     gamma: float
-    shape: Literal["cubic", "ortho", "hexa", "tetra", "octa", "rhdo", "mono", "tric"]
+    shape: Literal["cubic", "ortho", "hexa", "tetra", "octa", "rhdo", "mono", "tric"] | None
 
 
 @dataclass(frozen=True)
