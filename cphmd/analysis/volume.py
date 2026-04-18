@@ -11,11 +11,13 @@ Key Features:
 - Track volume changes during simulations
 """
 
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
 
 import numpy as np
+
+from cphmd.native import system
 
 
 @dataclass
@@ -28,6 +30,7 @@ class VolumeConfig:
         selection: CHARMM selection for volume calculation
         probe_radius: Probe radius for volume calculation (Angstroms)
     """
+
     input_folder: str | Path
     structure_file: str = "solvated"
     selection: str = "sele segid PROA end"
@@ -46,6 +49,7 @@ class VolumeResult:
         cavity_volume: Cavity/void volume (Angstrom^3)
         surface_area: Surface area (Angstrom^2)
     """
+
     total_volume: float | None = None
     cavity_volume: float | None = None
     surface_area: float | None = None
@@ -67,14 +71,6 @@ def calculate_volume(config: VolumeConfig) -> VolumeResult:
         Requires pyCHARMM to be properly initialized with
         topology files loaded.
     """
-    try:
-        import pycharmm
-        import pycharmm.read as read
-        import pycharmm.lingo as lingo
-        import pycharmm.psf as psf
-    except ImportError:
-        raise ImportError("pyCHARMM is required for volume analysis")
-
     prep_dir = config.input_folder / "prep"
     psf_file = prep_dir / f"{config.structure_file}.psf"
     crd_file = prep_dir / f"{config.structure_file}.crd"
@@ -83,12 +79,12 @@ def calculate_volume(config: VolumeConfig) -> VolumeResult:
         raise FileNotFoundError(f"PSF file not found: {psf_file}")
 
     # Read structure
-    read.psf_card(str(psf_file))
-    read.coor_card(str(crd_file))
+    system.read_psf(psf_file)
+    system.read_coor(crd_file)
 
     # Calculate volume using CHARMM's method
     # First get bounding box
-    lingo.charmm_script(f"""
+    volume_script = f"""
     ! Calculate bounding box for space parameter
     calc XSIZE = INT(?XMAX - ?XMIN) + 1
     calc YSIZE = INT(?YMAX - ?YMIN) + 1
@@ -101,7 +97,11 @@ def calculate_volume(config: VolumeConfig) -> VolumeResult:
 
     ! Calculate volume
     coor volu SPACE @SPACE hole {config.selection}
-    """)
+    """
+    with tempfile.TemporaryDirectory(prefix="cphmd_volume_") as tmp:
+        script_path = Path(tmp) / "volume.inp"
+        script_path.write_text(volume_script)
+        system.stream_file(script_path)
 
     # Extract results from CHARMM variables
     # Note: Actual implementation would parse CHARMM output
@@ -115,9 +115,7 @@ def calculate_volume(config: VolumeConfig) -> VolumeResult:
 
 
 def analyze_trajectory_volumes(
-    config: VolumeConfig,
-    dcd_file: str | Path,
-    stride: int = 10
+    config: VolumeConfig, dcd_file: str | Path, stride: int = 10
 ) -> dict[str, np.ndarray]:
     """Analyze volume changes over a trajectory.
 
@@ -129,13 +127,6 @@ def analyze_trajectory_volumes(
     Returns:
         Dictionary with time series of volume properties
     """
-    try:
-        import pycharmm
-        import pycharmm.read as read
-        import pycharmm.lingo as lingo
-    except ImportError:
-        raise ImportError("pyCHARMM is required for trajectory analysis")
-
     dcd_path = Path(dcd_file)
     if not dcd_path.exists():
         raise FileNotFoundError(f"DCD file not found: {dcd_path}")
@@ -161,10 +152,8 @@ def main():
     parser = argparse.ArgumentParser(description="Analyze molecular volumes")
     parser.add_argument("-i", "--input", required=True, help="Input folder")
     parser.add_argument("-f", "--file", default="solvated", help="Structure file name")
-    parser.add_argument("-s", "--selection", default="sele segid PROA end",
-                       help="CHARMM selection")
-    parser.add_argument("-r", "--radius", type=float, default=1.6,
-                       help="Probe radius (Angstroms)")
+    parser.add_argument("-s", "--selection", default="sele segid PROA end", help="CHARMM selection")
+    parser.add_argument("-r", "--radius", type=float, default=1.6, help="Probe radius (Angstroms)")
 
     args = parser.parse_args()
 
@@ -180,7 +169,7 @@ def main():
 
     try:
         result = calculate_volume(config)
-        print(f"\nResults:")
+        print("\nResults:")
         print(f"  Total volume: {result.total_volume}")
         print(f"  Cavity volume: {result.cavity_volume}")
     except ImportError as e:
