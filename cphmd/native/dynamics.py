@@ -24,6 +24,7 @@ def run_segment(
     gpu_id: int,
     blade: bool,
     start: bool,
+    lambda_headers: tuple[str, ...] | list[str] | None = None,
 ) -> SegmentResult:
     try:
         import pycharmm
@@ -61,7 +62,10 @@ def run_segment(
         )
         script.run()
         return SegmentResult(
-            lambda_matrix=_lambda_matrix_from_table(script.lambdata_bixlamsq),
+            lambda_matrix=_lambda_matrix_from_table(
+                script.lambdata_bixlamsq,
+                expected_columns=len(lambda_headers) if lambda_headers is not None else None,
+            ),
             bias_matrix=_bias_matrix_from_table(script.lambdata_bias),
         )
     except DynamicsRunError:
@@ -82,12 +86,20 @@ def enable_fast_routines() -> None:
     lingo.charmm_script("faster on")
 
 
-def _lambda_matrix_from_table(table: Any) -> np.ndarray:
+def _lambda_matrix_from_table(
+    table: Any,
+    *,
+    expected_columns: int | None = None,
+) -> np.ndarray:
     if table is None:
         raise DynamicsRunError("lambda collection returned no data")
     values = table.drop(columns=["STEP"], errors="ignore").to_numpy(dtype=np.float32)
     if values.ndim != 2 or values.shape[1] == 0:
         raise DynamicsRunError("lambda collection has no lambda columns")
+    if expected_columns is not None and values.shape[1] != expected_columns:
+        raise DynamicsRunError(
+            f"lambda collection has {values.shape[1]} lambda columns; expected {expected_columns}"
+        )
     return values
 
 

@@ -11,11 +11,20 @@ def _require_pycharmm_version() -> Version:
     """Validate that the installed pyCHARMM distribution meets the floor."""
     try:
         version_str = metadata.version("pycharmm")
-    except metadata.PackageNotFoundError as exc:
-        raise RuntimeError(
-            f"cphmd.native requires pyCHARMM >= {PYCHARMM_MIN_VERSION}, "
-            "but the 'pycharmm' distribution is not installed."
-        ) from exc
+    except metadata.PackageNotFoundError:
+        try:
+            import pycharmm
+        except ImportError as exc:
+            raise RuntimeError(
+                f"cphmd.native requires pyCHARMM >= {PYCHARMM_MIN_VERSION}, "
+                "but the 'pycharmm' distribution is not installed."
+            ) from exc
+        version_str = getattr(pycharmm, "__version__", None)
+        if version_str is None:
+            raise RuntimeError(
+                f"cphmd.native requires pyCHARMM >= {PYCHARMM_MIN_VERSION}, "
+                "but pyCHARMM does not expose __version__."
+            )
 
     try:
         version = Version(version_str)

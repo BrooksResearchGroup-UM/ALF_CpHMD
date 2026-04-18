@@ -34,6 +34,9 @@ class RunContext:
     rex_exchange_every_segments: int = 1
     comm: Any | None = None
     simulation_name: str = "cphmd-native"
+    use_blade: bool = True
+    walltime_end_epoch: float | None = None
+    walltime_safety_factor: float = 2.0
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "run_dir", Path(self.run_dir))
@@ -47,6 +50,8 @@ class RunContext:
         object.__setattr__(self, "rex_signs", tuple(self.rex_signs))
         if self.checkpoint_every_segments <= 0:
             raise ValueError("checkpoint_every_segments must be positive")
+        if self.walltime_safety_factor <= 0:
+            raise ValueError("walltime_safety_factor must be positive")
         if len(self.nsubsites) != len(self.lambda_headers) + 1:
             raise ValueError("nsubsites must include environment plus lambda columns")
         if self.nsubsites[0] != 0:
@@ -126,6 +131,9 @@ class LoopState:
             cycle_idx=self.cycle_idx + 1,
             phase=self.phase if phase is None else phase,
         )
+
+    def with_stop_requested(self) -> "LoopState":
+        return replace(self, stop_requested=True)
 
 
 class LoopHooks(Protocol):
