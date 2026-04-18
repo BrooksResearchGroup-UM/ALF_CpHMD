@@ -123,7 +123,7 @@ class REXDriver:
         return state.replica_label
 
     def _ldin_blocks(self) -> tuple[int, ...]:
-        return tuple(range(1, len(self.ctx.lambda_headers) + 1))
+        return tuple(self.ctx.ldin_blocks or ())
 
     def _stats_or_empty(self, values: tuple[int, ...]) -> tuple[int, ...]:
         n_pairs = len(self.ctx.replica_ph_values) - 1

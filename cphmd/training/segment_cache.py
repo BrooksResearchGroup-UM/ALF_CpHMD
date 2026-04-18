@@ -39,7 +39,7 @@ class SegmentCache:
         )[-self.max_segments :]
         return SegmentCache(self.max_segments, ids, lambdas, biases)
 
-    def write(self, path: str | Path) -> Path:
+    def write(self, path: str | Path, *, metadata: dict[str, np.ndarray] | None = None) -> Path:
         out = Path(path)
         out.parent.mkdir(parents=True, exist_ok=True)
         tmp = out.with_name(f"{out.name}.tmp")
@@ -48,6 +48,8 @@ class SegmentCache:
             "max_segments": np.array([self.max_segments], dtype=np.int32),
             "segment_ids": np.asarray(self.segment_ids, dtype=np.int32),
         }
+        if metadata:
+            payload.update(metadata)
         for idx, arr in enumerate(self.lambda_arrays):
             payload[f"lambda_{idx}"] = arr
         for idx, arr in enumerate(self.bias_arrays):

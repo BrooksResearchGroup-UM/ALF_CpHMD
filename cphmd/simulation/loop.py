@@ -65,7 +65,7 @@ class SimulationLoop:
             state = state.with_initial_label(self.ctx.replica_label)
         self._initialize_native_dynamics()
         if resumed:
-            self._restore_training_state()
+            self._restore_training_state(state)
         previous_handlers = self._install_signal_handlers()
         force_start = resumed
         try:
@@ -101,11 +101,13 @@ class SimulationLoop:
                     cycle_started = self._time_fn()
                     snapshot = self.hooks.run_cycle(state)
                     self._record_duration(self._cycle_seconds, cycle_started)
+                    next_state = state.with_cycle_result()
                     self.checkpoint.write_training_sidecars(
                         cache=getattr(self.hooks, "cache", None),
                         bias_snapshot=snapshot,
+                        state=next_state,
                     )
-                    state = state.with_cycle_result()
+                    state = next_state
                 if state.segment_idx % self.ctx.checkpoint_every_segments == 0:
                     checkpoint_started = self._time_fn()
                     self.checkpoint.write(state, rng_state=rng_state)
@@ -136,18 +138,18 @@ class SimulationLoop:
         native_dynamics.use_blade(self.ctx.gpu_id)
         native_dynamics.enable_fast_routines()
 
-    def _restore_training_state(self) -> None:
+    def _restore_training_state(self, state: LoopState) -> None:
         cache = getattr(self.hooks, "cache", None)
         cache_reader = getattr(self.checkpoint, "read_segment_cache", None)
         if cache is not None and cache_reader is not None:
-            restored_cache = cache_reader(max_segments=cache.max_segments)
+            restored_cache = cache_reader(max_segments=cache.max_segments, state=state)
             if restored_cache is not None:
                 self.hooks.cache = restored_cache
 
         bias_reader = getattr(self.checkpoint, "read_bias_snapshot", None)
         if bias_reader is None:
             return
-        snapshot = bias_reader(nsubs=self.ctx.nsubsites[1:])
+        snapshot = bias_reader(nsubs=self.ctx.nsubsites[1:], state=state)
         if snapshot is not None:
             self._bias_rebuilder().apply(snapshot)
 

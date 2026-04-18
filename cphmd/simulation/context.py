@@ -28,6 +28,7 @@ class RunContext:
     lambda_precision: LambdaPrecision
     master_seed: int
     config_hash: str
+    ldin_blocks: tuple[int, ...] | None = None
     rex_enabled: bool = False
     replica_ph_values: tuple[float, ...] = ()
     rex_signs: tuple[float, ...] = ()
@@ -41,6 +42,18 @@ class RunContext:
     def __post_init__(self) -> None:
         object.__setattr__(self, "run_dir", Path(self.run_dir))
         object.__setattr__(self, "lambda_headers", tuple(self.lambda_headers))
+        if self.ldin_blocks is None:
+            object.__setattr__(
+                self,
+                "ldin_blocks",
+                tuple(range(1, len(self.lambda_headers) + 1)),
+            )
+        else:
+            object.__setattr__(
+                self,
+                "ldin_blocks",
+                tuple(int(value) for value in self.ldin_blocks),
+            )
         object.__setattr__(self, "nsubsites", tuple(self.nsubsites))
         object.__setattr__(
             self,
@@ -56,6 +69,10 @@ class RunContext:
             raise ValueError("nsubsites must include environment plus lambda columns")
         if self.nsubsites[0] != 0:
             raise ValueError("nsubsites must start with the environment marker 0")
+        if len(self.ldin_blocks) != len(self.lambda_headers):
+            raise ValueError("ldin_blocks must match lambda_headers")
+        if any(block_id <= 0 for block_id in self.ldin_blocks):
+            raise ValueError("ldin_blocks must contain positive block IDs")
         if self.rex_enabled:
             if len(self.replica_ph_values) < 2:
                 raise ValueError("replica_ph_values must include at least two pH values")
