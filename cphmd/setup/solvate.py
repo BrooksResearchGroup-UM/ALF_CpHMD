@@ -14,6 +14,8 @@ from pathlib import Path
 from typing import Literal
 
 from cphmd import TOPPAR_DIR
+from cphmd.native import system
+from cphmd.native.types import AtomSelection
 
 # Historical CLI/config values are kept for compatibility, even though the
 # crimm backend currently supports only the cubic and octahedral cases.
@@ -44,8 +46,10 @@ _DEFAULT_BOX_ANGLES = {
     "OCTAHEDRAL": (109.4712206344907, 109.4712206344907, 109.4712206344907),
 }
 _MIN_SOLUTE_ION_DISTANCE = 2.6
-_WATERBOX_SELECTION = "segid SOLV .or. segid IONS end"
-_MOLECULE_SELECTION = ".not. (segid SOLV .or. segid IONS) end"
+_WATERBOX_EXPR = "segid SOLV .or. segid IONS"
+_MOLECULE_EXPR = ".not. (segid SOLV .or. segid IONS)"
+_WATERBOX_SELECTION = f"{_WATERBOX_EXPR} end"
+_MOLECULE_SELECTION = f"{_MOLECULE_EXPR} end"
 
 
 @dataclass
@@ -110,6 +114,7 @@ def _input_base_path(input_file: str | Path) -> Path:
     path = Path(input_file)
     return path.with_suffix("") if path.suffix else path
 
+
 def _normalize_crystal_type(crystal_type: str) -> str:
     normalized = crystal_type.upper()
     if normalized not in _SUPPORTED_CRYSTAL_TYPES:
@@ -125,9 +130,7 @@ def _normalize_ion_method(ion_method: str) -> str:
     normalized = ion_method.upper()
     if normalized not in _ION_METHOD_MAP:
         supported = ", ".join(sorted(_ION_METHOD_MAP))
-        raise ValueError(
-            f"Unsupported ion_method {ion_method!r}. Supported values: {supported}."
-        )
+        raise ValueError(f"Unsupported ion_method {ion_method!r}. Supported values: {supported}.")
     return _ION_METHOD_MAP[normalized]
 
 
@@ -173,65 +176,55 @@ def _has_explicit_reference_patches(ligand_patches: list[object]) -> bool:
 
 def _read_topology_files(config: SolvationConfig, verbose: bool = True) -> None:
     """Load CHARMM topology and parameter files for the pyCHARMM stage."""
-    import pycharmm.lingo as lingo
-    import pycharmm.read as read
-    import pycharmm.settings as settings
-
     toppar_dir = config.toppar_dir or TOPPAR_DIR
 
     if not verbose:
-        lingo.charmm_script("prnlev 0")
+        system.set_prnlev(0)
 
-    settings.set_bomb_level(-1)
+    system.set_bomb_level(-1)
 
     prm_files = [f for f in config.topology_files if f.endswith(".prm")]
     rtf_files = [f for f in config.topology_files if f.endswith(".rtf")]
     str_files = [f for f in config.topology_files if f.endswith(".str")]
 
     if rtf_files:
-        read.rtf(str(toppar_dir / rtf_files[0]))
+        system.read_rtf(toppar_dir / rtf_files[0])
         for filename in rtf_files[1:]:
-            read.rtf(str(toppar_dir / filename), append=True)
+            system.read_rtf(toppar_dir / filename, append=True)
 
     if prm_files:
-        read.prm(str(toppar_dir / prm_files[0]), flex=True)
+        system.read_param(toppar_dir / prm_files[0])
         for filename in prm_files[1:]:
-            read.prm(str(toppar_dir / filename), flex=True, append=True)
+            system.read_param(toppar_dir / filename, append=True)
 
     for filename in str_files:
-        lingo.charmm_script(f"stream {toppar_dir / filename}")
+        system.stream_file(toppar_dir / filename)
 
     for extra_file in config.extra_files:
         extra_path = Path(extra_file)
         if extra_path.suffix == ".rtf":
-            read.rtf(str(extra_path), append=True)
+            system.read_rtf(extra_path, append=True)
         elif extra_path.suffix == ".prm":
-            read.prm(str(extra_path), flex=True, append=True)
+            system.read_param(extra_path, append=True)
         elif extra_path.suffix == ".str":
-            lingo.charmm_script(f"stream {extra_path}")
+            system.stream_file(extra_path)
 
     for patch_def in _normalize_ligand_patch_defs(config.ligand_patches):
         _load_charmm_ligand_patch_file(Path(getattr(patch_def, "patch_file")))
 
-    settings.set_bomb_level(0)
-    lingo.charmm_script("IOFOrmat EXTEnded")
+    system.set_bomb_level(0)
+    system.set_iofmt(extended=True)
 
     if not verbose:
-        lingo.charmm_script("prnlev 5")
+        system.set_prnlev(5)
 
 
 def _clear_charmm_atoms() -> None:
-    import pycharmm
-    import pycharmm.psf as psf
-
-    if psf.get_natom() > 0:
-        psf.delete_atoms(pycharmm.SelectAtoms().all_atoms())
+    if system.get_natom() > 0:
+        system.delete_atoms(AtomSelection())
 
 
 def _ensure_input_crd(input_base: Path) -> Path:
-    import pycharmm.read as read
-    import pycharmm.write as write
-
     psf_path = input_base.with_suffix(".psf")
     crd_path = input_base.with_suffix(".crd")
     pdb_path = input_base.with_suffix(".pdb")
@@ -243,9 +236,9 @@ def _ensure_input_crd(input_base: Path) -> Path:
     if not pdb_path.exists():
         raise FileNotFoundError(f"Input coordinates not found: {crd_path} or {pdb_path}")
 
-    read.psf_card(str(psf_path))
-    read.pdb(str(pdb_path), resid=True)
-    write.coor_card(str(crd_path))
+    system.read_psf(psf_path)
+    system.read_pdb(pdb_path, resid=True)
+    system.write_coor(crd_path)
     _clear_charmm_atoms()
     return crd_path
 
@@ -336,15 +329,13 @@ def _extract_charmm_prm_lines(stream_text: str, source: Path) -> list[str]:
 
 
 def _load_charmm_ligand_patch_file(patch_path: Path) -> None:
-    import pycharmm.read as read
-
     suffix = patch_path.suffix.lower()
     if suffix == ".rtf":
-        read.rtf(str(patch_path), append=True)
+        system.read_rtf(patch_path, append=True)
         return
 
     if suffix != ".str":
-        read.rtf(str(patch_path), append=True)
+        system.read_rtf(patch_path, append=True)
         return
 
     rtf_block = _extract_charmm_rtf_block(
@@ -362,7 +353,7 @@ def _load_charmm_ligand_patch_file(patch_path: Path) -> None:
         ) as handle:
             handle.write(rtf_block)
             temp_path = Path(handle.name)
-        read.rtf(str(temp_path), append=True)
+        system.read_rtf(temp_path, append=True)
     finally:
         if temp_path is not None:
             temp_path.unlink(missing_ok=True)
@@ -460,8 +451,7 @@ def _load_crimm_ligand_patch_files(topology_generator, ligand_patches: list[obje
             prm_lines = _extract_charmm_prm_lines(file_text, patch_path)
         else:
             raise ValueError(
-                "Unsupported ligand patch file suffix for crimm solvation: "
-                f"{patch_path.suffix}"
+                "Unsupported ligand patch file suffix for crimm solvation: " f"{patch_path.suffix}"
             )
 
         if not cgenff_defs.load_rtf_block(rtf_block):
@@ -486,12 +476,10 @@ def _load_crimm_model(config: SolvationConfig, psf_path: Path, crd_path: Path):
         extra_hint = ""
         if config.extra_files:
             extra_hint = (
-                " Check that the supplied ligand toppar files match the "
-                "PSF/CRD residue names."
+                " Check that the supplied ligand toppar files match the " "PSF/CRD residue names."
             )
         raise ValueError(
-            "crimm could not reconstruct the input PSF/CRD into an OrganizedModel."
-            f"{extra_hint}"
+            "crimm could not reconstruct the input PSF/CRD into an OrganizedModel." f"{extra_hint}"
         ) from exc
     return model, topology_generator
 
@@ -575,15 +563,13 @@ def _reference_patch_targets_from_input(
     if not _has_explicit_reference_patches(ligand_patches):
         return []
 
-    import pycharmm.read as read
-
     from cphmd.core.patching import PatchParser, Universe
 
     toppar_dir = config.toppar_dir or TOPPAR_DIR
     _clear_charmm_atoms()
     try:
-        read.psf_card(str(psf_path))
-        read.coor_card(str(crd_path))
+        system.read_psf(psf_path)
+        system.read_coor(crd_path)
 
         patch_parser = PatchParser(
             segment_path=toppar_dir / "my_files" / "titratable_residues.str",
@@ -743,6 +729,7 @@ def _apply_reference_patches_to_model(
 
     return applied_targets
 
+
 def _reference_patch_targets(
     config: SolvationConfig,
     patch_parser,
@@ -763,7 +750,9 @@ def _reference_patch_targets(
             (row["seg_id"], int(row["res_id"]), row["res_name"])
             for _, row in universe.universe[universe.universe["res_name"] == resname][
                 ["seg_id", "res_id", "res_name"]
-            ].drop_duplicates().iterrows()
+            ]
+            .drop_duplicates()
+            .iterrows()
         ]
 
         if resname == "CYS":
@@ -854,22 +843,17 @@ def _write_reference_waterbox_files(
     solvated_crd: Path,
     output_dir: Path,
 ) -> tuple[Path, Path]:
-    import pycharmm.lingo as lingo
-    import pycharmm.read as read
-    import pycharmm.settings as settings
-    import pycharmm.write as write
-
     waterbox_psf = output_dir / ".crimm_waterbox.psf"
     waterbox_crd = output_dir / ".crimm_waterbox.crd"
 
     _clear_charmm_atoms()
-    settings.set_bomb_level(-1)
-    read.psf_card(str(solvated_psf))
-    settings.set_bomb_level(0)
-    read.coor_card(str(solvated_crd))
-    lingo.charmm_script("DELEte ATOMs SELE .not. (segid SOLV .or. segid IONS) END")
-    write.psf_card(str(waterbox_psf))
-    write.coor_card(str(waterbox_crd))
+    system.set_bomb_level(-1)
+    system.read_psf(solvated_psf)
+    system.set_bomb_level(0)
+    system.read_coor(solvated_crd)
+    system.delete_atoms(AtomSelection(raw=_MOLECULE_EXPR))
+    system.write_psf(waterbox_psf)
+    system.write_coor(waterbox_crd)
     _clear_charmm_atoms()
 
     return waterbox_psf, waterbox_crd
@@ -882,22 +866,18 @@ def _assemble_compatibility_solvated_system(
     waterbox_crd: Path,
     output_dir: Path,
 ) -> tuple[Path, Path]:
-    import pycharmm.read as read
-    import pycharmm.settings as settings
-    import pycharmm.write as write
-
     combined_psf = output_dir / ".compat_solvated.psf"
     combined_crd = output_dir / ".compat_solvated.crd"
 
     _clear_charmm_atoms()
-    settings.set_bomb_level(-1)
-    read.psf_card(str(original_psf))
-    read.coor_card(str(original_crd))
-    read.psf_card(str(waterbox_psf), append=True)
-    settings.set_bomb_level(0)
-    read.coor_card(str(waterbox_crd), append=True)
-    write.psf_card(str(combined_psf))
-    write.coor_card(str(combined_crd))
+    system.set_bomb_level(-1)
+    system.read_psf(original_psf)
+    system.read_coor(original_crd)
+    system.read_psf(waterbox_psf, append=True)
+    system.set_bomb_level(0)
+    system.read_coor(waterbox_crd, append=True)
+    system.write_psf(combined_psf)
+    system.write_coor(combined_crd)
     _clear_charmm_atoms()
 
     return combined_psf, combined_crd
@@ -952,30 +932,19 @@ def _define_charmm_crystal(
     if normalized not in supported_types:
         raise ValueError(f"Unsupported crystal type for CHARMM output setup: {crystal_type!r}")
 
-    import pycharmm.crystal as crystal
-
     a, b, c = dimensions
     alpha, beta, gamma = angles
 
-    crystal.free()
-    if normalized == "CUBIC":
-        crystal.define_cubic(a)
-    elif normalized == "OCTAHEDRAL":
-        crystal.define_octa(a)
-    elif normalized == "RHDO":
-        crystal.define_rhdo(a)
-    elif normalized in {"ORTHORHOMBIC", "ORTH"}:
-        crystal.define_ortho(a, b, c)
-    elif normalized in {"TETRAGONAL", "TETR"}:
-        crystal.define_tetra(a, c)
-    elif normalized in {"MONOCLINIC", "MONO"}:
-        crystal.define_mono(a, b, c, beta)
-    elif normalized in {"TRICLINIC", "TRIC"}:
-        crystal.define_tri(a, b, c, alpha, beta, gamma)
-    elif normalized in {"HEXAGONAL", "HEXA"}:
-        crystal.define_hexa(a, c)
-    elif normalized in {"RHOMBOHEDRAL", "RHOM"}:
-        crystal.define_rhombo(a, alpha)
+    system.crystal_free()
+    system.crystal_define(
+        shape=normalized,
+        a=a,
+        b=b,
+        c=c,
+        alpha=alpha,
+        beta=beta,
+        gamma=gamma,
+    )
 
 
 def _load_solvated_system_for_charmm_output(
@@ -985,41 +954,41 @@ def _load_solvated_system_for_charmm_output(
     dimensions: list[float],
     angles: list[float],
 ) -> None:
-    import pycharmm.crystal as crystal
-    import pycharmm.lingo as lingo
-    import pycharmm.read as read
-    import pycharmm.settings as settings
-
     _clear_charmm_atoms()
-    settings.set_bomb_level(-1)
-    read.psf_card(str(psf_path))
-    settings.set_bomb_level(0)
-    read.coor_card(str(crd_path))
+    system.set_bomb_level(-1)
+    system.read_psf(psf_path)
+    system.set_bomb_level(0)
+    system.read_coor(crd_path)
 
     _define_charmm_crystal(config.crystal_type, dimensions, angles)
-    crystal.build(14.0)
-    lingo.charmm_script("IMAGE BYRESid SELE segid SOLV .or. segid IONS END")
-    lingo.charmm_script("IMAGE BYSEGid SELE .not. (segid SOLV .or. segid IONS) END")
-    lingo.charmm_script("NBONDS ctonnb 10 ctofnb 12 cutnb 14 cutim 14 wmin 1.0 fswitch vswitch")
-    lingo.charmm_script("DEFIne MOL SELE .not. (segid SOLV .or. segid IONS) END")
+    system.crystal_build(cutoff=14.0)
+    system.image_setup(byres=True, segid_list=["SOLV", "IONS"])
+    system.image_setup(byres=False, selection=AtomSelection(raw=_MOLECULE_EXPR))
+    system.nbonds_setup(
+        ctonnb=10,
+        ctofnb=12,
+        cutnb=14,
+        cutim=14,
+        wmin=1.0,
+        switch=False,
+        fswitch=True,
+        vswitch=True,
+    )
+    system.define_molecule("MOL", AtomSelection(raw=_MOLECULE_EXPR))
 
 
 def _minimize_loaded_system() -> None:
-    import pycharmm.energy as energy
-    import pycharmm.lingo as lingo
-    import pycharmm.minimize as minimize
-
-    energy.show()
-    initial_energy = energy.get_total()
+    system.energy_show()
+    initial_energy = system.energy_get_total()
 
     for force in (100, 50, 25, 5):
-        lingo.charmm_script(f"CONS HARM FORCE {force} SELE MOL .and. (.not. hydrogen) END")
-        minimize.run_sd(nstep=50)
-        minimize.run_abnr(nstep=100)
-        lingo.charmm_script("CONS HARM CLEAR")
+        system.cons_harm_force(force, AtomSelection(raw="MOL .and. (.not. hydrogen)"))
+        system.minimize_sd(nsteps=50)
+        system.minimize_abnr(nsteps=100)
+        system.cons_harm_clear()
 
-    minimize.run_sd(nstep=1000)
-    final_energy = energy.get_total()
+    system.minimize_sd(nsteps=1000)
+    final_energy = system.energy_get_total()
 
     print(f"Energy before minimization: {initial_energy} kcal/mol")
     print(f"Energy after minimization: {final_energy} kcal/mol")
@@ -1038,9 +1007,6 @@ def _write_final_outputs(
     config: SolvationConfig,
     dimensions: list[float],
 ) -> None:
-    import pycharmm.settings as settings
-    import pycharmm.write as write
-
     box_label = ":".join(f"{value:.3f}" for value in dimensions)
     molecule_title = (
         "Molecule with Minimization (part with waterbox.*)"
@@ -1048,33 +1014,33 @@ def _write_final_outputs(
         else "Molecule after Solvation (part with waterbox.*)"
     )
 
-    write.coor_card(str(output_dir / "solvated.crd"))
-    write.psf_card(str(output_dir / "solvated.psf"))
-    write.coor_pdb(str(output_dir / "solvated.pdb"))
+    system.write_coor(output_dir / "solvated.crd")
+    system.write_psf(output_dir / "solvated.psf")
+    system.write_coor_pdb(output_dir / "solvated.pdb")
 
-    write.coor_card(
-        str(output_dir / "molecule.crd"),
+    system.write_coor(
+        output_dir / "molecule.crd",
         title=molecule_title,
-        select=_MOLECULE_SELECTION,
+        selection=AtomSelection(raw=_MOLECULE_SELECTION),
     )
-    write.psf_card(
-        str(output_dir / "molecule.psf"),
+    system.write_psf(
+        output_dir / "molecule.psf",
         title=molecule_title,
-        select=_MOLECULE_SELECTION,
+        selection=AtomSelection(raw=_MOLECULE_SELECTION),
     )
 
-    settings.set_bomb_level(-1)
-    write.coor_card(
-        str(output_dir / "waterbox.crd"),
+    system.set_bomb_level(-1)
+    system.write_coor(
+        output_dir / "waterbox.crd",
         title=f"{config.crystal_type.upper()} Waterbox with box size {box_label}",
-        select=_WATERBOX_SELECTION,
+        selection=AtomSelection(raw=_WATERBOX_SELECTION),
     )
-    write.psf_card(
-        str(output_dir / "waterbox.psf"),
+    system.write_psf(
+        output_dir / "waterbox.psf",
         title=f"{config.crystal_type.upper()} Waterbox with box size {box_label}",
-        select=_WATERBOX_SELECTION,
+        selection=AtomSelection(raw=_WATERBOX_SELECTION),
     )
-    settings.set_bomb_level(0)
+    system.set_bomb_level(0)
 
 
 def solvate_system(config: SolvationConfig) -> Path:
@@ -1091,9 +1057,7 @@ def solvate_system(config: SolvationConfig) -> Path:
     _read_topology_files(config)
 
     if _check_gpu():
-        import pycharmm.lingo as lingo
-
-        lingo.charmm_script("blade on")
+        system.blade_on()
 
     crd_path = _ensure_input_crd(input_base)
     model = _solvate_with_crimm(config, psf_path, crd_path)

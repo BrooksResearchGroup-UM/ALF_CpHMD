@@ -160,11 +160,12 @@ def read_param(path: Path | str, *, append: bool = False, flex: bool = True) -> 
         raise wrap_exception(exc, SystemLoadError, f"reading parameter file {path}") from exc
 
 
-def read_psf(path: Path | str, *, card: bool = True) -> None:
+def read_psf(path: Path | str, *, card: bool = True, append: bool = False) -> None:
     if not card:
         raise SystemLoadError("read_psf only supports CHARMM card PSF files")
     try:
-        _pycharmm_read().psf_card(qpath(path))
+        kwargs = {"append": append} if append else {}
+        _pycharmm_read().psf_card(qpath(path), **kwargs)
         _invalidate_cache()
     except Exception as exc:
         raise wrap_exception(exc, SystemLoadError, f"reading PSF {path}") from exc
@@ -181,9 +182,10 @@ def read_coor(path: Path | str, *, card: bool = True, append: bool = False) -> N
         raise wrap_exception(exc, SystemLoadError, f"reading coordinates {path}") from exc
 
 
-def read_pdb(path: Path | str) -> None:
+def read_pdb(path: Path | str, *, resid: bool = False) -> None:
     try:
-        _pycharmm_read().pdb(qpath(path))
+        kwargs = {"resid": resid} if resid else {}
+        _pycharmm_read().pdb(qpath(path), **kwargs)
         _invalidate_cache()
     except Exception as exc:
         raise wrap_exception(exc, SystemLoadError, f"reading PDB coordinates {path}") from exc
@@ -503,20 +505,44 @@ def image_setup(
     *,
     byres: bool = True,
     segid_list: list[str] | None = None,
+    selection: AtomSelection | None = None,
     xcen: float = 0.0,
     ycen: float = 0.0,
     zcen: float = 0.0,
 ) -> None:
-    if segid_list:
-        selection = " .or. ".join(f"segid {segid}" for segid in segid_list)
+    if selection is not None:
+        selection_text = _selection_expr(selection) or "all"
+    elif segid_list:
+        selection_text = " .or. ".join(f"segid {segid}" for segid in segid_list)
     else:
-        selection = "all"
+        selection_text = "all"
     mode = "byres" if byres else "byseg"
-    script = f"image {mode} xcen {xcen} ycen {ycen} zcen {zcen} " f"sele {selection} end"
+    script = f"image {mode} xcen {xcen} ycen {ycen} zcen {zcen} " f"sele {selection_text} end"
     try:
         _pycharmm_lingo().charmm_script(script)
     except Exception as exc:
         raise wrap_exception(exc, SystemLoadError, "setting up image centering") from exc
+
+
+def define_molecule(name: str, selection: AtomSelection) -> None:
+    try:
+        _pycharmm_lingo().charmm_script(f"define {name} {_script_selection(selection)}")
+    except Exception as exc:
+        raise wrap_exception(exc, SystemLoadError, f"defining molecule selection {name}") from exc
+
+
+def cons_harm_force(force: float, selection: AtomSelection) -> None:
+    try:
+        _pycharmm_lingo().charmm_script(f"cons harm force {force} {_script_selection(selection)}")
+    except Exception as exc:
+        raise wrap_exception(exc, SystemLoadError, "setting harmonic constraints") from exc
+
+
+def cons_harm_clear() -> None:
+    try:
+        _pycharmm_lingo().charmm_script("cons harm clear")
+    except Exception as exc:
+        raise wrap_exception(exc, SystemLoadError, "clearing harmonic constraints") from exc
 
 
 def nbonds_setup(
@@ -533,6 +559,7 @@ def nbonds_setup(
     cdie: bool = True,
     switch: bool = True,
     vswitch: bool = True,
+    fswitch: bool = False,
     bycc: bool = False,
     bygr: bool = False,
     inbfrq: int = -1,
@@ -550,6 +577,7 @@ def nbonds_setup(
         "cdie": cdie,
         "switch": switch,
         "vswitch": vswitch,
+        "fswitch": fswitch,
         "bycc": bycc,
         "bygr": bygr,
         "inbfrq": inbfrq,
