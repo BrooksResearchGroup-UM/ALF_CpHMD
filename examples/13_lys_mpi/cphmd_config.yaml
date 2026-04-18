@@ -1,3 +1,4 @@
+master_seed: 20260418
 # CpHMD Configuration — Lysine (LYS) in Water (MPI multi-GPU)
 #
 # Same system as 04_lys_water but launched with mpirun for multi-GPU
@@ -31,6 +32,7 @@ patch:
     - "PROA:3"
 
 alf:
+  nreps: 5
   input_folder: solvated
   pH: true
   start: 1

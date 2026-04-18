@@ -1,3 +1,4 @@
+master_seed: 20260418
 # Glutamic Acid ALF with LMALF Analysis Method
 # Same system as 00_glu_water but uses L-BFGS optimization instead of WHAM
 

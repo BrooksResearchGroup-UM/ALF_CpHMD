@@ -29,6 +29,7 @@ class CheckpointManager:
         self.ctx = ctx
         self.native_modules = tuple(native_modules)
         self.pycharmm_version = pycharmm_version or metadata.version("pycharmm")
+        self.native_api_fingerprint = compute(self.native_modules)
 
     def resume_or_fresh(self) -> tuple[LoopState, dict[str, Any]]:
         path = self.ctx.checkpoint_path
@@ -45,9 +46,10 @@ class CheckpointManager:
             "schema_version": 1,
             "loop_state": asdict(state),
             "rng_state": rng_state,
+            "master_seed": self.ctx.master_seed,
             "pycharmm_version": self.pycharmm_version,
             "config_hash": self.ctx.config_hash,
-            "native_api_fingerprint": compute(self.native_modules),
+            "native_api_fingerprint": self.native_api_fingerprint,
         }
         path = self.ctx.checkpoint_path
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -58,6 +60,28 @@ class CheckpointManager:
 
     def write_final(self, state: LoopState, *, rng_state: dict[str, Any]) -> Path:
         return self.write(state, rng_state=rng_state)
+
+    def write_status_summary(self, state: LoopState) -> Path:
+        payload = {
+            "schema_version": 1,
+            "run_dir": str(self.ctx.run_dir),
+            "state": "running",
+            "segments": state.segment_idx,
+            "ranks": {
+                f"rep{self.ctx.rank:02d}": {
+                    "segment_idx": state.segment_idx,
+                    "phase": state.phase,
+                    "rex_attempted": list(state.rex_attempted),
+                    "rex_accepted": list(state.rex_accepted),
+                }
+            },
+        }
+        path = self.ctx.run_dir / "status_summary.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(f"{path.name}.tmp")
+        tmp.write_text(json.dumps(payload, indent=2, sort_keys=True, default=str))
+        os.replace(tmp, path)
+        return path
 
     @property
     def segment_cache_path(self) -> Path:
@@ -161,8 +185,9 @@ class CheckpointManager:
         expected = {
             "schema_version": 1,
             "pycharmm_version": self.pycharmm_version,
+            "master_seed": self.ctx.master_seed,
             "config_hash": self.ctx.config_hash,
-            "native_api_fingerprint": compute(self.native_modules),
+            "native_api_fingerprint": self.native_api_fingerprint,
         }
         for key, value in expected.items():
             if payload.get(key) != value:

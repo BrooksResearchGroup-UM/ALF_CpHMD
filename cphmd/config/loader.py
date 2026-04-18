@@ -11,6 +11,7 @@ and converts the merged dict into the appropriate dataclass
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -28,6 +29,145 @@ logger = logging.getLogger(__name__)
 
 _DEFAULTS_DIR = Path(__file__).parent / "defaults"
 _LOCAL_CONFIG_NAME = "cphmd_config.yaml"
+
+
+@dataclass(frozen=True)
+class ArchiveConfig:
+    lambda_precision: str = "full"
+
+
+@dataclass(frozen=True)
+class LoggingConfig:
+    level: str = "INFO"
+
+
+@dataclass(frozen=True)
+class NativeRuntimeConfig:
+    """Minimal native runtime configuration used by Phase-5 CLI commands."""
+
+    config_path: Path
+    raw: dict[str, Any]
+    run_dir: Path
+    input_folder: Path
+    nreps: int
+    master_seed: int
+    start: int
+    end: int
+    phase: int
+    temperature: float
+    nsteps_per_segment: int
+    nsavl: int
+    nsavc: int
+    time_step_ps: float
+    checkpoint_every_segments: int
+    archive: ArchiveConfig
+    logging: LoggingConfig
+    ph: bool = False
+    ph_values: tuple[float, ...] = ()
+    replica_exchange: Any = None
+    walltime_safety_factor: float = 2.0
+
+
+def load_config(path: str | Path) -> NativeRuntimeConfig:
+    """Load the native runtime config used by ``cphmd init/run/status``.
+
+    This loader intentionally avoids constructing legacy runner dataclasses so
+    CLI startup can validate config without importing pyCHARMM-bound code.
+    """
+
+    config_path = Path(path).resolve()
+    raw = load_yaml_config(config_path)
+    _reject_user_facing_use_blade(raw)
+
+    alf = dict(raw.get("alf", {}) or {})
+    archive = dict(raw.get("archive", {}) or {})
+    logging_cfg = dict(raw.get("logging", {}) or {})
+
+    if "master_seed" in raw:
+        master_seed = raw["master_seed"]
+    elif "master_seed" in alf:
+        master_seed = alf["master_seed"]
+    else:
+        raise ValueError("config must define required key 'master_seed'")
+
+    try:
+        master_seed = int(master_seed)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("master_seed must be an integer") from exc
+
+    input_folder = _resolve_config_path(
+        config_path.parent,
+        raw.get("run_dir") or alf.get("input_folder") or ".",
+    )
+    run_dir = _resolve_config_path(config_path.parent, raw.get("run_dir") or input_folder)
+
+    nreps = int(alf.get("nreps") or raw.get("nreps") or 1)
+    if nreps < 1:
+        raise ValueError("nreps must be >= 1")
+
+    lambda_precision = archive.get("lambda_precision", "full")
+    if lambda_precision not in {"full", "shrinker"}:
+        raise ValueError("archive.lambda_precision must be 'full' or 'shrinker'")
+
+    replica_exchange = alf.get("replica_exchange")
+    ph_values = _ph_values(alf, nreps)
+
+    return NativeRuntimeConfig(
+        config_path=config_path,
+        raw=raw,
+        run_dir=run_dir,
+        input_folder=input_folder,
+        nreps=nreps,
+        master_seed=master_seed,
+        start=int(alf.get("start", 1)),
+        end=int(alf.get("end", 1)),
+        phase=int(alf.get("phase", 1)),
+        temperature=float(alf.get("temperature", 298.15)),
+        nsteps_per_segment=int(alf.get("nsteps_per_segment", alf.get("nsteps", 1000))),
+        nsavl=int(alf.get("nsavl", 10)),
+        nsavc=int(alf.get("nsavc", 100)),
+        time_step_ps=float(alf.get("time_step_ps", 0.004 if alf.get("hmr", True) else 0.002)),
+        checkpoint_every_segments=int(alf.get("checkpoint_every_segments", 1)),
+        archive=ArchiveConfig(lambda_precision=lambda_precision),
+        logging=LoggingConfig(level=str(logging_cfg.get("level", "INFO"))),
+        ph=bool(alf.get("ph", False)),
+        ph_values=ph_values,
+        replica_exchange=replica_exchange,
+        walltime_safety_factor=float(raw.get("walltime_safety_factor", 2.0)),
+    )
+
+
+def _resolve_config_path(base: Path, value: str | Path) -> Path:
+    path = Path(value)
+    if path.is_absolute():
+        return path.resolve()
+    return (base / path).resolve()
+
+
+def _reject_user_facing_use_blade(raw: dict[str, Any]) -> None:
+    if "use_blade" in raw:
+        raise ValueError("use_blade is an internal test-only flag and is not accepted in YAML")
+    for section_name, section in raw.items():
+        if isinstance(section, dict) and "use_blade" in section:
+            raise ValueError(
+                f"{section_name}.use_blade is not accepted in YAML; BLADE is enabled "
+                "by the native runtime"
+            )
+
+
+def _ph_values(alf: dict[str, Any], nreps: int) -> tuple[float, ...]:
+    if "ph_values" in alf:
+        return tuple(float(value) for value in alf["ph_values"])
+    if "pH_values" in alf:
+        return tuple(float(value) for value in alf["pH_values"])
+    if "ph_start" in alf and "ph_end" in alf and nreps > 1:
+        start = float(alf["ph_start"])
+        end = float(alf["ph_end"])
+        step = (end - start) / (nreps - 1)
+        return tuple(start + step * idx for idx in range(nreps))
+    if "ph" in alf and isinstance(alf["ph"], (int, float)) and not isinstance(alf["ph"], bool):
+        return (float(alf["ph"]),)
+    return tuple(float(7.0) for _ in range(nreps))
 
 
 def load_yaml_config(path: str | Path) -> dict[str, Any]:

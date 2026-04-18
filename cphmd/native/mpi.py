@@ -27,6 +27,16 @@ def size(comm) -> int:
     return comm.Get_size()
 
 
+def finalize() -> None:
+    """Finalize MPI when mpi4py is initialized and not already finalized."""
+    try:
+        mpi_module = importlib.import_module("mpi4py.MPI")
+        if not mpi_module.Is_finalized():
+            mpi_module.Finalize()
+    except Exception:
+        return
+
+
 def gpu_id_for_rank(comm) -> int:
     """Return the visible CUDA ordinal for this rank."""
     visible_devices = _visible_cuda_devices()

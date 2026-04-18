@@ -6,6 +6,7 @@ from .context import LoopHooks, LoopState, RunContext
 from .loop import SimulationLoop
 from .rex_driver import ExchangeStats, REXConfig, REXDriver, REXStepResult
 from .shrinker import LambdaPrecision, ShrinkerMetadata, write_segment_parquet
+from .walltime import WalltimeGuard, job_end_time_from_env
 
 __all__ = [
     "Archiver",
@@ -21,5 +22,7 @@ __all__ = [
     "RunContext",
     "SimulationLoop",
     "ShrinkerMetadata",
+    "WalltimeGuard",
+    "job_end_time_from_env",
     "write_segment_parquet",
 ]

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+import logging
 import os
-import signal
 import time
 from collections.abc import Callable, Iterable
 from types import ModuleType
@@ -12,8 +12,10 @@ import numpy as np
 from cphmd.simulation.archiver import Archiver
 from cphmd.simulation.checkpoint import CheckpointManager
 from cphmd.simulation.context import LoopHooks, LoopState, RunContext
+from cphmd.simulation.walltime import WalltimeGuard, job_end_time_from_env
 
 RunSegmentFn = Callable[..., tuple[np.ndarray, np.ndarray]]
+logger = logging.getLogger(__name__)
 
 
 def default_native_modules() -> tuple[ModuleType, ...]:
@@ -54,6 +56,15 @@ class SimulationLoop:
         self._segment_seconds: list[float] = []
         self._checkpoint_seconds: list[float] = []
         self._cycle_seconds: list[float] = []
+        walltime_end = ctx.walltime_end_epoch
+        if walltime_end is None:
+            walltime_end = job_end_time_from_env()
+        self._walltime_guard = WalltimeGuard(
+            job_end_time=walltime_end,
+            safety_factor=ctx.walltime_safety_factor,
+        )
+        if walltime_end is None:
+            logger.warning("walltime guard disabled: SLURM_JOB_END_TIME unset")
 
     def request_stop(self) -> None:
         self._stop_requested = True
@@ -66,10 +77,12 @@ class SimulationLoop:
         self._initialize_native_dynamics()
         if resumed:
             self._restore_training_state(state)
-        previous_handlers = self._install_signal_handlers()
+        stop_token = self._install_signal_handlers()
         force_start = resumed
         try:
             while not self.hooks.is_done(state):
+                if stop_token.stop_requested:
+                    self.request_stop()
                 if self._should_stop_before_next_segment(state):
                     state = state.with_stop_requested()
                     break
@@ -86,7 +99,9 @@ class SimulationLoop:
                     lambda_headers=self.ctx.lambda_headers,
                 )
                 force_start = False
-                self._record_duration(self._segment_seconds, segment_started)
+                self._walltime_guard.record_segment_duration(
+                    self._record_duration(self._segment_seconds, segment_started)
+                )
                 self.archiver.write_segment(lambda_matrix, bias_matrix, state)
                 self.hooks.after_segment(state, lambda_matrix, bias_matrix)
                 state = state.advance_segment()
@@ -100,7 +115,9 @@ class SimulationLoop:
                 if self._should_trigger_cycle(state):
                     cycle_started = self._time_fn()
                     snapshot = self.hooks.run_cycle(state)
-                    self._record_duration(self._cycle_seconds, cycle_started)
+                    self._walltime_guard.record_cycle_duration(
+                        self._record_duration(self._cycle_seconds, cycle_started)
+                    )
                     next_state = state.with_cycle_result()
                     self.checkpoint.write_training_sidecars(
                         cache=getattr(self.hooks, "cache", None),
@@ -111,10 +128,14 @@ class SimulationLoop:
                 if state.segment_idx % self.ctx.checkpoint_every_segments == 0:
                     checkpoint_started = self._time_fn()
                     self.checkpoint.write(state, rng_state=rng_state)
-                    self._record_duration(self._checkpoint_seconds, checkpoint_started)
+                    self._write_status_summary(state)
+                    self._walltime_guard.record_checkpoint_duration(
+                        self._record_duration(self._checkpoint_seconds, checkpoint_started)
+                    )
         finally:
-            self._restore_signal_handlers(previous_handlers)
+            self._restore_signal_handlers(stop_token)
         self.checkpoint.write_final(state, rng_state=rng_state)
+        self._write_status_summary(state)
         return state
 
     def _build_rex_driver(self):
@@ -183,8 +204,10 @@ class SimulationLoop:
         except ValueError:
             return None
 
-    def _record_duration(self, bucket: list[float], start: float) -> None:
-        bucket.append(max(0.0, self._time_fn() - start))
+    def _record_duration(self, bucket: list[float], start: float) -> float:
+        duration = max(0.0, self._time_fn() - start)
+        bucket.append(duration)
+        return duration
 
     @staticmethod
     def _average(values: list[float]) -> float:
@@ -193,23 +216,23 @@ class SimulationLoop:
         return sum(values) / len(values)
 
     def _install_signal_handlers(self):
-        previous = {}
+        try:
+            from cphmd.cli._signals import install_clean_shutdown_handler
 
-        def handler(signum, frame):
-            self.request_stop()
-
-        for sig in (signal.SIGTERM, signal.SIGINT):
-            try:
-                previous[sig] = signal.getsignal(sig)
-                signal.signal(sig, handler)
-            except (AttributeError, ValueError):
-                continue
-        return previous
+            return install_clean_shutdown_handler()
+        except (AttributeError, ValueError):
+            return None
 
     @staticmethod
-    def _restore_signal_handlers(previous) -> None:
-        for sig, handler in previous.items():
-            signal.signal(sig, handler)
+    def _restore_signal_handlers(token) -> None:
+        return None
+
+    def _write_status_summary(self, state: LoopState) -> None:
+        if self.ctx.rank != 0:
+            return
+        writer = getattr(self.checkpoint, "write_status_summary", None)
+        if writer is not None:
+            writer(state)
 
     def _native_dynamics(self):
         if self._native_dynamics_override is not None:

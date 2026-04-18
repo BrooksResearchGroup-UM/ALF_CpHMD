@@ -1,3 +1,4 @@
+master_seed: 20260418
 # Lysozyme (2LZT) CpHMD Example
 # Hen egg-white lysozyme with all titratable residues
 # Workflow: prepare -> solvate -> patch -> alf

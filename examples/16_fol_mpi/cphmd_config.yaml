@@ -1,3 +1,4 @@
+master_seed: 20260418
 # Folate (FOL) Two-Site CpHMD Configuration — MPI Multi-GPU
 #
 # Same system as 15_fol_water but launched with mpirun for multi-GPU
@@ -44,6 +45,7 @@ patch:
           reference_patch: FOLG_U
 
 alf:
+  nreps: 5
   input_folder: solvated
   temperature: 298.15
   hmr: true
