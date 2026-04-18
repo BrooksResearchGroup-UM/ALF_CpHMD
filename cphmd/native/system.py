@@ -126,8 +126,10 @@ def _script_selection(selection: AtomSelection) -> str:
     if expr is None:
         return "sele all end"
     lowered = expr.lower()
-    if lowered.startswith("sele ") and lowered.endswith(" end"):
+    if lowered.startswith(("sele ", "select ")) and lowered.endswith(" end"):
         return expr
+    if lowered.endswith(" end"):
+        expr = expr[:-4].rstrip()
     return f"sele {expr} end"
 
 
@@ -437,11 +439,14 @@ def delete_atoms(selection: AtomSelection) -> None:
         raise wrap_exception(exc, SystemLoadError, "deleting atoms") from exc
 
 
-def psf_hmr(*, factor: float = 3.0) -> None:
+def psf_hmr(*, factor: float = 3.0, resnames_exclude: list[str] | None = None) -> None:
     if factor != 3.0:
         raise ValueError("pyCHARMM psf.hmr supports only factor=3.0")
     try:
-        _pycharmm_psf().hmr()
+        if resnames_exclude is None:
+            _pycharmm_psf().hmr()
+        else:
+            _pycharmm_psf().hmr(resnames_exclude=resnames_exclude)
         _invalidate_cache()
     except Exception as exc:
         raise wrap_exception(exc, SystemLoadError, "applying hydrogen mass repartitioning") from exc
@@ -685,6 +690,15 @@ def set_output_unit(unit: int) -> None:
         _pycharmm_lingo().charmm_script(f"outunit {unit}")
     except Exception as exc:
         raise wrap_exception(exc, SystemLoadError, f"setting output unit {unit}") from exc
+
+
+def reset_io_unit(unit: int = 91) -> None:
+    try:
+        lingo = _pycharmm_lingo()
+        lingo.charmm_script(f"open unit {unit} write form name /dev/null")
+        lingo.charmm_script(f"close unit {unit}")
+    except Exception as exc:
+        raise wrap_exception(exc, SystemLoadError, f"resetting I/O unit {unit}") from exc
 
 
 def set_prnlev(level: int) -> None:

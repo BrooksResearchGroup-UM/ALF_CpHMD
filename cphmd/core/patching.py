@@ -10,22 +10,16 @@ from __future__ import annotations
 import itertools
 import re
 import shutil
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import pycharmm
-import pycharmm.coor as coor
-import pycharmm.ic as ic
-import pycharmm.lingo as lingo
-import pycharmm.psf as psf
-import pycharmm.read as read
-import pycharmm.settings as settings
-import pycharmm.write as write
 
 from cphmd import TOPPAR_DIR
-from cphmd.utils.charmm_path import qpath
+from cphmd.native import system
+from cphmd.native.types import AtomSelection
 
 
 @dataclass
@@ -60,9 +54,7 @@ class LigandPatchDef:
 
     def __post_init__(self):
         if self.sites:
-            self.sites = [
-                LigandSiteDef(**s) if isinstance(s, dict) else s for s in self.sites
-            ]
+            self.sites = [LigandSiteDef(**s) if isinstance(s, dict) else s for s in self.sites]
 
 
 @dataclass
@@ -135,18 +127,20 @@ class PatchConfig:
     hmr_waters: bool = False
     selected_residues: list[str] = field(default_factory=list)
     toppar_dir: Path | None = None
-    topology_files: list[str] = field(default_factory=lambda: [
-        "top_all36_prot.rtf",
-        "par_all36m_prot.prm",
-        "top_all36_na.rtf",
-        "par_all36_na.prm",
-        "toppar_water_ions.str",
-        "top_all36_cgenff.rtf",
-        "par_all36_cgenff.prm",
-        "my_files/titratable_residues.str",
-        "my_files/nucleic_c36.str",
-        "my_files/his_patches.str",
-    ])
+    topology_files: list[str] = field(
+        default_factory=lambda: [
+            "top_all36_prot.rtf",
+            "par_all36m_prot.prm",
+            "top_all36_na.rtf",
+            "par_all36_na.prm",
+            "toppar_water_ions.str",
+            "top_all36_cgenff.rtf",
+            "par_all36_cgenff.prm",
+            "my_files/titratable_residues.str",
+            "my_files/nucleic_c36.str",
+            "my_files/his_patches.str",
+        ]
+    )
     extra_files: list[str | Path] = field(default_factory=list)
     ligand_patches: list[LigandPatchDef] = field(default_factory=list)
 
@@ -159,9 +153,7 @@ class PatchConfig:
             self.toppar_dir = Path(self.toppar_dir)
 
         if not has_folder and not has_files:
-            raise ValueError(
-                "Must provide either input_folder or both psf_file and crd_file"
-            )
+            raise ValueError("Must provide either input_folder or both psf_file and crd_file")
 
         # Resolve paths
         if has_files:
@@ -183,13 +175,9 @@ class PatchConfig:
         for ligand_def in self.ligand_patches:
             patch_file = Path(ligand_def.patch_file)
             if not patch_file.exists():
-                raise FileNotFoundError(
-                    f"Ligand patch file not found: {patch_file}"
-                )
+                raise FileNotFoundError(f"Ligand patch file not found: {patch_file}")
             if not ligand_def.patches and not ligand_def.sites:
-                raise ValueError(
-                    f"Ligand {ligand_def.resname}: must specify patches or sites"
-                )
+                raise ValueError(f"Ligand {ligand_def.resname}: must specify patches or sites")
 
 
 class PatchParser:
@@ -322,9 +310,13 @@ class PatchParser:
                     if k + 1 >= len(bonds):
                         break
                     if bonds[k] in self.atom_groups[resname] and not bonds[k].startswith("H"):
-                        if bonds[k + 1] not in self.atom_groups[resname] and bonds[k + 1].startswith("H"):
+                        if bonds[k + 1] not in self.atom_groups[resname] and bonds[
+                            k + 1
+                        ].startswith("H"):
                             self.atom_groups[resname].append(bonds[k + 1])
-                    if bonds[k + 1] in self.atom_groups[resname] and not bonds[k + 1].startswith("H"):
+                    if bonds[k + 1] in self.atom_groups[resname] and not bonds[k + 1].startswith(
+                        "H"
+                    ):
                         if bonds[k] not in self.atom_groups[resname] and bonds[k].startswith("H"):
                             self.atom_groups[resname].append(bonds[k])
 
@@ -529,22 +521,28 @@ class Universe:
     def _update_universe(self) -> pd.DataFrame:
         """Get current system state as DataFrame."""
         try:
-            select_all = pycharmm.SelectAtoms().all_atoms()
+            snapshot = system.get_topology_snapshot()
         except Exception as e:
             raise RuntimeError("No atoms in system") from e
 
-        crds = coor.get_positions()
-        return pd.DataFrame({
-            "index": select_all._atom_indexes,
-            "res_name": select_all._res_names,
-            "res_id": select_all._res_ids,
-            "seg_id": select_all._seg_ids,
-            "chem_type": select_all._chem_types,
-            "atom_type": select_all._atom_types,
-            "x": crds["x"].values,
-            "y": crds["y"].values,
-            "z": crds["z"].values,
-        })
+        if snapshot.natom <= 0:
+            raise RuntimeError("No atoms in system")
+
+        self._atoms = snapshot.atoms
+        self._natom = snapshot.natom
+        return pd.DataFrame(
+            {
+                "index": list(range(1, snapshot.natom + 1)),
+                "res_name": [atom.resname for atom in snapshot.atoms],
+                "res_id": [atom.resid for atom in snapshot.atoms],
+                "seg_id": [atom.segid for atom in snapshot.atoms],
+                "chem_type": [atom.atom_name for atom in snapshot.atoms],
+                "atom_type": [atom.atom_name for atom in snapshot.atoms],
+                "x": [atom.x for atom in snapshot.atoms],
+                "y": [atom.y for atom in snapshot.atoms],
+                "z": [atom.z for atom in snapshot.atoms],
+            }
+        )
 
     def resid_of_resname(self, resname: str) -> np.ndarray:
         """Get unique residue IDs for a given residue name."""
@@ -620,34 +618,34 @@ def _should_patch_residue(
 
 def _read_topology_files(config: PatchConfig, verbose: bool = True) -> None:
     """Load CHARMM topology and parameter files.
-    
+
     Loads standard topology files from toppar_dir, then any extra_files
     specified as absolute paths for custom residues or parameters.
     """
     toppar_dir = config.toppar_dir or TOPPAR_DIR
 
     if not verbose:
-        lingo.charmm_script("prnlev -1")
+        system.set_prnlev(-1)
 
     prm_files = [f for f in config.topology_files if f.endswith(".prm")]
     rtf_files = [f for f in config.topology_files if f.endswith(".rtf")]
     str_files = [f for f in config.topology_files if f.endswith(".str")]
 
-    lingo.charmm_script("bomblevel -2")
-    settings.set_warn_level(-1)
+    system.set_bomb_level(-2)
+    system.set_warn_level(-1)
 
     if rtf_files:
-        read.rtf(qpath(toppar_dir / rtf_files[0]))
+        system.read_rtf(toppar_dir / rtf_files[0])
         for f in rtf_files[1:]:
-            read.rtf(qpath(toppar_dir / f), append=True)
+            system.read_rtf(toppar_dir / f, append=True)
 
     if prm_files:
-        read.prm(qpath(toppar_dir / prm_files[0]), flex=True)
+        system.read_param(toppar_dir / prm_files[0])
         for f in prm_files[1:]:
-            read.prm(qpath(toppar_dir / f), flex=True, append=True)
+            system.read_param(toppar_dir / f, append=True)
 
     for f in str_files:
-        lingo.charmm_script(f"stream {qpath(toppar_dir / f)}")
+        system.stream_file(toppar_dir / f)
 
     # Load extra files (absolute paths for custom residues/parameters)
     for extra_file in config.extra_files:
@@ -657,38 +655,38 @@ def _read_topology_files(config: PatchConfig, verbose: bool = True) -> None:
 
         suffix = extra_path.suffix.lower()
         if suffix == ".rtf":
-            read.rtf(qpath(extra_path), append=True)
+            system.read_rtf(extra_path, append=True)
         elif suffix == ".prm":
-            read.prm(qpath(extra_path), flex=True, append=True)
+            system.read_param(extra_path, append=True)
         elif suffix == ".str":
-            lingo.charmm_script(f"stream {qpath(extra_path)}")
+            system.stream_file(extra_path)
         else:
             # Try streaming unknown file types
-            lingo.charmm_script(f"stream {qpath(extra_path)}")
+            system.stream_file(extra_path)
 
     # Load ligand patch files
     for ligand_def in config.ligand_patches:
         patch_path = Path(ligand_def.patch_file)
         suffix = patch_path.suffix.lower()
         if suffix == ".rtf":
-            read.rtf(qpath(patch_path), append=True)
+            system.read_rtf(patch_path, append=True)
         elif suffix == ".str":
-            lingo.charmm_script(f"stream {qpath(patch_path)}")
+            system.stream_file(patch_path)
         else:
             # Try reading as RTF for unknown patch file types
-            read.rtf(qpath(patch_path), append=True)
+            system.read_rtf(patch_path, append=True)
         print(f"Loaded ligand patch file: {patch_path}")
 
-    settings.set_warn_level(5)
-    lingo.charmm_script("bomblevel 0")
+    system.set_warn_level(5)
+    system.set_bomb_level(0)
 
     if not verbose:
-        lingo.charmm_script("prnlev 5")
+        system.set_prnlev(5)
 
 
-def _detect_disulfide_bonds(uni: Universe, residues: list[tuple[str, int, str]]) -> tuple[
-    list[tuple[str, int, str]], set[tuple[str, int, str]]
-]:
+def _detect_disulfide_bonds(
+    uni: Universe, residues: list[tuple[str, int, str]]
+) -> tuple[list[tuple[str, int, str]], set[tuple[str, int, str]]]:
     """Detect and filter out disulfide-bonded cysteines.
 
     Args:
@@ -720,10 +718,12 @@ def _detect_disulfide_bonds(uni: Universe, residues: list[tuple[str, int, str]])
 
                 if distance < 2.6:
                     print(f"CYS {cys1['res_id']} is disulfide bonded to {cys2['res_id']}")
-                    bonded_res.update([
-                        (cys1["seg_id"], cys1["res_id"], cys1["res_name"]),
-                        (cys2["seg_id"], cys2["res_id"], cys2["res_name"]),
-                    ])
+                    bonded_res.update(
+                        [
+                            (cys1["seg_id"], cys1["res_id"], cys1["res_name"]),
+                            (cys2["seg_id"], cys2["res_id"], cys2["res_name"]),
+                        ]
+                    )
 
     filtered = [res for res in residues if res not in bonded_res]
     for res in filtered:
@@ -760,6 +760,56 @@ def _fft_number(n: float) -> int:
             return num
 
     return n  # Fallback
+
+
+def _stream_charmm_script(script: str, directory: Path, prefix: str = "patching") -> None:
+    """Stream a generated CHARMM snippet without leaving persistent run artifacts."""
+    directory.mkdir(parents=True, exist_ok=True)
+    handle = tempfile.NamedTemporaryFile(
+        "w",
+        suffix=".inp",
+        prefix=f".{prefix}_",
+        dir=directory,
+        delete=False,
+    )
+    path = Path(handle.name)
+    try:
+        with handle:
+            handle.write(script.rstrip())
+            handle.write("\n")
+        system.stream_file(path)
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def _convert_histidines_for_segment(
+    titratable_list: list[tuple[str, int, str]],
+    his_residues: list[tuple[str, int, str]],
+    tmp_dir: Path | None,
+) -> None:
+    """Convert HSD/HSE residues to HSP before selection filtering."""
+    for seg_id, resid, resname in his_residues:
+        print(f"Patching HSP {seg_id} {resid}")
+        system.rename_residues(AtomSelection(segid=seg_id, resid=resid), "HSP")
+        system.patch(f"{resname}P", seg_id, resid)
+        if tmp_dir is not None:
+            _stream_charmm_script(
+                f"HBUILD sele segid {seg_id} .and. hydrogen end",
+                tmp_dir,
+                "hbuild_his",
+            )
+        titratable_list.append((seg_id, resid, "HSP"))
+
+
+def _filter_titratable_residues(
+    titratable_list: list[tuple[str, int, str]],
+    criteria: list[tuple[str, str | tuple[str, str]]],
+) -> list[tuple[str, int, str]]:
+    return [
+        item
+        for item in titratable_list
+        if _should_patch_residue(item[0], item[1], item[2], criteria)
+    ]
 
 
 def patch_system(config: PatchConfig) -> Path:
@@ -813,15 +863,15 @@ def patch_system(config: PatchConfig) -> Path:
 
     # Load topology
     _read_topology_files(config)
-    lingo.charmm_script("IOFOrmat EXTEnded")
+    system.set_iofmt(extended=True)
 
     # Ligand fragments may have fractional charge — suppress PSF charge warning
     if config.ligand_patches:
-        pycharmm.charmm_script("bomblevel -2")
+        system.set_bomb_level(-2)
 
     # Load structure
-    read.psf_card(qpath(psf_path))
-    read.coor_card(qpath(crd_path))
+    system.read_psf(psf_path)
+    system.read_coor(crd_path)
 
     uni = Universe()
     patches_topology = PatchParser(
@@ -842,7 +892,9 @@ def patch_system(config: PatchConfig) -> Path:
             (row["seg_id"], row["res_id"], row["res_name"])
             for _, row in uni.universe[uni.universe["res_name"] == resname][
                 ["seg_id", "res_id", "res_name"]
-            ].drop_duplicates().iterrows()
+            ]
+            .drop_duplicates()
+            .iterrows()
         ]
 
         # Handle CYS disulfide bonds
@@ -864,44 +916,36 @@ def patch_system(config: PatchConfig) -> Path:
     tmp_dir = output_folder / "tmp"
     tmp_dir.mkdir(exist_ok=True)
 
-    from cphmd.core.charmm_utils import reset_io_unit as _reset_io
-
     for seg_id in seg_ids:
         if seg_id != seg_ids[0]:
-            psf.delete_atoms(pycharmm.SelectAtoms().all_atoms())
-            _reset_io(91)
-            read.psf_card(qpath(psf_path))
-            read.coor_card(qpath(crd_path))
+            system.delete_atoms(AtomSelection())
+            system.reset_io_unit(91)
+            system.read_psf(psf_path)
+            system.read_coor(crd_path)
 
         if len(seg_ids) > 1:
-            lingo.charmm_script(f"DELEte ATOMs SELEct .not. segid {seg_id} END")
+            system.delete_atoms(AtomSelection(raw=f".not. segid {seg_id}"))
 
         # Handle HSD/HSE → HSP conversion
         his_residues = [
             (row["seg_id"], row["res_id"], row["res_name"])
             for _, row in uni.universe[
-                (uni.universe["res_name"].isin(["HSD", "HSE"])) &
-                (uni.universe["seg_id"] == seg_id)
-            ][["seg_id", "res_id", "res_name"]].drop_duplicates().iterrows()
+                (uni.universe["res_name"].isin(["HSD", "HSE"])) & (uni.universe["seg_id"] == seg_id)
+            ][["seg_id", "res_id", "res_name"]]
+            .drop_duplicates()
+            .iterrows()
         ]
 
-        for res in his_residues:
-            print(f"Patching HSP {res[0]} {res[1]}")
-            pycharmm.charmm_script(f"rename resn HSP sele segid {res[0]} .and. resid {res[1]} end")
-            pycharmm.charmm_script(f"patch {res[2]}P {res[0]} {res[1]}")
-            pycharmm.charmm_script(f"HBUILD sele segid {res[0]} .and. hydrogen end")
-            titratable_list.append((res[0], res[1], "HSP"))
+        _convert_histidines_for_segment(titratable_list, his_residues, tmp_dir)
 
-        pycharmm.charmm_script("HBuild")
-        write.psf_card(str(tmp_dir / f"{seg_id.lower()}.psf"))
-        write.coor_card(str(tmp_dir / f"{seg_id.lower()}.crd"))
+        _stream_charmm_script("HBuild", tmp_dir, "hbuild")
+        system.write_psf(tmp_dir / f"{seg_id.lower()}.psf")
+        system.write_coor(tmp_dir / f"{seg_id.lower()}.crd")
 
     # Filter titratable residues based on selection criteria
-    filtered_list = [
-        item for item in titratable_list
-        if _should_patch_residue(item[0], item[1], item[2], criteria)
-    ]
-    print(f"Filtered {len(titratable_list) - len(filtered_list)} residues based on selection criteria.")
+    filtered_list = _filter_titratable_residues(titratable_list, criteria)
+    dropped_count = len(titratable_list) - len(filtered_list)
+    print(f"Filtered {dropped_count} residues based on selection criteria.")
     titratable_list = filtered_list
 
     print("Final list of residues selected for patching:")
@@ -919,58 +963,56 @@ def patch_system(config: PatchConfig) -> Path:
 
     # Apply patches per segment
     # Keep bomblevel -2 for entire patching loop to handle non-integer charge warnings
-    pycharmm.charmm_script("bomblevel -2")
+    system.set_bomb_level(-2)
     global_idx = 0
     for seg_id in seg_ids:
         with open(patches_file, "a") as f:
-            psf.delete_atoms(pycharmm.SelectAtoms().all_atoms())
-            _reset_io(91)
-            read.psf_card(qpath(tmp_dir / f"{seg_id.lower()}.psf"))
-            read.coor_card(qpath(tmp_dir / f"{seg_id.lower()}.crd"))
+            system.delete_atoms(AtomSelection())
+            system.reset_io_unit(91)
+            system.read_psf(tmp_dir / f"{seg_id.lower()}.psf")
+            system.read_coor(tmp_dir / f"{seg_id.lower()}.crd")
 
             sublist = [res for res in titratable_list if res[0] == seg_id]
             print(f"Patching segment {seg_id}: {sublist}")
 
-            global_idx = _apply_patches(
-                output_folder, patches_topology, sublist, global_idx, f
-            )
+            global_idx = _apply_patches(output_folder, patches_topology, sublist, global_idx, f)
 
-        ic.build()
-        ic.prm_fill(replace_all=True)
+        system.ic_build()
+        system.ic_prm_fill(comp=True)
         # Build coordinates for newly added hydrogens (e.g., H36, H37 from ligand patches)
-        pycharmm.charmm_script("HBUILD")
-        write.coor_card(str(tmp_dir / f"{seg_id.lower()}.crd"))
-        write.psf_card(str(tmp_dir / f"{seg_id.lower()}.psf"))
+        _stream_charmm_script("HBUILD", tmp_dir, "hbuild")
+        system.write_coor(tmp_dir / f"{seg_id.lower()}.crd")
+        system.write_psf(tmp_dir / f"{seg_id.lower()}.psf")
 
     # Combine segments
-    psf.delete_atoms(pycharmm.SelectAtoms().all_atoms())
+    system.delete_atoms(AtomSelection())
     for i, seg_id in enumerate(seg_ids):
-        _reset_io(91)
+        system.reset_io_unit(91)
         if i == 0:
-            read.psf_card(qpath(tmp_dir / f"{seg_id.lower()}.psf"))
-            read.coor_card(qpath(tmp_dir / f"{seg_id.lower()}.crd"))
+            system.read_psf(tmp_dir / f"{seg_id.lower()}.psf")
+            system.read_coor(tmp_dir / f"{seg_id.lower()}.crd")
         else:
-            read.psf_card(qpath(tmp_dir / f"{seg_id.lower()}.psf"), append=True)
-            read.coor_card(qpath(tmp_dir / f"{seg_id.lower()}.crd"), append=True)
+            system.read_psf(tmp_dir / f"{seg_id.lower()}.psf", append=True)
+            system.read_coor(tmp_dir / f"{seg_id.lower()}.crd", append=True)
 
     # Reset bomblevel after all patching is complete
-    pycharmm.charmm_script("bomblevel 0")
+    system.set_bomb_level(0)
 
     # Write output files
-    write.coor_pdb(str(output_folder / "system.pdb"))
-    write.psf_card(str(output_folder / "system.psf"))
-    write.coor_card(str(output_folder / "system.crd"))
+    system.write_coor_pdb(output_folder / "system.pdb")
+    system.write_psf(output_folder / "system.psf")
+    system.write_coor(output_folder / "system.crd")
 
     # Apply HMR
     if config.hmr:
         if config.hmr_waters:
-            psf.hmr(resnames_exclude=[])
+            system.psf_hmr(resnames_exclude=[])
             print("HMR enabled for system")
         else:
-            psf.hmr()
+            system.psf_hmr()
             print("HMR enabled for system without waters")
-        write.psf_card(str(output_folder / "system_hmr.psf"))
-        write.coor_card(str(output_folder / "system_hmr.crd"))
+        system.write_psf(output_folder / "system_hmr.psf")
+        system.write_coor(output_folder / "system_hmr.crd")
 
     # Copy box.dat from input folder if it exists (preserves crystal type from solvation)
     if config.input_folder is not None:
@@ -1000,8 +1042,8 @@ def _apply_patches(
     f,
 ) -> int:
     """Apply patches to titratable residues using CHARMM REPLICATE command."""
-    from cphmd.core.charmm_utils import reset_io_unit as _reset_io
-    pycharmm.charmm_script("AUTO NOPAtch")
+    tmp_dir = input_folder / "tmp"
+    system.disable_autogen()
     idx = start_idx
 
     # Track patches processed at each (seg_id, resid) for multi-site ligands.
@@ -1015,9 +1057,9 @@ def _apply_patches(
 
         # Check if first occurrence of this segment
         if [res[0] for res in titratable_list].index(seg_id) == titratable_list.index(residue):
-            _reset_io(91)
-            read.psf_card(qpath(input_folder / "tmp" / f"{seg_id.lower()}.psf"))
-            read.coor_card(qpath(input_folder / "tmp" / f"{seg_id.lower()}.crd"))
+            system.reset_io_unit(91)
+            system.read_psf(tmp_dir / f"{seg_id.lower()}.psf")
+            system.read_coor(tmp_dir / f"{seg_id.lower()}.crd")
 
         # Build REPLICATE command
         n_rep = len(patches_topology.patches[resname]) + 1
@@ -1029,10 +1071,10 @@ def _apply_patches(
         select_cmd += " .or. ".join([f"-\ntype {atom}" for atom in atoms])
         select_cmd += ") END\n"
 
-        pycharmm.charmm_script(charmm_cmd + select_cmd)
+        _stream_charmm_script(charmm_cmd + select_cmd, tmp_dir, "replicate")
 
         # Delete atoms in original residue
-        pycharmm.charmm_script(f"DELEte ATOMs {select_cmd}")
+        _stream_charmm_script(f"DELEte ATOMs {select_cmd}", tmp_dir, "delete_original")
 
         # Process each patch
         # Check if a reference_patch is defined (ligand with explicit reference state)
@@ -1068,25 +1110,40 @@ def _apply_patches(
                 elif patch not in patches_topology.pka:
                     if ref_patch and ref_micro_pka:
                         # Tautomer without pKa, but reference is defined → UNEG
-                        f.write(f"{seg_id},{resid},{patch},s{idx}s{j},{atoms_str},UNEG {ref_micro_pka}\n")
+                        f.write(
+                            f"{seg_id},{resid},{patch},s{idx}s{j},{atoms_str},"
+                            f"UNEG {ref_micro_pka}\n"
+                        )
                     else:
                         f.write(f"{seg_id},{resid},{patch},s{idx}s{j},{atoms_str},NONE\n")
-                elif len(patches_topology.atom_groups[patch]) - len(patches_topology.atom_groups[resname]) > 0:
-                    f.write(f"{seg_id},{resid},{patch},s{idx}s{j},{atoms_str},UNEG {patches_topology.pka[patch]}\n")
+                elif (
+                    len(patches_topology.atom_groups[patch])
+                    - len(patches_topology.atom_groups[resname])
+                    > 0
+                ):
+                    f.write(
+                        f"{seg_id},{resid},{patch},s{idx}s{j},{atoms_str},"
+                        f"UNEG {patches_topology.pka[patch]}\n"
+                    )
                 else:
-                    f.write(f"{seg_id},{resid},{patch},s{idx}s{j},{atoms_str},UPOS {patches_topology.pka[patch]}\n")
+                    f.write(
+                        f"{seg_id},{resid},{patch},s{idx}s{j},{atoms_str},"
+                        f"UPOS {patches_topology.pka[patch]}\n"
+                    )
             else:
                 atoms_str = " ".join(patches_topology.atom_groups[patch[:-1]])
                 if ref_patch and ref_micro_pka:
                     # Original state with reference defined → UNEG
-                    f.write(f"{seg_id},{resid},{patch},s{idx}s{j},{atoms_str},UNEG {ref_micro_pka}\n")
+                    f.write(
+                        f"{seg_id},{resid},{patch},s{idx}s{j},{atoms_str},UNEG {ref_micro_pka}\n"
+                    )
                 else:
                     f.write(f"{seg_id},{resid},{patch},s{idx}s{j},{atoms_str},NONE\n")
 
             cmd += f"RENAMe RESName {patch} SELE segid {resid}{j} END\n"
             cmd += f"JOIN {seg_id} {resid}{j}\n"
             j += 1
-            pycharmm.charmm_script(cmd)
+            _stream_charmm_script(cmd, tmp_dir, "patch_join")
 
         # Build AUTO ANGLES selection, excluding patches from previously processed
         # sites at the same (seg_id, resid). Without exclusion, AUTO ANGLES
@@ -1099,17 +1156,32 @@ def _apply_patches(
         else:
             auto_sel = f"sele segid {seg_id} .and. resid {resid} end"
 
-        pycharmm.charmm_script(f"AUTO ANGLES DIHEDRALS {auto_sel}")
-        pycharmm.charmm_script(f"IC PARAM {auto_sel}")
-        pycharmm.charmm_script(f"IC FILL PRESERVE {auto_sel}")
-        pycharmm.charmm_script("REPLIcate RESEt")
+        _stream_charmm_script(
+            "\n".join(
+                [
+                    f"AUTO ANGLES DIHEDRALS {auto_sel}",
+                    f"IC PARAM {auto_sel}",
+                    f"IC FILL PRESERVE {auto_sel}",
+                    "REPLIcate RESEt",
+                ]
+            ),
+            tmp_dir,
+            "auto_ic",
+        )
 
         # Delete connections between different patches within this site
         patches = [resname + "O"] + patches_topology.patches[resname]
         for pair in itertools.combinations(patches, 2):
-            pycharmm.charmm_script(
-                f"DELETE CONN ATOMs SELEct segid {seg_id} .and. resid {resid} .and. resname {pair[0]} END "
+            first_selection = (
+                f"SELEct segid {seg_id} .and. resid {resid} .and. resname {pair[0]} END"
+            )
+            second_selection = (
                 f"SELEct segid {seg_id} .and. resid {resid} .and. resname {pair[1]} END"
+            )
+            _stream_charmm_script(
+                f"DELETE CONN ATOMs {first_selection} {second_selection}",
+                tmp_dir,
+                "delete_conn",
             )
 
         # Track this site's patches for future exclusion
@@ -1123,7 +1195,7 @@ def _write_box_params(input_folder: Path) -> None:
     box_file = input_folder / "box.dat"
 
     if not box_file.exists():
-        stats = coor.stat()
+        stats = system.coor_stat()
         xmax, xmin = stats["xmax"], stats["xmin"]
         ymax, ymin = stats["ymax"], stats["ymin"]
         zmax, zmin = stats["zmax"], stats["zmin"]
@@ -1158,4 +1230,7 @@ def _write_selections(
             seg_id, resid, resname = residue
             patches = [resname + "O"] + patches_topology.patches[resname]
             for j, patch in enumerate(patches, 1):
-                f.write(f"DEFIne s{i}s{j} SELEct segid {seg_id} .and. resid {resid} .and. resname {patch} END\n")
+                f.write(
+                    f"DEFIne s{i}s{j} SELEct segid {seg_id} .and. resid {resid} "
+                    f".and. resname {patch} END\n"
+                )

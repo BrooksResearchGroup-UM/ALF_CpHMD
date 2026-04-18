@@ -8,7 +8,6 @@ PYCHARMM_IMPORT_ALLOWLIST = (
     "cphmd/core/bias_guesser.py",
     "cphmd/core/charmm_utils.py",
     "cphmd/core/dynamics_runner.py",
-    "cphmd/core/patching.py",
     "cphmd/core/production_runner.py",
     "cphmd/core/replica_exchange.py",
 )
