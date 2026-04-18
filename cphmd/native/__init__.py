@@ -1,8 +1,11 @@
 """Native pyCHARMM boundary for CpHMD."""
 
-from importlib import metadata
+import sys
+from importlib import import_module, metadata
 
 from packaging.version import InvalidVersion, Version
+
+from cphmd.native.types import AtomRecord, AtomSelection, CellParameters, TopologySnapshot
 
 PYCHARMM_MIN_VERSION = "0.5.1"
 
@@ -12,13 +15,12 @@ def _require_pycharmm_version() -> Version:
     try:
         version_str = metadata.version("pycharmm")
     except metadata.PackageNotFoundError:
-        try:
-            import pycharmm
-        except ImportError as exc:
+        pycharmm = sys.modules.get("pycharmm")
+        if pycharmm is None:
             raise RuntimeError(
                 f"cphmd.native requires pyCHARMM >= {PYCHARMM_MIN_VERSION}, "
                 "but the 'pycharmm' distribution is not installed."
-            ) from exc
+            )
         version_str = getattr(pycharmm, "__version__", None)
         if version_str is None:
             raise RuntimeError(
@@ -45,3 +47,22 @@ def _require_pycharmm_version() -> Version:
 
 
 PYCHARMM_VERSION = _require_pycharmm_version()
+
+
+def __getattr__(name: str):
+    if name == "system":
+        module = import_module("cphmd.native.system")
+        globals()[name] = module
+        return module
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+__all__ = [
+    "AtomRecord",
+    "AtomSelection",
+    "CellParameters",
+    "PYCHARMM_MIN_VERSION",
+    "PYCHARMM_VERSION",
+    "TopologySnapshot",
+    "system",
+]
