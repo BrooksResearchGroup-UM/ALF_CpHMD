@@ -2,27 +2,17 @@
 Create amino acid and nucleic acid template structures.
 
 This module provides functions to generate PDB, CRD, and PSF files
-for single residue building blocks using pyCHARMM.
+for single residue building blocks using CHARMM.
 """
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Literal
 
-import pycharmm
-import pycharmm.coor as coor
-import pycharmm.generate as gen
-import pycharmm.ic as ic
-import pycharmm.lingo as lingo
-import pycharmm.psf as psf
-import pycharmm.read as read
-import pycharmm.settings as settings
-import pycharmm.write as write
-
 from cphmd import TOPPAR_DIR
-
+from cphmd.native import system
+from cphmd.native.types import AtomSelection
 
 # Default titratable amino acids for CpHMD
 TITRATABLE_AMINO_ACIDS = ["HSP", "LYS", "ARG", "ASP", "GLU", "TYR", "SER", "CYS"]
@@ -43,16 +33,16 @@ def _load_topology(toppar_dir: Path | None = None) -> None:
     toppar_dir = Path(toppar_dir)
 
     # Suppress warnings during topology loading
-    settings.set_bomb_level(-1)
+    system.set_bomb_level(-1)
 
-    read.rtf(str(toppar_dir / "top_all36_prot.rtf"))
-    read.rtf(str(toppar_dir / "top_all36_na.rtf"), append=True)
-    read.prm(str(toppar_dir / "par_all36m_prot.prm"), flex=True)
-    read.prm(str(toppar_dir / "par_all36_na.prm"), flex=True, append=True)
-    lingo.charmm_script(f"stream {toppar_dir / 'toppar_water_ions.str'}")
+    system.read_rtf(toppar_dir / "top_all36_prot.rtf")
+    system.read_rtf(toppar_dir / "top_all36_na.rtf", append=True)
+    system.read_param(toppar_dir / "par_all36m_prot.prm")
+    system.read_param(toppar_dir / "par_all36_na.prm", append=True)
+    system.stream_file(toppar_dir / "toppar_water_ions.str")
 
     # Restore bomb level
-    settings.set_bomb_level(0)
+    system.set_bomb_level(0)
 
 
 def create_amino_acid(
@@ -91,22 +81,22 @@ def create_amino_acid(
 
     # Generate sequence
     seq = template.format(res=residue)
-    read.sequence_string(seq)
+    system.read_sequence_string(seq)
 
     # Build structure
-    gen.new_segment(seg_name="PROA", first_patch="ACE", last_patch="CT3", setup_ic=True)
-    ic.prm_fill(replace_all=False)
-    ic.seed(res1=1, atom1="CAY", res2=1, atom2="CY", res3=1, atom3="N")
-    ic.build()
-    coor.orient(by_rms=False, by_mass=False, by_noro=False)
+    system.generate_segment("PROA", first="ACE", last="CT3", setup=True)
+    system.ic_prm_fill(comp=False)
+    system.ic_seed(((1, "CAY"), (1, "CY"), (1, "N")))
+    system.ic_build()
+    system.coor_orient()
 
     # Write output files
-    write.coor_card(str(output_dir / f"{residue.lower()}.crd"))
-    write.coor_pdb(str(pdb_path))
-    write.psf_card(str(output_dir / f"{residue.lower()}.psf"))
+    system.write_coor(output_dir / f"{residue.lower()}.crd")
+    system.write_coor_pdb(pdb_path)
+    system.write_psf(output_dir / f"{residue.lower()}.psf")
 
     # Clean up for next run
-    psf.delete_atoms(pycharmm.SelectAtoms().all_atoms())
+    system.delete_atoms(AtomSelection())
 
     print(f"Created {pdb_path}")
     return pdb_path
@@ -145,22 +135,22 @@ def create_nucleic_acid(
     _load_topology(toppar_dir)
 
     # Generate sequence (single nucleotide)
-    read.sequence_string(residue)
+    system.read_sequence_string(residue)
 
     # Build structure
-    gen.new_segment(seg_name="PROA", first_patch="5TER", last_patch="3TER", setup_ic=True)
-    ic.prm_fill(replace_all=False)
-    ic.seed(res1=1, atom1="C1'", res2=1, atom2="C2'", res3=1, atom3="C3'")
-    ic.build()
-    coor.orient(by_rms=False, by_mass=False, by_noro=False)
+    system.generate_segment("PROA", first="5TER", last="3TER", setup=True)
+    system.ic_prm_fill(comp=False)
+    system.ic_seed(((1, "C1'"), (1, "C2'"), (1, "C3'")))
+    system.ic_build()
+    system.coor_orient()
 
     # Write output files
-    write.coor_card(str(output_dir / f"{residue.lower()}.crd"))
-    write.coor_pdb(str(pdb_path))
-    write.psf_card(str(output_dir / f"{residue.lower()}.psf"))
+    system.write_coor(output_dir / f"{residue.lower()}.crd")
+    system.write_coor_pdb(pdb_path)
+    system.write_psf(output_dir / f"{residue.lower()}.psf")
 
     # Clean up for next run
-    psf.delete_atoms(pycharmm.SelectAtoms().all_atoms())
+    system.delete_atoms(AtomSelection())
 
     print(f"Created {pdb_path}")
     return pdb_path
