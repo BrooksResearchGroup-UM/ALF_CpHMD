@@ -8,6 +8,8 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any, Iterable
 
+import numpy as np
+
 from cphmd.simulation.context import LoopState, RunContext
 from cphmd.utils.native_fingerprint import compute
 
@@ -56,6 +58,60 @@ class CheckpointManager:
 
     def write_final(self, state: LoopState, *, rng_state: dict[str, Any]) -> Path:
         return self.write(state, rng_state=rng_state)
+
+    @property
+    def segment_cache_path(self) -> Path:
+        return self.ctx.rank_dir / "checkpoint_segment_cache.npz"
+
+    @property
+    def bias_snapshot_path(self) -> Path:
+        return self.ctx.rank_dir / "checkpoint_bias.npz"
+
+    def write_training_sidecars(self, *, cache=None, bias_snapshot=None) -> None:
+        if cache is not None:
+            cache.write(self.segment_cache_path)
+        if bias_snapshot is not None:
+            self._write_bias_snapshot(bias_snapshot)
+
+    def read_segment_cache(self, *, max_segments: int):
+        from cphmd.training.segment_cache import SegmentCache
+
+        if not self.segment_cache_path.exists():
+            return SegmentCache(max_segments=max_segments)
+        return SegmentCache.read(self.segment_cache_path)
+
+    def read_bias_snapshot(self, *, nsubs):
+        from cphmd.training.bias_snapshot import BiasSnapshot
+
+        if not self.bias_snapshot_path.exists():
+            return None
+        with np.load(self.bias_snapshot_path, allow_pickle=False) as data:
+            schema = int(data["schema_version"][0])
+            if schema != 1:
+                raise ValueError(f"unsupported bias snapshot schema {schema}")
+            return BiasSnapshot.from_arrays(
+                b=data["b"],
+                c=data["c"],
+                x=data["x"],
+                s=data["s"],
+                nsubs=tuple(nsubs),
+            )
+
+    def _write_bias_snapshot(self, bias_snapshot) -> Path:
+        path = self.bias_snapshot_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(f"{path.name}.tmp")
+        with tmp.open("wb") as handle:
+            np.savez_compressed(
+                handle,
+                schema_version=np.array([1], dtype=np.int32),
+                b=bias_snapshot.b,
+                c=bias_snapshot.c,
+                x=bias_snapshot.x,
+                s=bias_snapshot.s,
+            )
+        os.replace(tmp, path)
+        return path
 
     def _validate(self, payload: dict[str, Any]) -> None:
         expected = {
