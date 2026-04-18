@@ -9,11 +9,15 @@ from __future__ import annotations
 
 import logging
 import re
+import tempfile
 from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
+
+from cphmd.native import system
+from cphmd.native.types import AtomSelection
 
 logger = logging.getLogger(__name__)
 
@@ -134,11 +138,13 @@ def _synthetic_patch_info(nsubs: list[int]) -> pd.DataFrame:
     rows = []
     for site_idx, n in enumerate(nsubs):
         for sub_idx in range(n):
-            rows.append({
-                "SELECT": f"s{site_idx + 1}s{sub_idx + 1}",
-                "site": site_idx + 1,
-                "sub": sub_idx + 1,
-            })
+            rows.append(
+                {
+                    "SELECT": f"s{site_idx + 1}s{sub_idx + 1}",
+                    "site": site_idx + 1,
+                    "sub": sub_idx + 1,
+                }
+            )
     return pd.DataFrame(rows)
 
 
@@ -153,9 +159,7 @@ def _generate_legacy_call_statements(nsubs: list[int]) -> str:
     block_idx = 2  # block 1 = environment
     for site_idx, n in enumerate(nsubs):
         for sub_idx in range(n):
-            lines.append(
-                f"CALL {block_idx} sele site{site_idx + 1}_sub{sub_idx + 1} end"
-            )
+            lines.append(f"CALL {block_idx} sele site{site_idx + 1}_sub{sub_idx + 1} end")
             block_idx += 1
     return "\n".join(lines) + "\n\n"
 
@@ -235,13 +239,18 @@ def parse_legacy_ligseg(setup_script: str | Path, default: str = "LIG") -> str:
     return segid.strip().upper()
 
 
-def _delete_except_segids_command(keep_segids: tuple[str, ...] | list[str]) -> str:
-    """Build CHARMM command that keeps only the selected segids."""
+def _delete_except_segids_selection(keep_segids: tuple[str, ...] | list[str]) -> str:
+    """Build a CHARMM selection that keeps only the selected segids."""
     segids = [str(segid).strip().upper() for segid in keep_segids if str(segid).strip()]
     if not segids:
         raise ValueError("At least one segid must be kept for vacuum evaluation")
     clause = " .or. ".join(f"segid {segid}" for segid in segids)
-    return f"delete atom sele .not. ({clause}) end"
+    return f".not. ({clause})"
+
+
+def _delete_except_segids_command(keep_segids: tuple[str, ...] | list[str]) -> str:
+    """Build CHARMM command that keeps only the selected segids."""
+    return f"delete atom sele {_delete_except_segids_selection(keep_segids)} end"
 
 
 def _context_site_indices(
@@ -251,9 +260,7 @@ def _context_site_indices(
     """Sites retained in the same segment context as the target site."""
     target = set(site_keep_segids[target_site_idx])
     return [
-        site_idx
-        for site_idx, segids in enumerate(site_keep_segids)
-        if target.intersection(segids)
+        site_idx for site_idx, segids in enumerate(site_keep_segids) if target.intersection(segids)
     ]
 
 
@@ -293,14 +300,14 @@ def _local_legacy_context(
         n = nsubs[original_site_idx]
         local_nsubs.append(n)
         for local_sub in range(1, n + 1):
-            rows.append({
-                "SELECT": f"s{local_site}s{local_sub}",
-                "site": local_site,
-                "sub": local_sub,
-            })
-            call_selection_names.append(
-                f"site{original_site_idx + 1}_sub{local_sub}"
+            rows.append(
+                {
+                    "SELECT": f"s{local_site}s{local_sub}",
+                    "site": local_site,
+                    "sub": local_sub,
+                }
             )
+            call_selection_names.append(f"site{original_site_idx + 1}_sub{local_sub}")
     return pd.DataFrame(rows), local_nsubs, call_selection_names
 
 
@@ -455,12 +462,18 @@ def _build_energy_block_command(
     return "\n".join(parts)
 
 
+def _execute_block_command(block_cmd: str) -> None:
+    """Execute generated BLOCK input through the native CHARMM stream boundary."""
+    with tempfile.TemporaryDirectory(prefix="cphmd_bias_") as tmp:
+        script_path = Path(tmp) / "block.inp"
+        script_path.write_text(block_cmd.rstrip() + "\n")
+        system.stream_file(script_path)
+
+
 def _evaluate_energy() -> float:
     """Evaluate current CHARMM energy on CPU (no BLADE) and return total."""
-    import pycharmm.energy as energy
-
-    energy.show()
-    return energy.get_total()
+    system.energy_show()
+    return system.energy_get_total()
 
 
 def guess_initial_biases(
@@ -490,12 +503,8 @@ def guess_initial_biases(
     Returns:
         (b, c) where b has shape (1, nblocks) and c has shape (nblocks, nblocks).
     """
-    import pycharmm.lingo as lingo
-
-    from .charmm_utils import clear_block, execute_block_command
-
     # Ensure BLADE GPU is off — we evaluate energy on CPU only
-    lingo.charmm_script("blade off")
+    system.blade_off()
 
     configs = generate_lambda_configs(nsubs)
     endpoint_energies: dict[int, np.ndarray] = {}
@@ -508,7 +517,7 @@ def guess_initial_biases(
         # --- Endpoint evaluations ---
         site_e = np.zeros(n)
         for sub_idx, lam in enumerate(site_cfg["endpoints"]):
-            clear_block()
+            system.clear_block()
             block_cmd = _build_energy_block_command(
                 patch_info,
                 {site_idx: lam},
@@ -516,7 +525,7 @@ def guess_initial_biases(
                 fnex=fnex,
                 legacy=legacy,
             )
-            execute_block_command(block_cmd)
+            _execute_block_command(block_cmd)
             site_e[sub_idx] = _evaluate_energy()
             logger.info("  endpoint[%d] E = %.3f", sub_idx, site_e[sub_idx])
 
@@ -525,7 +534,7 @@ def guess_initial_biases(
         # --- Midpoint evaluations ---
         site_mids: dict[tuple[int, int], float] = {}
         for (i, j), lam in site_cfg["midpoints"]:
-            clear_block()
+            system.clear_block()
             block_cmd = _build_energy_block_command(
                 patch_info,
                 {site_idx: lam},
@@ -533,7 +542,7 @@ def guess_initial_biases(
                 fnex=fnex,
                 legacy=legacy,
             )
-            execute_block_command(block_cmd)
+            _execute_block_command(block_cmd)
             e_mid = _evaluate_energy()
             site_mids[(i, j)] = e_mid
             logger.info("  midpoint[%d,%d] E = %.3f", i, j, e_mid)
@@ -541,7 +550,7 @@ def guess_initial_biases(
         midpoint_energies[site_idx] = site_mids
 
     # Clear BLOCK after all evaluations
-    clear_block()
+    system.clear_block()
 
     b = compute_b_from_endpoints(endpoint_energies, nsubs)
     c = compute_c_from_midpoints(midpoint_energies, endpoint_energies, nsubs)
@@ -565,15 +574,13 @@ def _evaluate_site_in_context(
     call_selection_names: list[str] | None = None,
 ) -> tuple[np.ndarray, dict[tuple[int, int], float]]:
     """Evaluate one local site while keeping the rest of its context in BLOCK."""
-    from .charmm_utils import clear_block, execute_block_command
-
     configs = generate_lambda_configs(nsubs)
     site_cfg = configs[local_site_idx]
     n = nsubs[local_site_idx]
 
     site_e = np.zeros(n)
     for sub_idx, lam in enumerate(site_cfg["endpoints"]):
-        clear_block()
+        system.clear_block()
         block_cmd = _build_energy_block_command(
             patch_info,
             {local_site_idx: lam},
@@ -581,12 +588,12 @@ def _evaluate_site_in_context(
             fnex=fnex,
             call_selection_names=call_selection_names,
         )
-        execute_block_command(block_cmd)
+        _execute_block_command(block_cmd)
         site_e[sub_idx] = _evaluate_energy()
 
     site_mids: dict[tuple[int, int], float] = {}
     for (i, j), lam in site_cfg["midpoints"]:
-        clear_block()
+        system.clear_block()
         block_cmd = _build_energy_block_command(
             patch_info,
             {local_site_idx: lam},
@@ -594,10 +601,10 @@ def _evaluate_site_in_context(
             fnex=fnex,
             call_selection_names=call_selection_names,
         )
-        execute_block_command(block_cmd)
+        _execute_block_command(block_cmd)
         site_mids[(i, j)] = _evaluate_energy()
 
-    clear_block()
+    system.clear_block()
     return site_e, site_mids
 
 
@@ -615,42 +622,48 @@ def _setup_vacuum_nonbonded(
     so CHARMM knows block assignments and excluded atom pairs during
     the nonbond list build (MAKINB).
     """
-    import pycharmm.lingo as lingo
-    import pycharmm.settings as settings
-
-    from .charmm_utils import clear_block, execute_block_command
-
     # Lower bomb level through entire transition
-    settings.set_bomb_level(-6)
+    system.set_bomb_level(-6)
 
     if keep_segids:
-        lingo.charmm_script(_delete_except_segids_command(keep_segids))
+        system.delete_atoms(AtomSelection(raw=_delete_except_segids_selection(keep_segids)))
     else:
-        lingo.charmm_script(
-            "delete atom sele resn TIP3 .or. segid SOLV .or. segid IONS end"
-        )
+        system.delete_atoms(AtomSelection(raw="resn TIP3 .or. segid SOLV .or. segid IONS"))
 
     # Clear crystal (removes PBC and PME)
-    lingo.charmm_script("CRYSTAL FREE")
+    system.crystal_free()
 
     # Full BLOCK setup before NBONDS — CHARMM needs CALL assignments
     # and exclusions to allocate per-atom bond arrays correctly.
-    clear_block()
+    system.clear_block()
     block_cmd = _build_energy_block_command(
-        patch_info, {}, nsubs, fnex=fnex, legacy=legacy,
+        patch_info,
+        {},
+        nsubs,
+        fnex=fnex,
+        legacy=legacy,
         call_selection_names=call_selection_names,
     )
-    execute_block_command(block_cmd)
+    _execute_block_command(block_cmd)
 
     # Set up vacuum nonbonded: force-shift, large cutoffs, no PME.
-    lingo.charmm_script(
-        "NBONDS ELEC ATOM CDIE EPS 1 NOEWald "
-        "CUTNB 999.0 CUTIM 999.0 CTOFNB 998.0 CTONNB 990.0 "
-        "FSHIFT VSWITCH "
-        "INBFRQ -1 IMGFRQ -1 NBXMOD 5"
+    system.nbonds_setup(
+        cutnb=999.0,
+        cutim=999.0,
+        ctofnb=998.0,
+        ctonnb=990.0,
+        eps=1.0,
+        atom=True,
+        cdie=True,
+        switch=False,
+        vswitch=True,
+        fshift=True,
+        inbfrq=-1,
+        imgfrq=-1,
+        nbxmod=5,
     )
 
-    settings.set_bomb_level(0)
+    system.set_bomb_level(0)
 
 
 def guess_initial_biases_segment_vacuum(
@@ -664,12 +677,7 @@ def guess_initial_biases_segment_vacuum(
     fnex: float = 5.5,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Estimate vacuum biases while keeping only the current site's segment context."""
-    import pycharmm.lingo as lingo
-    import pycharmm.settings as settings
-
-    from .charmm_utils import clear_block
-
-    lingo.charmm_script("blade off")
+    system.blade_off()
 
     if site_keep_segids is None:
         site_keep_segids = derive_site_keep_segids(
@@ -695,9 +703,7 @@ def guess_initial_biases_segment_vacuum(
         else:
             if patch_info is None:
                 raise ValueError("patch_info is required for default segment vacuum")
-            local_patch_info, local_nsubs = _local_default_context(
-                patch_info, context_indices
-            )
+            local_patch_info, local_nsubs = _local_default_context(patch_info, context_indices)
             call_names = None
 
         reload_system()
@@ -709,7 +715,7 @@ def guess_initial_biases_segment_vacuum(
             call_selection_names=call_names,
         )
 
-        settings.set_bomb_level(-6)
+        system.set_bomb_level(-6)
         try:
             site_e, site_mids = _evaluate_site_in_context(
                 local_patch_info,
@@ -719,8 +725,8 @@ def guess_initial_biases_segment_vacuum(
                 call_selection_names=call_names,
             )
         finally:
-            settings.set_bomb_level(0)
-            clear_block()
+            system.set_bomb_level(0)
+            system.clear_block()
 
         site_nsubs = [nsubs[target_site_idx]]
         b_site = compute_b_from_endpoints({0: site_e}, site_nsubs).reshape(-1)
@@ -728,8 +734,8 @@ def guess_initial_biases_segment_vacuum(
 
         offset = offsets[target_site_idx]
         n = nsubs[target_site_idx]
-        b[offset:offset + n] = b_site
-        c[offset:offset + n, offset:offset + n] = c_site
+        b[offset : offset + n] = b_site
+        c[offset : offset + n, offset : offset + n] = c_site
 
     return b.reshape(1, -1), c
 
@@ -759,20 +765,22 @@ def guess_initial_biases_vacuum(
     Returns:
         (b, c) where b has shape (1, nblocks) and c has shape (nblocks, nblocks).
     """
-    import pycharmm.settings as settings
-
     _setup_vacuum_nonbonded(
-        patch_info, nsubs, fnex=fnex, legacy=legacy, keep_segids=keep_segids,
+        patch_info,
+        nsubs,
+        fnex=fnex,
+        legacy=legacy,
+        keep_segids=keep_segids,
     )
 
     # Keep bomb level low during vacuum energy evaluations — the first
     # nonbond list rebuild after clearing PME may still trigger residual
     # colfft warnings from the invalidated FFT grid.
-    settings.set_bomb_level(-6)
+    system.set_bomb_level(-6)
     try:
         result = guess_initial_biases(patch_info, nsubs, fnex=fnex, legacy=legacy)
     finally:
-        settings.set_bomb_level(0)
+        system.set_bomb_level(0)
 
     return result
 
@@ -813,16 +821,17 @@ def guess_initial_biases_combined(
     Returns:
         (b, c) where b has shape (1, nblocks) and c has shape (nblocks, nblocks).
     """
-    from .charmm_utils import clear_block
-
     # Solvated evaluation first (non-destructive)
     b_solv, c_solv = guess_initial_biases(patch_info, nsubs, fnex=fnex, legacy=legacy)
-    clear_block()
+    system.clear_block()
 
     # Vacuum evaluation (destructive — deletes atoms)
     if reload_system is None:
         b_vac, c_vac = guess_initial_biases_vacuum(
-            patch_info, nsubs, fnex=fnex, legacy=legacy,
+            patch_info,
+            nsubs,
+            fnex=fnex,
+            legacy=legacy,
         )
     else:
         b_vac, c_vac = guess_initial_biases_segment_vacuum(
@@ -834,7 +843,7 @@ def guess_initial_biases_combined(
             legacy_keep_segid=legacy_keep_segid,
             fnex=fnex,
         )
-    clear_block()
+    system.clear_block()
 
     # ΔΔE_solvation: isolates differential solvation contribution
     b = b_vac - b_solv
@@ -842,7 +851,10 @@ def guess_initial_biases_combined(
 
     logger.info(
         "Combined bias guess (ΔΔE_solv): b range [%.2f, %.2f], c range [%.2f, %.2f]",
-        b.min(), b.max(), c.min(), c.max(),
+        b.min(),
+        b.max(),
+        c.min(),
+        c.max(),
     )
 
     return b, c

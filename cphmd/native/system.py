@@ -559,16 +559,19 @@ def nbonds_setup(
     eps: float = 1.0,
     e14fac: float = 1.0,
     wmin: float = 1.5,
+    elec: bool | None = None,
     atom: bool = True,
     vatom: bool = True,
     cdie: bool = True,
     switch: bool = True,
     vswitch: bool = True,
+    fshift: bool = False,
     fswitch: bool = False,
     bycc: bool = False,
     bygr: bool = False,
     inbfrq: int = -1,
     imgfrq: int = -1,
+    nbxmod: int | None = None,
 ) -> None:
     params: dict[str, Any] = {
         "cutnb": cutnb,
@@ -582,6 +585,7 @@ def nbonds_setup(
         "cdie": cdie,
         "switch": switch,
         "vswitch": vswitch,
+        "fshift": fshift,
         "fswitch": fswitch,
         "bycc": bycc,
         "bygr": bygr,
@@ -590,6 +594,10 @@ def nbonds_setup(
     }
     if cutim is not None:
         params["cutim"] = cutim
+    if elec is not None:
+        params["elec"] = elec
+    if nbxmod is not None:
+        params["nbxmod"] = nbxmod
     try:
         _pycharmm_root().NonBondedScript(**params).run()
     except Exception as exc:
