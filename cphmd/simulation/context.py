@@ -16,7 +16,7 @@ class RunContext:
     replica_label: int
     ph: float
     gpu_id: int
-    lambda_headers: list[str]
+    lambda_headers: tuple[str, ...]
     nsubsites: tuple[int, ...]
     nsites: int
     nsteps_per_segment: int
@@ -37,6 +37,7 @@ class RunContext:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "run_dir", Path(self.run_dir))
+        object.__setattr__(self, "lambda_headers", tuple(self.lambda_headers))
         object.__setattr__(self, "nsubsites", tuple(self.nsubsites))
         object.__setattr__(
             self,
@@ -95,9 +96,13 @@ class LoopState:
         )
 
     def with_initial_label(self, replica_label: int) -> "LoopState":
-        if self.replica_label is not None:
+        if self.replica_label is None:
+            return replace(self, replica_label=replica_label)
+        if self.replica_label == replica_label:
             return self
-        return replace(self, replica_label=replica_label)
+        raise ValueError(
+            f"replica_label mismatch: expected {self.replica_label}, got {replica_label}"
+        )
 
     def with_rex_result(
         self,
