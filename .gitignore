@@ -3,6 +3,7 @@ __pycache__/
 *.py[cod]
 *$py.class
 *.so
+!cphmd/wham/libwham.so
 .Python
 *.egg-info/
 *.egg
@@ -59,6 +60,7 @@ examples/*/prep
 *.log
 *.out
 slurm-*.out
+logs/
 
 # ALF run artifacts (analysis dirs, run dirs, variables, state files)
 **/analysis[0-9]*/
@@ -87,6 +89,3 @@ slurm-*.out
 # Local configuration
 .env
 *.local
-CLAUDE.md
-.claude/
-communications/

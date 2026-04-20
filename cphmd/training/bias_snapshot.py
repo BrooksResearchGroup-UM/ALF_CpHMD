@@ -5,7 +5,8 @@ from pathlib import Path
 
 import numpy as np
 
-from cphmd.core.bias_constants import CHI_OFFSET, OMEGA_DECAY
+CHI_OFFSET = 0.017
+OMEGA_DECAY = -5.56
 
 
 @dataclass(frozen=True)
@@ -105,6 +106,60 @@ class BiasSnapshot:
             x=np.loadtxt(root / "x_sum.dat"),
             s=np.loadtxt(root / "s_sum.dat"),
             nsubs=tuple(nsubs),
+            chi_offset=chi_offset,
+            omega_decay=omega_decay,
+        )
+
+    @classmethod
+    def from_block_str(
+        cls,
+        block_path: str | Path,
+        *,
+        nsubs: tuple[int, ...] | list[int],
+        chi_offset: float = CHI_OFFSET,
+        omega_decay: float = OMEGA_DECAY,
+    ) -> "BiasSnapshot":
+        """Parse LDIN/LDBV bias state from a CHARMM ``block.str`` file."""
+        nsubs_t = tuple(int(value) for value in nsubs)
+        nblocks = sum(nsubs_t)
+        b = np.zeros((1, nblocks), dtype=np.float64)
+        c = np.zeros((nblocks, nblocks), dtype=np.float64)
+        x = np.zeros((nblocks, nblocks), dtype=np.float64)
+        s = np.zeros((nblocks, nblocks), dtype=np.float64)
+
+        for raw_line in Path(block_path).read_text().splitlines():
+            line = raw_line.split("!", 1)[0].strip()
+            if not line:
+                continue
+            tokens = line.split()
+            keyword = tokens[0].upper()
+            if keyword == "LDIN" and len(tokens) >= 6:
+                block_id = int(tokens[1])
+                if block_id <= 1:
+                    continue
+                idx = block_id - 2
+                if 0 <= idx < nblocks:
+                    b[0, idx] = float(tokens[5])
+            elif keyword == "LDBV" and len(tokens) >= 7:
+                block_i = int(tokens[2]) - 2
+                block_j = int(tokens[3]) - 2
+                cls_id = int(tokens[4])
+                cforce = float(tokens[6])
+                if not (0 <= block_i < nblocks and 0 <= block_j < nblocks):
+                    continue
+                if cls_id == 6:
+                    c[block_i, block_j] = -cforce
+                elif cls_id == 8:
+                    s[block_i, block_j] = -cforce
+                elif cls_id == 10:
+                    x[block_i, block_j] = -cforce
+
+        return cls.from_arrays(
+            b=b,
+            c=c,
+            x=x,
+            s=s,
+            nsubs=nsubs_t,
             chi_offset=chi_offset,
             omega_decay=omega_decay,
         )

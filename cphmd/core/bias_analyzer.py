@@ -93,9 +93,9 @@ class BiasAnalyzer:
         im5 = max(run_idx - (n_win - 1), 1)
         ask = getattr(self.config, "analysis_skip", 1)
         if isinstance(ask, list):
-            skipE = ask[phase - 1]
+            skip_e = ask[phase - 1]
         else:
-            skipE = int(ask) if ask else 1
+            skip_e = int(ask) if ask else 1
 
         if self._nranks > 1 and self._comm is not None:
             from cphmd.core.alf_utils import compute_packed_wham_data_distributed
@@ -107,7 +107,7 @@ class BiasAnalyzer:
                 nf,
                 self._packed_total_frames,
             ) = compute_packed_wham_data_distributed(
-                alf_info, im5, run_idx, skipE=skipE,
+                alf_info, im5, run_idx, skipE=skip_e,
                 comm=self._comm, rank=self._rank, nranks=self._nranks,
             )
         else:
@@ -119,7 +119,7 @@ class BiasAnalyzer:
                 self._wham_gshift,
                 nf,
                 self._packed_total_frames,
-            ) = compute_packed_wham_data(alf_info, im5, run_idx, skipE=skipE)
+            ) = compute_packed_wham_data(alf_info, im5, run_idx, skipE=skip_e)
 
         self._packed_nf = nf
         self._wham_energy = None  # No longer stored
@@ -128,16 +128,16 @@ class BiasAnalyzer:
         # Views instead of .copy() — avoids duplicating total_frames × NL × 8 bytes.
         # Safe because _packed_D and _wham_lambda are freed together (alf_runner line ~1888).
         if nf > 0 and self._packed_D.size > 0:
-            NL = alf_info["nblocks"]
-            ndim = NL + nf + 3
-            D_2d = self._packed_D.reshape(-1, ndim)
+            n_l = alf_info["nblocks"]
+            ndim = n_l + nf + 3
+            d_2d = self._packed_D.reshape(-1, ndim)
             self._wham_lambda = []
             offset = 0
             for i in range(nf):
                 n_i = self._packed_frame_counts[i]
-                self._wham_lambda.append(D_2d[offset:offset + n_i, 1:1 + NL])
+                self._wham_lambda.append(d_2d[offset:offset + n_i, 1:1 + n_l])
                 offset += n_i
-            self._D_2d_ref = D_2d  # prevent reshape view from being GC'd
+            self._D_2d_ref = d_2d  # prevent reshape view from being GC'd
         else:
             self._wham_lambda = None
             self._D_2d_ref = None
@@ -471,7 +471,7 @@ class BiasAnalyzer:
                   cut_params: dict, alf_info: dict,
                   phase: "PhaseType" = 3) -> None:
         """Run WHAM analysis using bundled GPU library."""
-        from cphmd.core.alf_runner import ALFConfig
+        from cphmd.training.config import ALFConfig
 
         nsubs = alf_info["nsubs"]
         nblocks = alf_info["nblocks"]

@@ -57,20 +57,34 @@ def run_wham_in_dir(
         gpu_id=gpu_id,
     )
 
-    C = np.loadtxt(output_dir / "C.dat")
-    V = np.loadtxt(output_dir / "V.dat")
-    return C, V
+    c_values = np.loadtxt(output_dir / "C.dat")
+    v_values = np.loadtxt(output_dir / "V.dat")
+    return c_values, v_values
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("analysis_dir", type=Path, help="Analysis directory with lambda/energy data")
+    parser.add_argument(
+        "analysis_dir",
+        type=Path,
+        help="Analysis directory with lambda/energy data",
+    )
     parser.add_argument("--nsubs", type=int, nargs="+", default=[3], help="Subsites per site")
     parser.add_argument("--temp", type=float, default=298.15)
     parser.add_argument("--g-imp-path", type=str, default=None)
     parser.add_argument("--gpu-id", type=int, default=0)
-    parser.add_argument("--rtol", type=float, default=1e-8, help="Relative tolerance for comparison")
-    parser.add_argument("--atol", type=float, default=1e-12, help="Absolute tolerance for comparison")
+    parser.add_argument(
+        "--rtol",
+        type=float,
+        default=1e-8,
+        help="Relative tolerance for comparison",
+    )
+    parser.add_argument(
+        "--atol",
+        type=float,
+        default=1e-12,
+        help="Absolute tolerance for comparison",
+    )
     args = parser.parse_args()
 
     with tempfile.TemporaryDirectory(prefix="wham_validate_") as tmpdir:
@@ -78,34 +92,44 @@ def main() -> None:
         fused_dir = Path(tmpdir) / "fused"
 
         print("Running WHAM (serial)...")
-        C_serial, V_serial = run_wham_in_dir(
-            args.analysis_dir, serial_dir, args.nsubs, args.temp,
-            serial=True, g_imp_path=args.g_imp_path, gpu_id=args.gpu_id,
+        c_serial, v_serial = run_wham_in_dir(
+            args.analysis_dir,
+            serial_dir,
+            args.nsubs,
+            args.temp,
+            serial=True,
+            g_imp_path=args.g_imp_path,
+            gpu_id=args.gpu_id,
         )
 
         print("Running WHAM (fused + DGEMM)...")
-        C_fused, V_fused = run_wham_in_dir(
-            args.analysis_dir, fused_dir, args.nsubs, args.temp,
-            serial=False, g_imp_path=args.g_imp_path, gpu_id=args.gpu_id,
+        c_fused, v_fused = run_wham_in_dir(
+            args.analysis_dir,
+            fused_dir,
+            args.nsubs,
+            args.temp,
+            serial=False,
+            g_imp_path=args.g_imp_path,
+            gpu_id=args.gpu_id,
         )
 
     # Compare
-    print(f"\nC.dat shape: serial={C_serial.shape}, fused={C_fused.shape}")
-    print(f"V.dat shape: serial={V_serial.shape}, fused={V_fused.shape}")
+    print(f"\nC.dat shape: serial={c_serial.shape}, fused={c_fused.shape}")
+    print(f"V.dat shape: serial={v_serial.shape}, fused={v_fused.shape}")
 
-    c_maxdiff = np.max(np.abs(C_serial - C_fused))
-    v_maxdiff = np.max(np.abs(V_serial - V_fused))
+    c_maxdiff = np.max(np.abs(c_serial - c_fused))
+    v_maxdiff = np.max(np.abs(v_serial - v_fused))
     print(f"C.dat max abs diff: {c_maxdiff:.2e}")
     print(f"V.dat max abs diff: {v_maxdiff:.2e}")
 
     try:
-        np.testing.assert_allclose(C_serial, C_fused, rtol=args.rtol, atol=args.atol)
+        np.testing.assert_allclose(c_serial, c_fused, rtol=args.rtol, atol=args.atol)
         print("C.dat: PASS")
     except AssertionError as e:
         print(f"C.dat: FAIL\n{e}")
 
     try:
-        np.testing.assert_allclose(V_serial, V_fused, rtol=args.rtol, atol=args.atol)
+        np.testing.assert_allclose(v_serial, v_fused, rtol=args.rtol, atol=args.atol)
         print("V.dat: PASS")
     except AssertionError as e:
         print(f"V.dat: FAIL\n{e}")

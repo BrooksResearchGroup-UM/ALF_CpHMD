@@ -63,6 +63,7 @@ class ShrinkerMetadata:
             "nsites": _format_scalar(self.nsites),
             "nsubsites": _format_nsubsites(self.nsubsites),
             "lambda_scale": _format_scalar(self.lambda_scale),
+            "lambda_precision": "full" if self.lambda_scale == 1 else "shrinker",
         }
 
         optional_fields = {

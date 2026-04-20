@@ -1,17 +1,14 @@
 """Lambda file I/O utilities.
 
 This module provides functions for reading and writing lambda trajectory files
-from CpHMD/MSLD simulations. Supports both CHARMM binary (.lmd) and
-Apache Parquet (.parquet) formats.
-
-Key Features:
-- Read CHARMM Fortran binary lambda files
-- Read/write Apache Parquet format (fast, compressed)
-- Convert between formats
-- Extract metadata from simulation logs
+from CpHMD/MSLD simulations. Supports Apache Parquet (.parquet), text (.dat),
+and legacy CHARMM binary (.lmd) formats.
 """
 
+import importlib.util
+import sys
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 
 import numpy as np
@@ -31,6 +28,7 @@ class LambdaFileMetadata:
         title: Title from trajectory file
         temp: Temperature used in lambda dynamics thermostat
     """
+
     nfile: int
     npriv: int
     nsavl: int
@@ -41,107 +39,22 @@ class LambdaFileMetadata:
     temp: float
 
 
-def read_lambda_binary(filepath: str | Path) -> tuple[np.ndarray, LambdaFileMetadata]:
-    """Read CHARMM binary lambda file.
+@lru_cache(maxsize=1)
+def _legacy_lmd_module():
+    module_name = "cphmd.analysis.legacy_lmd_io"
+    module = sys.modules.get(module_name)
+    if module is not None:
+        return module
 
-    Args:
-        filepath: Path to .lmd file
+    legacy_path = Path(__file__).resolve().parents[1] / "analysis" / "legacy_lmd_io.py"
+    spec = importlib.util.spec_from_file_location(module_name, legacy_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Unable to load legacy lambda reader from {legacy_path}")
 
-    Returns:
-        Tuple of (lambda_data, metadata) where lambda_data has shape (nsteps, nblocks)
-        with first column being timestamps in ps
-
-    Raises:
-        FileNotFoundError: If file doesn't exist
-        ValueError: If file is corrupted or has unexpected format
-    """
-    from scipy.io import FortranFile
-
-    filepath = Path(filepath)
-    if not filepath.exists():
-        raise FileNotFoundError(f"Lambda file not found: {filepath}")
-
-    fp = FortranFile(str(filepath), 'r')
-
-    # Read header and icntrl array
-    header = fp.read_record([('hdr', np.bytes_, 4), ('icntrl', np.int32, 20)])
-    icntrl = header['icntrl'][0][:]
-
-    nfile = icntrl[0]      # Total dynamics steps
-    npriv = icntrl[1]      # Steps preceding this run
-    nsavl = icntrl[2]      # Save frequency
-    nblocks = icntrl[6]    # Total blocks
-    nsitemld = icntrl[10]  # Number of R-groups
-
-    # Time step in ps (convert from AKMA)
-    delta4 = fp.read_record(dtype=np.float32) * 4.888821477E-2
-    delta_t = float(delta4[0]) if hasattr(delta4, '__len__') else float(delta4)
-
-    # Title
-    title_rec = fp.read_record(dtype=[('h', np.int32), ('title', 'S80')])
-    title = title_rec['title'][0].decode().strip()
-
-    # Skip unused records
-    _ = fp.read_record(dtype=np.int32)   # nbiasv
-    _ = fp.read_record(dtype=np.float32) # junk
-    _ = fp.read_record(dtype=np.int32)   # isitemld (block->site mapping)
-
-    # Temperature
-    temp = float(fp.read_record(dtype=np.float32)[0])
-
-    # Skip more unused data
-    _ = fp.read_record(dtype=np.float32)
-
-    # Bulk-read lambda values: each frame is a (lambda, theta) record pair.
-    # Fortran records: [4B marker][payload][4B marker]
-    # Lambda has nblocks float32s, theta has (nblocks-1) float32s.
-    from numpy.lib.stride_tricks import as_strided
-
-    pos = fp._fp.tell()
-    fp.close()
-
-    lambda_rec_bytes = nblocks * 4 + 8           # lambda payload + 2 markers
-    theta_rec_bytes = (nblocks - 1) * 4 + 8      # theta payload + 2 markers
-    frame_bytes = lambda_rec_bytes + theta_rec_bytes
-
-    with open(str(filepath), 'rb') as f:
-        f.seek(pos)
-        buf = f.read()
-
-    actual_steps = len(buf) // frame_bytes
-    if actual_steps > 0:
-        raw = np.frombuffer(buf[:actual_steps * frame_bytes], dtype=np.float32)
-        # Lambda data starts at byte 4 (skip first marker) within each frame.
-        # Stride between frames = frame_bytes.
-        Lambda = as_strided(
-            raw[1:],  # skip first marker (1 float32 = 4 bytes)
-            shape=(actual_steps, nblocks),
-            strides=(frame_bytes, 4),
-        ).copy()[:, 1:]     # copy to contiguous array, drop env block (col 0)
-    else:
-        Lambda = np.zeros((0, nblocks - 1))
-
-    # Calculate timestamps
-    timestart = npriv * delta_t
-    timestep = nsavl * delta_t
-    timestamps = timestart + np.arange(len(Lambda)) * timestep
-
-    # Prepend timestamps as first column
-    lambda_data = np.column_stack([timestamps, Lambda])
-    # No rounding: float32 source precision (~7 digits) preserved through parquet compression
-
-    metadata = LambdaFileMetadata(
-        nfile=nfile,
-        npriv=npriv,
-        nsavl=nsavl,
-        nblocks=nblocks,
-        nsitemld=nsitemld,
-        delta_t=delta_t,
-        title=title,
-        temp=temp,
-    )
-
-    return lambda_data, metadata
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 def read_lambda_parquet(filepath: str | Path) -> np.ndarray:
@@ -157,9 +70,7 @@ def read_lambda_parquet(filepath: str | Path) -> np.ndarray:
 
     filepath = Path(filepath)
     table = pq.read_table(str(filepath))
-    return np.column_stack(
-        [col.to_numpy() for col in table.columns]
-    )
+    return np.column_stack([col.to_numpy() for col in table.columns])
 
 
 def write_lambda_parquet(
@@ -227,12 +138,12 @@ def read_lambda(filepath: str | Path) -> np.ndarray:
     """
     filepath = Path(filepath)
 
-    if filepath.suffix == '.lmd':
-        data, _ = read_lambda_binary(filepath)
+    if filepath.suffix == ".lmd":
+        data, _ = _legacy_lmd_module().read_legacy_lmd_binary(filepath)
         return data
-    elif filepath.suffix == '.parquet':
+    elif filepath.suffix == ".parquet":
         return read_lambda_parquet(filepath)
-    elif filepath.suffix == '.dat':
+    elif filepath.suffix == ".dat":
         data = np.loadtxt(filepath)
         if data.ndim == 1:
             data = data.reshape(1, -1)
@@ -255,20 +166,19 @@ def read_lambda_values(filepath: str | Path) -> np.ndarray:
     """
     filepath = Path(filepath)
 
-    if filepath.suffix == '.parquet':
+    if filepath.suffix == ".parquet":
         import pyarrow.parquet as pq
+
         table = pq.read_table(str(filepath))
         # Drop 'time' column if present (named columns make this unambiguous)
         if "time" in table.column_names:
             table = table.drop("time")
-        return np.column_stack(
-            [col.to_numpy() for col in table.columns]
-        )
-    elif filepath.suffix == '.lmd':
-        data, _ = read_lambda_binary(filepath)
+        return np.column_stack([col.to_numpy() for col in table.columns])
+    elif filepath.suffix == ".lmd":
+        data, _ = _legacy_lmd_module().read_legacy_lmd_binary(filepath)
         # Binary reader prepends time as column 0
         return data[:, 1:]
-    elif filepath.suffix == '.dat':
+    elif filepath.suffix == ".dat":
         data = np.loadtxt(filepath)
         if data.ndim == 1:
             data = data.reshape(1, -1)
@@ -280,7 +190,7 @@ def read_lambda_values(filepath: str | Path) -> np.ndarray:
         raise ValueError(f"Unknown lambda file format: {filepath.suffix}")
 
 
-def get_lambda_frame_count(filepath: str | Path, skipE: int = 1) -> int:
+def get_lambda_frame_count(filepath: str | Path, skip_e: int = 1) -> int:
     """Get the number of frames in a lambda file without loading data.
 
     For parquet files, reads row count from metadata (zero I/O on data pages).
@@ -289,10 +199,10 @@ def get_lambda_frame_count(filepath: str | Path, skipE: int = 1) -> int:
 
     Args:
         filepath: Path to lambda file (.parquet, .lmd, or .dat).
-        skipE: Subsample interval (every Nth frame). Default 1 = all.
+        skip_e: Subsample interval (every Nth frame). Default 1 = all.
 
     Returns:
-        Number of frames after applying skipE subsampling.
+        Number of frames after applying skip_e subsampling.
     """
     filepath = Path(filepath)
 
@@ -302,48 +212,27 @@ def get_lambda_frame_count(filepath: str | Path, skipE: int = 1) -> int:
         meta = pq.read_metadata(str(filepath))
         total_rows = meta.num_rows
     elif filepath.suffix == ".lmd":
-        from scipy.io import FortranFile
-
-        fp = FortranFile(str(filepath), "r")
-        header = fp.read_record([("hdr", np.bytes_, 4), ("icntrl", np.int32, 20)])
-        nblocks = int(header["icntrl"][0][6])
-        # Skip remaining header records to find data start
-        _ = fp.read_record(dtype=np.float32)  # delta
-        _ = fp.read_record(dtype=[("h", np.int32), ("title", "S80")])  # title
-        _ = fp.read_record(dtype=np.int32)  # nbiasv
-        _ = fp.read_record(dtype=np.float32)  # junk
-        _ = fp.read_record(dtype=np.int32)  # isitemld
-        _ = fp.read_record(dtype=np.float32)  # temp
-        _ = fp.read_record(dtype=np.float32)  # unused
-        pos = fp._fp.tell()
-        fp.close()
-
-        file_size = filepath.stat().st_size
-        data_bytes = file_size - pos
-        lambda_rec = nblocks * 4 + 8
-        theta_rec = (nblocks - 1) * 4 + 8
-        frame_bytes = lambda_rec + theta_rec
-        total_rows = data_bytes // frame_bytes
+        total_rows = _legacy_lmd_module().get_legacy_lmd_frame_count(filepath, skip_e)
     elif filepath.suffix == ".dat":
         with open(filepath) as f:
             total_rows = sum(1 for line in f if line.strip())
     else:
         raise ValueError(f"Unknown lambda file format: {filepath.suffix}")
 
-    if skipE <= 1:
+    if skip_e <= 1:
         return total_rows
-    # Match the (skipE-1)::skipE slicing pattern used by _load_simulation_data
-    return len(range(skipE - 1, total_rows, skipE))
+    # Match the (skip_e-1)::skip_e slicing pattern used by _load_simulation_data
+    return len(range(skip_e - 1, total_rows, skip_e))
 
 
 def read_lambda_columns(
     filepath: str | Path,
     columns: list[int] | None = None,
-    skipE: int = 1,
+    skip_e: int = 1,
 ) -> np.ndarray:
     """Read lambda values with optional column selection and subsampling.
 
-    When columns is None, equivalent to read_lambda_values with skipE applied.
+    When columns is None, equivalent to read_lambda_values with skip_e applied.
     When specified, reads only those column indices (0-based, after time removal).
     For parquet: uses pyarrow's column selection for zero-copy selective read.
     For .lmd/.dat: falls back to full read + column indexing.
@@ -352,7 +241,7 @@ def read_lambda_columns(
         filepath: Path to lambda file (.parquet, .dat, or .lmd).
         columns: Column indices to read (None = all). 0-based into lambda columns
                  (time column already excluded).
-        skipE: Subsample interval (every Nth frame). Default 1 = all.
+        skip_e: Subsample interval (every Nth frame). Default 1 = all.
 
     Returns:
         Lambda values array with shape (nframes_after_skip, ncols_selected).
@@ -375,9 +264,9 @@ def read_lambda_columns(
         if columns is not None:
             data = data[:, columns]
 
-    # Apply skipE subsampling
-    if skipE > 1:
-        data = data[(skipE - 1) :: skipE, :]
+    # Apply skip_e subsampling
+    if skip_e > 1:
+        data = data[(skip_e - 1) :: skip_e, :]
 
     return data
 
@@ -404,9 +293,7 @@ def find_lambda_files(data_dir: Path, pattern: str = "Lambda.*.*") -> list[Path]
 
 
 def convert_lambda_to_parquet(
-    input_path: str | Path,
-    output_path: str | Path | None = None,
-    compression: str = "snappy"
+    input_path: str | Path, output_path: str | Path | None = None, compression: str = "snappy"
 ) -> Path:
     """Convert binary lambda file to Parquet format.
 
@@ -420,17 +307,16 @@ def convert_lambda_to_parquet(
     """
     input_path = Path(input_path)
     if output_path is None:
-        output_path = input_path.with_suffix('.parquet')
+        output_path = input_path.with_suffix(".parquet")
     else:
         output_path = Path(output_path)
 
-    lambda_data, _ = read_lambda_binary(input_path)
+    lambda_data, _ = _legacy_lmd_module().read_legacy_lmd_binary(input_path)
     return write_lambda_parquet(output_path, lambda_data, compression=compression)
 
 
 def concatenate_lambda_files(
-    filepaths: list[str | Path],
-    output_path: str | Path | None = None
+    filepaths: list[str | Path], output_path: str | Path | None = None
 ) -> np.ndarray:
     """Concatenate multiple lambda files.
 
@@ -482,14 +368,18 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(description="Convert lambda files to Parquet")
-    parser.add_argument("-i", "--input", required=True, nargs="+",
-                        help="Input lambda files (.lmd)")
+    parser.add_argument("-i", "--input", required=True, nargs="+", help="Input lambda files (.lmd)")
     parser.add_argument("-o", "--output", help="Output directory or file")
-    parser.add_argument("-c", "--compression", default="snappy",
-                        choices=["snappy", "gzip", "lz4", "zstd"],
-                        help="Compression method")
-    parser.add_argument("--concat", action="store_true",
-                        help="Concatenate all inputs into single output")
+    parser.add_argument(
+        "-c",
+        "--compression",
+        default="snappy",
+        choices=["snappy", "gzip", "lz4", "zstd"],
+        help="Compression method",
+    )
+    parser.add_argument(
+        "--concat", action="store_true", help="Concatenate all inputs into single output"
+    )
 
     args = parser.parse_args()
 
@@ -506,15 +396,13 @@ def main():
             if args.output:
                 output_dir = Path(args.output)
                 if output_dir.is_dir():
-                    output_path = output_dir / input_path.with_suffix('.parquet').name
+                    output_path = output_dir / input_path.with_suffix(".parquet").name
                 else:
                     output_path = output_dir
             else:
-                output_path = input_path.with_suffix('.parquet')
+                output_path = input_path.with_suffix(".parquet")
 
-            output = convert_lambda_to_parquet(
-                input_path, output_path, args.compression
-            )
+            output = convert_lambda_to_parquet(input_path, output_path, args.compression)
             print(f"Converted: {input_path} -> {output}")
 
 

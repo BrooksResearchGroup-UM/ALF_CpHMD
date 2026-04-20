@@ -28,6 +28,7 @@ def run_init(
     state_dir = cfg.run_dir / "state"
     init_marker = state_dir / "initialized.json"
     tmp_dir = cfg.run_dir / ".init_tmp"
+    status_summary = cfg.run_dir / "status_summary.json"
     has_checkpoints = any(cfg.run_dir.rglob("res/rep*/checkpoint.json"))
 
     if init_marker.exists() and not (force or reinit_build):
@@ -51,7 +52,8 @@ def run_init(
 
     tmp_dir.mkdir(parents=True, exist_ok=True)
     try:
-        _maybe_run_setup_pipeline(cfg)
+        status_summary.unlink(missing_ok=True)
+        _maybe_run_setup_pipeline(cfg, reinit_build=reinit_build)
         state_dir.mkdir(parents=True, exist_ok=True)
         _write_initial_checkpoints(cfg)
         _write_rng_states(cfg)
@@ -73,25 +75,33 @@ def run_init(
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
-def _maybe_run_setup_pipeline(cfg: NativeRuntimeConfig) -> None:
-    if cfg.raw.get("solvation") and not (cfg.run_dir / "prep" / "alf_info.py").exists():
+def _maybe_run_setup_pipeline(cfg: NativeRuntimeConfig, *, reinit_build: bool = False) -> None:
+    alf_info = cfg.input_folder / "prep" / "alf_info.py"
+    if cfg.raw.get("solvation") and (reinit_build or not alf_info.exists()):
         from cphmd.config.loader import _run_solvate
 
         _run_solvate(cfg.config_path)
-    if cfg.raw.get("patch") and not (cfg.run_dir / "prep" / "alf_info.py").exists():
+    if cfg.raw.get("patch") and (reinit_build or not alf_info.exists()):
         from cphmd.config.loader import _run_patch
 
         _run_patch(cfg.config_path)
 
 
 def _write_initial_checkpoints(cfg: NativeRuntimeConfig) -> None:
+    native_modules = _checkpoint_native_modules()
     for rank in range(cfg.nreps):
         ctx = build_run_context(cfg, rank=rank, comm=None, gpu_id=rank)
-        checkpoint = CheckpointManager(ctx, native_modules=())
+        checkpoint = CheckpointManager(ctx, native_modules=native_modules)
         checkpoint.write(
             LoopState(replica_label=rank),
             rng_state=_initial_rng_state(cfg, rank),
         )
+
+
+def _checkpoint_native_modules():
+    from cphmd.simulation.loop import default_native_modules
+
+    return default_native_modules()
 
 
 def _write_rng_states(cfg: NativeRuntimeConfig) -> None:

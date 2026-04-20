@@ -237,7 +237,7 @@ class PKaAnalyzer:
         cfg = self.config
 
         # a. Load lambda data
-        columns = ["time"] + site_cols
+        columns = site_cols
         all_data = load_lambda_data(metadata_df, columns, n_jobs=cfg.n_jobs)
 
         # b. Apply cutoff (also rearranges to {pH: {sim: df}})
@@ -270,10 +270,10 @@ class PKaAnalyzer:
         total_pops, total_errs = compute_total_population(bool_data, n_jobs=cfg.n_jobs)
 
         # f. Get LDIN site info
-        site_info = ldin_data.get(resid_str)
+        site_info = self._find_ldin_site(ldin_data, segid_str, resid_str)
 
         # g. Get state patch names for labels
-        state_names = self._get_state_names(site_cols, ldin_data, resid_str)
+        state_names = self._get_state_names(site_cols, ldin_data, segid_str, resid_str)
 
         # h. Prepare fit data for each state
         # Wrap total_pops into the format expected by prepare_fit_data:
@@ -677,9 +677,35 @@ class PKaAnalyzer:
                 return path
         return None
 
-    def _get_state_names(self, site_cols: list[str], ldin_data: dict, resid_str: str) -> list[str]:
+    def _find_ldin_site(self, ldin_data: dict, segid_str: str, resid_str: str):
+        """Find LDIN metadata without confusing same-resid sites on different chains."""
+        direct = ldin_data.get(f"{segid_str}:{resid_str}")
+        if direct is not None:
+            return direct
+
+        matches = [
+            site
+            for site in ldin_data.values()
+            if getattr(site, "segid", None) == segid_str
+            and str(getattr(site, "resid", "")) == resid_str
+        ]
+        if len(matches) == 1:
+            return matches[0]
+
+        legacy = ldin_data.get(resid_str)
+        if legacy is not None and getattr(legacy, "segid", segid_str) == segid_str:
+            return legacy
+        return None
+
+    def _get_state_names(
+        self,
+        site_cols: list[str],
+        ldin_data: dict,
+        segid_str: str,
+        resid_str: str,
+    ) -> list[str]:
         """Get patch names for each state from LDIN data or generate defaults."""
-        site_info = ldin_data.get(resid_str)
+        site_info = self._find_ldin_site(ldin_data, segid_str, resid_str)
         if site_info is not None:
             return [s.resname for s in site_info.states]
         # Fallback: use column names

@@ -18,12 +18,13 @@ __all__ = [
 ]
 
 
-def derive_seed(master: int, domain: str, rank: int) -> int:
+def derive_seed(master: int, domain: str, *scope: int) -> int:
     """Derive a deterministic 64-bit seed for a named RNG domain."""
     if domain not in DOMAINS:
         raise ValueError(f"unknown domain: {domain!r}")
 
-    digest = hashlib.sha256(f"{master}:{domain}:{rank}".encode()).digest()
+    scope_text = ":".join(str(int(value)) for value in scope)
+    digest = hashlib.sha256(f"{master}:{domain}:{scope_text}".encode()).digest()
     return int.from_bytes(digest[:8], "big", signed=False)
 
 

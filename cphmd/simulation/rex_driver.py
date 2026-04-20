@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import importlib
+import json
+import os
 from dataclasses import dataclass
 from typing import Any
 
@@ -102,6 +104,7 @@ class REXDriver:
             apply_state=True,
         )
         decisions = tuple(getattr(exchange_result, "decisions", ()) or ())
+        self._record_first_decisions(state, decisions)
         stats = ExchangeStats(
             attempted=self._stats_or_empty(current_state.rex_attempted),
             accepted=self._stats_or_empty(current_state.rex_accepted),
@@ -143,3 +146,52 @@ class REXDriver:
                 return int(partner_label)
 
         return current_label
+
+    def _record_first_decisions(self, state: LoopState, decisions: tuple[dict, ...]) -> None:
+        if self.ctx.rank != 0 or not decisions:
+            return
+
+        path = self.ctx.run_dir / "rex_first_five_swaps.json"
+        try:
+            recorded = json.loads(path.read_text()) if path.exists() else []
+        except (OSError, json.JSONDecodeError):
+            recorded = []
+
+        if len(recorded) >= 5:
+            return
+
+        for decision in decisions:
+            if len(recorded) >= 5:
+                break
+            ranks = decision.get("ranks") or decision.get("pair") or ()
+            recorded.append(
+                {
+                    "segment": int(state.segment_idx),
+                    "attempt": int(state.rex_attempt_idx),
+                    "pair": [int(rank) for rank in ranks],
+                    "accepted": bool(decision.get("accepted", decision.get("accept", False))),
+                    "score": _optional_float(
+                        decision.get(
+                            "delta",
+                            decision.get(
+                                "log_probability",
+                                decision.get("probability"),
+                            ),
+                        )
+                    ),
+                }
+            )
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = path.with_suffix(path.suffix + f".tmp.{os.getpid()}")
+        tmp_path.write_text(json.dumps(recorded, indent=2, sort_keys=True) + "\n")
+        os.replace(tmp_path, path)
+
+
+def _optional_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None

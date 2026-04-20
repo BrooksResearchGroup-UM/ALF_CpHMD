@@ -3,12 +3,19 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Any, Sequence
 
 from cphmd import TOPPAR_DIR
 from cphmd.native.errors import SystemLoadError, wrap_exception
-from cphmd.native.types import AtomRecord, AtomSelection, CellParameters, TopologySnapshot
+from cphmd.native.types import (
+    AtomRecord,
+    AtomSelection,
+    CellParameters,
+    ResidueRecord,
+    TopologySnapshot,
+)
 from cphmd.utils.charmm_path import qpath
 
 _CELL_CACHE: CellParameters | None = None
@@ -26,6 +33,12 @@ def _pycharmm_write():
     return write
 
 
+def _pycharmm_select_module():
+    import pycharmm.select as select
+
+    return select
+
+
 def _pycharmm_lingo():
     import pycharmm.lingo as lingo
 
@@ -38,6 +51,18 @@ def _pycharmm_psf():
     return psf
 
 
+def _pycharmm_select_atoms():
+    import pycharmm
+
+    return pycharmm.SelectAtoms
+
+
+def _pycharmm_select_atoms_module():
+    import pycharmm.select_atoms as select_atoms
+
+    return select_atoms
+
+
 def _pycharmm_coor():
     import pycharmm.coor as coor
 
@@ -48,6 +73,24 @@ def _pycharmm_generate():
     import pycharmm.generate as generate
 
     return generate
+
+
+def _pycharmm_restraints():
+    import pycharmm.restraints as restraints
+
+    return restraints
+
+
+def _pycharmm_blade():
+    import pycharmm.blade as blade
+
+    return blade
+
+
+def _pycharmm_block():
+    import pycharmm.block as block
+
+    return block
 
 
 def _pycharmm_ic():
@@ -92,6 +135,12 @@ def _pycharmm_settings():
     return settings
 
 
+def _pycharmm_miscom():
+    import pycharmm.miscom as miscom
+
+    return miscom
+
+
 def _pycharmm_root():
     import pycharmm
 
@@ -118,6 +167,8 @@ def _selection_expr(selection: AtomSelection | None) -> str | None:
         clauses.append(f"resname {selection.resname}")
     if selection.atom_name is not None:
         clauses.append(f"type {selection.atom_name}")
+    if selection.hydrogens:
+        clauses.append("hydrogen")
     return " .and. ".join(clauses) if clauses else "all"
 
 
@@ -134,10 +185,80 @@ def _script_selection(selection: AtomSelection) -> str:
 
 
 def _with_select(kwargs: dict[str, Any], selection: AtomSelection | None) -> dict[str, Any]:
-    expr = _selection_expr(selection)
-    if expr is not None:
-        kwargs["select"] = expr
+    if selection is not None:
+        kwargs["selection"] = _write_selection(selection)
     return kwargs
+
+
+def _write_selection(selection: AtomSelection):
+    if selection.raw:
+        expr = _raw_write_selection_expr(selection)
+        raw_object = _raw_write_selection_object(expr)
+        if raw_object is not None:
+            return raw_object
+        parser = getattr(_pycharmm_select_atoms_module(), "parse_selection", None)
+        if parser is not None:
+            return parser(expr)
+        if expr.lower() == "all":
+            return _pycharmm_select_atoms()(select_all=True)
+        raise SystemLoadError("raw write selections require pycharmm.select_atoms.parse_selection")
+    return _select_atoms(selection)
+
+
+def _select_atoms(selection: AtomSelection):
+    if selection.raw:
+        return None
+    kwargs: dict[str, Any] = {"update": True}
+    if selection.segid is not None:
+        kwargs["seg_id"] = selection.segid
+    if selection.resid is not None:
+        kwargs["res_id"] = str(selection.resid)
+    if selection.resname is not None:
+        kwargs["res_name"] = selection.resname
+    if selection.atom_name is not None:
+        kwargs["atom_type"] = selection.atom_name
+    if selection.hydrogens:
+        kwargs["hydrogens"] = True
+    if len(kwargs) == 1:
+        kwargs["select_all"] = True
+    return _pycharmm_select_atoms()(**kwargs)
+
+
+def _raw_write_selection_expr(selection: AtomSelection) -> str:
+    expr = _selection_expr(selection)
+    if expr is None:
+        return "all"
+    lowered = expr.lower()
+    if lowered.startswith("sele "):
+        expr = expr[5:].strip()
+    elif lowered.startswith("select "):
+        expr = expr[7:].strip()
+    if expr.lower().endswith(" end"):
+        expr = expr[:-4].rstrip()
+    expr = re.sub(r"\.(and|or|not)\.", r"\1", expr, flags=re.IGNORECASE)
+    return expr
+
+
+def _raw_write_selection_object(expr: str):
+    normalized = " ".join(expr.split())
+    negate = False
+    inner = normalized
+    match = re.fullmatch(r"not\s*\((.*)\)", normalized, flags=re.IGNORECASE)
+    if match is not None:
+        negate = True
+        inner = match.group(1).strip()
+    if not re.fullmatch(r"segid\s+\S+(?:\s+or\s+segid\s+\S+)*", inner, flags=re.IGNORECASE):
+        return None
+
+    segids = re.findall(r"\bsegid\s+(\S+)", inner, flags=re.IGNORECASE)
+    if not segids:
+        return None
+
+    select_atoms = _pycharmm_select_atoms()
+    selected = select_atoms(seg_id=segids[0], update=True)
+    for segid in segids[1:]:
+        selected = selected | select_atoms(seg_id=segid, update=True)
+    return ~selected if negate else selected
 
 
 def _safe_int(value: Any) -> int | str:
@@ -273,6 +394,10 @@ def _segid_for_residue(segids: Sequence[str], nictot: Sequence[int], residue_ind
     if len(segids) == 1:
         return str(segids[0]).strip()
     if nictot:
+        if len(nictot) == len(segids) + 1 and int(nictot[0]) == 0:
+            for seg_index, (start, end) in enumerate(zip(nictot, nictot[1:])):
+                if int(start) <= residue_index < int(end):
+                    return str(segids[seg_index]).strip()
         total = 0
         for seg_index, count in enumerate(nictot[: len(segids)]):
             total += int(count)
@@ -312,10 +437,20 @@ def get_topology_snapshot(*, include_cell: bool = False) -> TopologySnapshot:
                     charge=float(charges[atom_index]),
                 )
             )
+        residues: list[ResidueRecord] = []
+        for residue_index in range(len(residue_names)):
+            residues.append(
+                ResidueRecord(
+                    segid=_segid_for_residue(segids, nictot, residue_index),
+                    resid=_safe_int(residue_ids[residue_index]),
+                    resname=str(residue_names[residue_index]).strip(),
+                )
+            )
         return TopologySnapshot(
             atoms=tuple(atoms),
             natom=natom,
             cell=get_cell_parameters() if include_cell else None,
+            residues=tuple(residues),
         )
     except Exception as exc:
         raise wrap_exception(exc, SystemLoadError, "querying topology snapshot") from exc
@@ -324,8 +459,8 @@ def get_topology_snapshot(*, include_cell: bool = False) -> TopologySnapshot:
 def get_cell_parameters() -> CellParameters:
     """Return current unit-cell lengths and angles.
 
-    pyCHARMM exposes the scalar cell values through energy variables but does
-    not provide an authoritative crystal-shape getter here, so ``shape`` is
+    pyCHARMM exposes the scalar cell values through image APIs but does not
+    provide an authoritative crystal-shape getter here, so ``shape`` is
     reported as ``None`` instead of fabricating a discriminated type.
     """
 
@@ -333,14 +468,14 @@ def get_cell_parameters() -> CellParameters:
     if _CELL_CACHE is not None:
         return _CELL_CACHE
     try:
-        lingo = _pycharmm_lingo()
+        a, b, c, alpha, beta, gamma = _pycharmm_image().get_ucell()
         _CELL_CACHE = CellParameters(
-            a=float(lingo.get_energy_value("XTLA")),
-            b=float(lingo.get_energy_value("XTLB")),
-            c=float(lingo.get_energy_value("XTLC")),
-            alpha=float(lingo.get_energy_value("XTLALPHA")),
-            beta=float(lingo.get_energy_value("XTLBETA")),
-            gamma=float(lingo.get_energy_value("XTLGAMMA")),
+            a=float(a),
+            b=float(b),
+            c=float(c),
+            alpha=float(alpha),
+            beta=float(beta),
+            gamma=float(gamma),
             shape=None,
         )
         return _CELL_CACHE
@@ -361,6 +496,56 @@ def patch(patch_name: str, segid: str, resid: int | str, *, setup: bool = True) 
         _invalidate_cache()
     except Exception as exc:
         raise wrap_exception(exc, SystemLoadError, f"applying patch {patch_name}") from exc
+
+
+def _select_residue_atom_names(segid: str, resid: int | str, atom_names: Sequence[str]):
+    return _pycharmm_select_atoms()(
+        seg_id=segid,
+        res_id=str(resid),
+        atom_type=list(atom_names),
+        update=True,
+    )
+
+
+def replicate_atoms(
+    segid: str,
+    resid: int | str,
+    atom_names: Sequence[str],
+    *,
+    replica_segid: str,
+    nreplica: int,
+    setup: bool = True,
+) -> None:
+    try:
+        selection = _select_residue_atom_names(segid, resid, atom_names)
+        _pycharmm_generate().replica(
+            selection=selection,
+            segid=replica_segid,
+            nreplica=nreplica,
+            setup=setup,
+        )
+        _invalidate_cache()
+    except Exception as exc:
+        raise wrap_exception(exc, SystemLoadError, f"replicating residue {segid}:{resid}") from exc
+
+
+def delete_atoms_by_names(segid: str, resid: int | str, atom_names: Sequence[str]) -> None:
+    try:
+        selection = _select_residue_atom_names(segid, resid, atom_names)
+        ok = _pycharmm_psf().delete_atoms(selection)
+        if ok is False:
+            raise SystemLoadError("pyCHARMM psf.delete_atoms returned failure")
+        _invalidate_cache()
+    except Exception as exc:
+        raise wrap_exception(exc, SystemLoadError, f"deleting atoms from {segid}:{resid}") from exc
+
+
+def join_segments(segid_1: str, segid_2: str, *, renumber: bool = False) -> None:
+    try:
+        _pycharmm_generate().join(segid_1, segid_2, renumber=renumber)
+        _invalidate_cache()
+    except Exception as exc:
+        raise wrap_exception(exc, SystemLoadError, f"joining segments {segid_1} {segid_2}") from exc
 
 
 def generate_segment(
@@ -420,9 +605,60 @@ def coor_orient() -> None:
         raise wrap_exception(exc, SystemLoadError, "orienting coordinates") from exc
 
 
+def hbuild(selection: AtomSelection | None = None) -> None:
+    try:
+        kwargs: dict[str, Any] = {}
+        if selection is not None:
+            select_atoms = _select_atoms(selection)
+            if select_atoms is None:
+                _pycharmm_lingo().charmm_script(f"hbuild {_script_selection(selection)}")
+                _invalidate_cache()
+                return
+            kwargs["selection"] = select_atoms
+        _pycharmm_coor().hbuild(**kwargs)
+        _invalidate_cache()
+    except Exception as exc:
+        raise wrap_exception(exc, SystemLoadError, "building hydrogens") from exc
+
+
+def coor_volume(
+    *,
+    selection: AtomSelection | None = None,
+    space: int | None = None,
+) -> dict[str, Any]:
+    try:
+        kwargs: dict[str, Any] = {}
+        if selection is not None:
+            select_atoms = _select_atoms(selection)
+            if select_atoms is None:
+                parts = ["coor volume"]
+                if space is not None:
+                    parts.append(f"space {space}")
+                parts.append(_script_selection(selection))
+                _pycharmm_lingo().charmm_script(" ".join(parts))
+                builtins = _pycharmm_lingo().get_charmm_builtins()
+                return {
+                    key: builtins[key]
+                    for key in ("NVAC", "NSEL", "VOLUME", "VOLU", "FREEVOL")
+                    if key in builtins
+                }
+            kwargs["selection"] = select_atoms
+        if space is not None:
+            kwargs["space"] = space
+        return dict(_pycharmm_coor().volume(**kwargs))
+    except Exception as exc:
+        raise wrap_exception(exc, SystemLoadError, "computing coordinate volume") from exc
+
+
 def rename_atoms(selection: AtomSelection, new_name: str) -> None:
     try:
-        _pycharmm_lingo().charmm_script(f"rename atom {new_name} {_script_selection(selection)}")
+        select_atoms = _select_atoms(selection)
+        if select_atoms is None:
+            _pycharmm_lingo().charmm_script(
+                f"rename atom {new_name} {_script_selection(selection)}"
+            )
+        else:
+            _pycharmm_generate().rename("ATOM", new_name, selection=select_atoms)
         _invalidate_cache()
     except Exception as exc:
         raise wrap_exception(exc, SystemLoadError, f"renaming atoms to {new_name}") from exc
@@ -430,7 +666,13 @@ def rename_atoms(selection: AtomSelection, new_name: str) -> None:
 
 def rename_residues(selection: AtomSelection, new_resname: str) -> None:
     try:
-        _pycharmm_lingo().charmm_script(f"rename resn {new_resname} {_script_selection(selection)}")
+        select_atoms = _select_atoms(selection)
+        if select_atoms is None:
+            _pycharmm_lingo().charmm_script(
+                f"rename resn {new_resname} {_script_selection(selection)}"
+            )
+        else:
+            _pycharmm_generate().rename("RESN", new_resname, selection=select_atoms)
         _invalidate_cache()
     except Exception as exc:
         raise wrap_exception(exc, SystemLoadError, f"renaming residues to {new_resname}") from exc
@@ -438,10 +680,41 @@ def rename_residues(selection: AtomSelection, new_resname: str) -> None:
 
 def delete_atoms(selection: AtomSelection) -> None:
     try:
-        _pycharmm_lingo().charmm_script(f"delete atom {_script_selection(selection)}")
+        select_atoms = _select_atoms(selection)
+        if select_atoms is None:
+            _pycharmm_lingo().charmm_script(f"delete atom {_script_selection(selection)}")
+        else:
+            ok = _pycharmm_psf().delete_atoms(select_atoms)
+            if ok is False:
+                raise SystemLoadError("pyCHARMM psf.delete_atoms returned failure")
         _invalidate_cache()
     except Exception as exc:
         raise wrap_exception(exc, SystemLoadError, "deleting atoms") from exc
+
+
+def delete_connectivity(
+    first_selection: AtomSelection,
+    second_selection: AtomSelection,
+    *,
+    psort: bool = False,
+) -> None:
+    try:
+        first_atoms = _select_atoms(first_selection)
+        if first_atoms is None:
+            raise SystemLoadError(
+                "delete_connectivity requires structured AtomSelection objects"
+            )
+        second_atoms = _select_atoms(second_selection)
+        if second_atoms is None:
+            raise SystemLoadError(
+                "delete_connectivity requires structured AtomSelection objects"
+            )
+        ok = _pycharmm_psf().delete_connectivity(first_atoms, second_atoms, psort=psort)
+        if ok is False:
+            raise SystemLoadError("pyCHARMM psf.delete_connectivity returned failure")
+        _invalidate_cache()
+    except Exception as exc:
+        raise wrap_exception(exc, SystemLoadError, "deleting atom connectivity") from exc
 
 
 def psf_hmr(*, factor: float = 3.0, resnames_exclude: list[str] | None = None) -> None:
@@ -536,21 +809,38 @@ def image_setup(
 
 def define_molecule(name: str, selection: AtomSelection) -> None:
     try:
-        _pycharmm_lingo().charmm_script(f"define {name} {_script_selection(selection)}")
+        select_atoms = _select_atoms(selection)
+        if select_atoms is None:
+            _pycharmm_lingo().charmm_script(f"define {name} {_script_selection(selection)}")
+        else:
+            _pycharmm_select_module().store_selection(name, select_atoms.get_selection())
     except Exception as exc:
         raise wrap_exception(exc, SystemLoadError, f"defining molecule selection {name}") from exc
 
 
 def cons_harm_force(force: float, selection: AtomSelection) -> None:
     try:
-        _pycharmm_lingo().charmm_script(f"cons harm force {force} {_script_selection(selection)}")
+        select_atoms = _select_atoms(selection)
+        if select_atoms is None:
+            _pycharmm_lingo().charmm_script(
+                f"cons harm force {force} {_script_selection(selection)}"
+            )
+        else:
+            ok = _pycharmm_restraints().harmonic_absolute(
+                selection=select_atoms,
+                force_const=force,
+            )
+            if ok is False:
+                raise SystemLoadError("pyCHARMM restraints.harmonic_absolute returned failure")
     except Exception as exc:
         raise wrap_exception(exc, SystemLoadError, "setting harmonic constraints") from exc
 
 
 def cons_harm_clear() -> None:
     try:
-        _pycharmm_lingo().charmm_script("cons harm clear")
+        ok = _pycharmm_restraints().harmonic_turn_off()
+        if ok is False:
+            raise SystemLoadError("pyCHARMM restraints.harmonic_turn_off returned failure")
     except Exception as exc:
         raise wrap_exception(exc, SystemLoadError, "clearing harmonic constraints") from exc
 
@@ -650,29 +940,45 @@ def shake_off() -> None:
         raise wrap_exception(exc, SystemLoadError, "disabling SHAKE") from exc
 
 
-def blade_on(*, gpu_id: int | None = None, faster: bool = False) -> None:
+def blade_on(
+    *,
+    gpu_id: int | None = None,
+    gpu_ids: int | str | Sequence[int] | None = None,
+    faster: bool = False,
+) -> None:
+    if gpu_id is not None and gpu_ids is not None:
+        raise ValueError("blade_on accepts either gpu_id or gpu_ids, not both")
+    resolved_gpu_ids = gpu_ids if gpu_ids is not None else gpu_id
     try:
-        lingo = _pycharmm_lingo()
         if faster:
-            lingo.charmm_script("faster on")
-        if gpu_id is None:
-            lingo.charmm_script("blade on")
+            _pycharmm_miscom().faster(True)
+        if resolved_gpu_ids is None:
+            _pycharmm_blade().enable()
         else:
-            lingo.charmm_script(f"blade on gpuid {gpu_id}")
+            _pycharmm_blade().enable(gpu_ids=resolved_gpu_ids)
     except Exception as exc:
         raise wrap_exception(exc, SystemLoadError, "enabling BLaDE") from exc
 
 
 def blade_off() -> None:
     try:
-        _pycharmm_lingo().charmm_script("blade off")
+        _pycharmm_blade().disable()
     except Exception as exc:
         raise wrap_exception(exc, SystemLoadError, "disabling BLaDE") from exc
 
 
+def blade_energy(*, show: bool = False, abic: bool = False) -> None:
+    try:
+        _pycharmm_blade().energy(show=show, abic=abic)
+    except Exception as exc:
+        raise wrap_exception(exc, SystemLoadError, "running BLaDE energy") from exc
+
+
 def clear_block() -> None:
     try:
-        _pycharmm_lingo().charmm_script("block\nclear\nend")
+        ok = _pycharmm_block().clear()
+        if ok is False:
+            raise SystemLoadError("pyCHARMM block.clear returned failure")
     except Exception as exc:
         raise wrap_exception(exc, SystemLoadError, "clearing BLOCK state") from exc
 
@@ -713,21 +1019,23 @@ def _resolve_stream_path(
 def stream_file(path: Path | str, *, search_path: Sequence[Path | str] | None = None) -> None:
     resolved = _resolve_stream_path(path, search_path=search_path)
     try:
-        _pycharmm_lingo().charmm_script(f"stream {qpath(resolved)}")
+        _pycharmm_read().stream(qpath(resolved))
     except Exception as exc:
         raise wrap_exception(exc, SystemLoadError, f"streaming CHARMM file {resolved}") from exc
 
 
 def disable_autogen() -> None:
     try:
-        _pycharmm_lingo().charmm_script("auto nopatch")
+        ok = _pycharmm_generate().autogenerate(patch_mode=False)
+        if ok is False:
+            raise SystemLoadError("pyCHARMM generate.autogenerate returned failure")
     except Exception as exc:
         raise wrap_exception(exc, SystemLoadError, "disabling autogen patching") from exc
 
 
 def set_output_unit(unit: int) -> None:
     try:
-        _pycharmm_lingo().charmm_script(f"outunit {unit}")
+        _pycharmm_settings().set_output_unit(unit)
     except Exception as exc:
         raise wrap_exception(exc, SystemLoadError, f"setting output unit {unit}") from exc
 
@@ -743,7 +1051,7 @@ def reset_io_unit(unit: int = 91) -> None:
 
 def set_prnlev(level: int) -> None:
     try:
-        _pycharmm_lingo().charmm_script(f"prnlev {level}")
+        _pycharmm_settings().set_verbosity(level)
     except Exception as exc:
         raise wrap_exception(exc, SystemLoadError, f"setting PRNLEV {level}") from exc
 
@@ -763,16 +1071,29 @@ def set_bomb_level(level: int) -> None:
 
 
 def set_iofmt(*, extended: bool = True) -> None:
-    command = "ioformat extended" if extended else "ioformat noextended"
     try:
-        _pycharmm_lingo().charmm_script(command)
+        _pycharmm_miscom().set_io_format(extended=extended)
     except Exception as exc:
         raise wrap_exception(exc, SystemLoadError, "setting CHARMM IO format") from exc
 
 
-def minimize_sd(*, nsteps: int, tolgrd: float = 0.01) -> None:
+def minimize_sd(
+    *,
+    nsteps: int,
+    nprint: int | None = None,
+    step: float | None = None,
+    tolenr: float | None = None,
+    tolgrd: float = 0.01,
+) -> None:
+    kwargs: dict[str, Any] = {"nstep": nsteps, "tolgrd": tolgrd}
+    if nprint is not None:
+        kwargs["nprint"] = nprint
+    if step is not None:
+        kwargs["step"] = step
+    if tolenr is not None:
+        kwargs["tolenr"] = tolenr
     try:
-        _pycharmm_minimize().run_sd(nstep=nsteps, tolgrd=tolgrd)
+        _pycharmm_minimize().run_sd(**kwargs)
     except Exception as exc:
         raise wrap_exception(exc, SystemLoadError, "running SD minimization") from exc
 

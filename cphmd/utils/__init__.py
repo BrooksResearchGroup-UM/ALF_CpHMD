@@ -15,7 +15,6 @@ from .lambda_io import (
     find_lambda_files,
     get_lambda_columns_for_sites,
     read_lambda,
-    read_lambda_binary,
     read_lambda_parquet,
     read_lambda_values,
     write_lambda_parquet,
@@ -30,7 +29,6 @@ __all__ = [
     # Lambda I/O
     "LambdaFileMetadata",
     "read_lambda",
-    "read_lambda_binary",
     "read_lambda_parquet",
     "read_lambda_values",
     "write_lambda_parquet",

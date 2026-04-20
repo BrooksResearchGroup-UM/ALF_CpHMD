@@ -1,0 +1,18 @@
+master_seed: 20260420
+run_dir: run1
+
+native:
+  dynamics_backend: domdec-cpu
+  analysis_backend: disabled
+
+alf:
+  input_folder: ../../01_asp_water/solvated
+  nreps: 1
+  start: 1
+  end: 5
+  nsteps_per_segment: 10
+  time_step_ps: 0.001
+  nsavl: 5
+  nsavc: 10
+  checkpoint_every_segments: 1
+  ph: false

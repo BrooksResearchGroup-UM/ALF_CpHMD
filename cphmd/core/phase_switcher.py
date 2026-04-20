@@ -13,6 +13,7 @@ Also implements Phase 3 → STOP criteria based on:
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -24,6 +25,32 @@ if TYPE_CHECKING:
     import pandas as pd
 
     from .expected_populations import ExpectedPopulations  # noqa: F401
+
+
+def _consume_deprecated_alias(
+    kwargs: dict[str, object],
+    *,
+    name: str,
+    alias: str,
+    value: object,
+) -> object:
+    if alias not in kwargs:
+        return value
+    alias_value = kwargs.pop(alias)
+    if value is not None:
+        raise TypeError(f"received both {name!r} and deprecated {alias!r}")
+    warnings.warn(
+        f"{alias!r} is deprecated; use {name!r} instead.",
+        DeprecationWarning,
+        stacklevel=3,
+    )
+    return alias_value
+
+
+def _reject_unexpected_kwargs(kwargs: dict[str, object]) -> None:
+    if kwargs:
+        unexpected = next(iter(kwargs))
+        raise TypeError(f"unexpected keyword argument {unexpected!r}")
 
 
 @dataclass
@@ -126,7 +153,7 @@ class PhaseTransitionConfig:
 class StopCriteriaConfig:
     """Configuration for Phase 3 → STOP criteria.
 
-    Uses step5_bias_search-style scoring based on population fractions
+    Uses strict-endpoint population-fraction scoring
     at the strict lambda threshold (0.97).
 
     Stop when:
@@ -178,49 +205,134 @@ class StopCriteriaConfig:
         return int(self.min_total_samples * timestep_factor)
 
 
-@dataclass
+@dataclass(init=False)
 class ReplicaLambdaData:
     """Lambda data organized by replica for pKa fitting.
 
     Attributes:
         replica_idx: Replica index (0-based)
-        pH: Effective pH for this replica
+        ph: Effective pH for this replica
         lambda_data: Combined lambda array for this replica (samples x states)
         populations: Population fraction per state (after threshold)
     """
 
     replica_idx: int
-    pH: float
+    ph: float
     lambda_data: np.ndarray
     populations: np.ndarray = field(default_factory=lambda: np.array([]))
 
+    def __init__(
+        self,
+        replica_idx: int,
+        ph: float | None = None,
+        lambda_data: np.ndarray | None = None,
+        populations: np.ndarray | None = None,
+        **deprecated_kwargs: object,
+    ) -> None:
+        ph = _consume_deprecated_alias(
+            deprecated_kwargs,
+            name="ph",
+            alias="pH",
+            value=ph,
+        )
+        _reject_unexpected_kwargs(deprecated_kwargs)
+        if ph is None:
+            raise TypeError("missing required argument 'ph'")
+        if lambda_data is None:
+            raise TypeError("missing required argument 'lambda_data'")
 
-@dataclass
+        self.replica_idx = replica_idx
+        self.ph = float(ph)
+        self.lambda_data = lambda_data
+        self.populations = populations if populations is not None else np.array([])
+
+    @property
+    def pH(self) -> float:  # noqa: N802
+        """Deprecated alias for ph."""
+        return self.ph
+
+    @pH.setter
+    def pH(self, value: float) -> None:  # noqa: N802
+        self.ph = value
+
+
+@dataclass(init=False)
 class PKaFitResult:
     """Result of pKa fitting from multi-replica data.
 
     Attributes:
-        fitted_pKa: The pKa value from HH curve fitting
+        fitted_pka: The pKa value from HH curve fitting
         fit_type: Type of fit ("acidic", "basic", "three_state", "constant")
         r_squared: Coefficient of determination
         n_points: Number of pH points used in fit
-        pH_values: Array of pH values used
+        ph_values: Array of pH values used
         populations: Array of populations at each pH
     """
 
-    fitted_pKa: float
+    fitted_pka: float
     fit_type: str = "unknown"
     r_squared: float = 0.0
     n_points: int = 0
-    pH_values: np.ndarray = field(default_factory=lambda: np.array([]))
+    ph_values: np.ndarray = field(default_factory=lambda: np.array([]))
     populations: np.ndarray = field(default_factory=lambda: np.array([]))
+
+    def __init__(
+        self,
+        fitted_pka: float | None = None,
+        fit_type: str = "unknown",
+        r_squared: float = 0.0,
+        n_points: int = 0,
+        ph_values: np.ndarray | None = None,
+        populations: np.ndarray | None = None,
+        **deprecated_kwargs: object,
+    ) -> None:
+        fitted_pka = _consume_deprecated_alias(
+            deprecated_kwargs,
+            name="fitted_pka",
+            alias="fitted_pKa",
+            value=fitted_pka,
+        )
+        ph_values = _consume_deprecated_alias(
+            deprecated_kwargs,
+            name="ph_values",
+            alias="pH_values",
+            value=ph_values,
+        )
+        _reject_unexpected_kwargs(deprecated_kwargs)
+        if fitted_pka is None:
+            raise TypeError("missing required argument 'fitted_pka'")
+
+        self.fitted_pka = float(fitted_pka)
+        self.fit_type = fit_type
+        self.r_squared = r_squared
+        self.n_points = n_points
+        self.ph_values = ph_values if ph_values is not None else np.array([])
+        self.populations = populations if populations is not None else np.array([])
+
+    @property
+    def fitted_pKa(self) -> float:  # noqa: N802
+        """Deprecated alias for fitted_pka."""
+        return self.fitted_pka
+
+    @fitted_pKa.setter
+    def fitted_pKa(self, value: float) -> None:  # noqa: N802
+        self.fitted_pka = value
+
+    @property
+    def pH_values(self) -> np.ndarray:  # noqa: N802
+        """Deprecated alias for ph_values."""
+        return self.ph_values
+
+    @pH_values.setter
+    def pH_values(self, value: np.ndarray) -> None:  # noqa: N802
+        self.ph_values = value
 
 
 @dataclass
 class StopCriteriaResult:
     """Result of Phase 3 → STOP criteria check.
 
-    Uses step5_bias_search-style metrics based on population fractions.
+    Uses strict-endpoint population-fraction metrics.
 
     Attributes:
         should_stop: True if all criteria are met
@@ -530,11 +642,11 @@ def load_lambda_data(
 
         replica_combined = None
         for fpath in repeat_fpaths:
-            l = read_lambda_values(fpath)
+            lambda_values = read_lambda_values(fpath)
             if replica_combined is None:
-                replica_combined = l
+                replica_combined = lambda_values
             else:
-                replica_combined = np.vstack([replica_combined, l])
+                replica_combined = np.vstack([replica_combined, lambda_values])
 
         if replica_combined is not None:
             if lambda_data is None:
@@ -549,10 +661,11 @@ def load_lambda_data(
 
 def load_lambda_data_per_replica(
     data_dir: Path,
-    effective_pH: float,
-    delta_pKa: float,
-    nreps: int,
+    effective_ph: float | None = None,
+    delta_pka: float | None = None,
+    nreps: int | None = None,
     ncentral: int | None = None,
+    **deprecated_kwargs: object,
 ) -> list[ReplicaLambdaData]:
     """Load lambda data organized by replica with per-replica pH values.
 
@@ -560,8 +673,8 @@ def load_lambda_data_per_replica(
 
     Args:
         data_dir: Path to data/ directory containing Lambda.*.*.{parquet,dat} files
-        effective_pH: Base pH for the central replica
-        delta_pKa: pH increment between adjacent replicas
+        effective_ph: Base pH for the central replica
+        delta_pka: pH increment between adjacent replicas
         nreps: Total number of replicas
         ncentral: Index of central replica (defaults to nreps // 2)
 
@@ -569,6 +682,26 @@ def load_lambda_data_per_replica(
         List of ReplicaLambdaData objects, one per replica with valid data
     """
     from cphmd.utils.lambda_io import read_lambda_values
+
+    effective_ph = _consume_deprecated_alias(
+        deprecated_kwargs,
+        name="effective_ph",
+        alias="effective_pH",
+        value=effective_ph,
+    )
+    delta_pka = _consume_deprecated_alias(
+        deprecated_kwargs,
+        name="delta_pka",
+        alias="delta_pKa",
+        value=delta_pka,
+    )
+    _reject_unexpected_kwargs(deprecated_kwargs)
+    if effective_ph is None:
+        raise TypeError("missing required argument 'effective_ph'")
+    if delta_pka is None:
+        raise TypeError("missing required argument 'delta_pka'")
+    if nreps is None:
+        raise TypeError("missing required argument 'nreps'")
 
     replica_files = _organize_by_replica(data_dir)
     if replica_files is None:
@@ -584,7 +717,7 @@ def load_lambda_data_per_replica(
         if replica_idx >= nreps:
             continue
 
-        replica_pH = effective_pH + delta_pKa * (replica_idx - ncentral)
+        replica_ph = effective_ph + delta_pka * (replica_idx - ncentral)
 
         replica_lambda = None
         for fpath in sorted(replica_files[replica_idx]):
@@ -603,7 +736,7 @@ def load_lambda_data_per_replica(
             result.append(
                 ReplicaLambdaData(
                     replica_idx=replica_idx,
-                    pH=replica_pH,
+                    ph=replica_ph,
                     lambda_data=replica_lambda,
                 )
             )
@@ -1000,7 +1133,7 @@ def check_stop_criteria(
 ) -> StopCriteriaResult:
     """Check if Phase 3 → STOP criteria are met.
 
-    Uses step5_bias_search-style scoring based on population fractions
+    Uses strict-endpoint population-fraction scoring
     at the strict lambda threshold (0.97).
 
     When nsubs is provided, frac_diff is computed **per site** and the
@@ -1276,8 +1409,8 @@ def _compute_worst_pka_deviation(
             parts = tag.split()
             if len(parts) >= 2:
                 try:
-                    theo_pKa = float(parts[1])
-                    dev = abs(result.fitted_pKa - theo_pKa)
+                    theoretical_pka = float(parts[1])
+                    dev = abs(result.fitted_pka - theoretical_pka)
                     worst_dev = max(worst_dev, dev)
                 except ValueError:
                     pass
@@ -1292,14 +1425,15 @@ def check_phase_transition(
     # Optional CpHMD parameters for pKa convergence check
     data_dir: Path | None = None,
     patch_info: "pd.DataFrame | None" = None,
-    effective_pH: float | None = None,
-    delta_pKa: float | None = None,
+    effective_ph: float | None = None,
+    delta_pka: float | None = None,
     nreps: int | None = None,
     nsubs: list[int] | None = None,
     connectivity: float | None = None,
     phase2_run_count: int | None = None,
     ewbs_state: EWBSState | None = None,
     expected_pops: ExpectedPopulations | None = None,
+    **deprecated_kwargs: object,
 ) -> tuple[int, str]:
     """Check if phase transition criteria are met.
 
@@ -1317,8 +1451,8 @@ def check_phase_transition(
         config: Phase transition configuration (uses defaults if None)
         data_dir: Path to data/ directory (for pKa check)
         patch_info: DataFrame with patch info (for pKa check)
-        effective_pH: Base pH for central replica (for pKa check)
-        delta_pKa: pH increment between replicas (for pKa check)
+        effective_ph: Base pH for central replica (for pKa check)
+        delta_pka: pH increment between replicas (for pKa check)
         nreps: Number of replicas (for pKa check)
         nsubs: Number of substates per site (e.g. [2, 3]). If None,
                uses global spread check (legacy behavior).
@@ -1331,6 +1465,20 @@ def check_phase_transition(
     """
     if config is None:
         config = PhaseTransitionConfig()
+
+    effective_ph = _consume_deprecated_alias(
+        deprecated_kwargs,
+        name="effective_ph",
+        alias="effective_pH",
+        value=effective_ph,
+    )
+    delta_pka = _consume_deprecated_alias(
+        deprecated_kwargs,
+        name="delta_pka",
+        alias="delta_pKa",
+        value=delta_pka,
+    )
+    _reject_unexpected_kwargs(deprecated_kwargs)
 
     if lambda_data is None or lambda_data.size == 0:
         return current_phase, "No lambda data available"
@@ -1345,8 +1493,8 @@ def check_phase_transition(
         [
             data_dir is not None,
             patch_info is not None,
-            effective_pH is not None,
-            delta_pKa is not None,
+            effective_ph is not None,
+            delta_pka is not None,
             nreps is not None and nreps > 3,
         ]
     )
@@ -1413,8 +1561,8 @@ def check_phase_transition(
             pka_ok, fit_results = check_pka_convergence(
                 data_dir,
                 patch_info,
-                effective_pH,
-                delta_pKa,
+                effective_ph,
+                delta_pka,
                 nreps,
                 tolerance=config.pka_tolerance_1to2,
             )
@@ -1459,8 +1607,8 @@ def check_phase_transition(
             pka_ok, fit_results = check_pka_convergence(
                 data_dir,
                 patch_info,
-                effective_pH,
-                delta_pKa,
+                effective_ph,
+                delta_pka,
                 nreps,
                 tolerance=config.pka_tolerance_2to3,
             )
@@ -1604,7 +1752,7 @@ def check_phase3_stop(
     """Check if Phase 3 simulation should stop.
 
     This is the main entry point for checking stop criteria in Phase 3.
-    Uses step5_bias_search-style scoring based on population balance.
+    Uses strict-endpoint population-balance scoring.
 
     Args:
         lambda_data: Combined lambda data array (samples x states)
@@ -1652,14 +1800,14 @@ def check_phase3_stop(
     return result.should_stop, reason, result
 
 
-def _hh_acidic(pH: np.ndarray, pKa: float, n: float = 1.0) -> np.ndarray:
+def _hh_acidic(ph: np.ndarray, pka: float, n: float = 1.0) -> np.ndarray:
     """Henderson-Hasselbalch for acidic residues (population of deprotonated state)."""
-    return 1.0 / (1.0 + 10 ** (n * (pKa - pH)))
+    return 1.0 / (1.0 + 10 ** (n * (pka - ph)))
 
 
-def _hh_basic(pH: np.ndarray, pKa: float, n: float = 1.0) -> np.ndarray:
+def _hh_basic(ph: np.ndarray, pka: float, n: float = 1.0) -> np.ndarray:
     """Henderson-Hasselbalch for basic residues (population of deprotonated state)."""
-    return 1.0 / (1.0 + 10 ** (n * (pH - pKa)))
+    return 1.0 / (1.0 + 10 ** (n * (ph - pka)))
 
 
 def fit_pka_from_replicas(
@@ -1684,7 +1832,7 @@ def fit_pka_from_replicas(
     """
     if len(replica_data) < 3:
         return PKaFitResult(
-            fitted_pKa=7.0,
+            fitted_pka=7.0,
             fit_type="insufficient_data",
             n_points=len(replica_data),
         )
@@ -1693,14 +1841,14 @@ def fit_pka_from_replicas(
     replica_data = compute_replica_populations(replica_data, lambda_threshold, state_indices)
 
     # Extract pH and population arrays
-    pH_values = np.array([rd.pH for rd in replica_data])
+    ph_values = np.array([rd.ph for rd in replica_data])
     populations = np.array(
         [rd.populations[0] if len(rd.populations) > 0 else 0.0 for rd in replica_data]
     )
 
     # Sort by pH
-    sort_idx = np.argsort(pH_values)
-    pH_values = pH_values[sort_idx]
+    sort_idx = np.argsort(ph_values)
+    ph_values = ph_values[sort_idx]
     populations = populations[sort_idx]
 
     # Auto-detect fit type from population trend
@@ -1713,10 +1861,10 @@ def fit_pka_from_replicas(
         else:
             # Nearly constant - can't determine pKa reliably
             return PKaFitResult(
-                fitted_pKa=np.mean(pH_values),
+                fitted_pka=np.mean(ph_values),
                 fit_type="constant",
-                n_points=len(pH_values),
-                pH_values=pH_values,
+                n_points=len(ph_values),
+                ph_values=ph_values,
                 populations=populations,
             )
 
@@ -1730,39 +1878,39 @@ def fit_pka_from_replicas(
         # Initial pKa guess from midpoint
         mid_pop = 0.5
         closest_idx = np.argmin(np.abs(populations - mid_pop))
-        initial_pKa = pH_values[closest_idx]
+        initial_pka = ph_values[closest_idx]
 
         popt, _ = curve_fit(
             fit_func,
-            pH_values,
+            ph_values,
             populations,
-            p0=[initial_pKa, 1.0],
+            p0=[initial_pka, 1.0],
             bounds=([0, 0.1], [14, 5]),
             maxfev=5000,
         )
 
         # Calculate R²
-        y_pred = fit_func(pH_values, *popt)
+        y_pred = fit_func(ph_values, *popt)
         ss_res = np.sum((populations - y_pred) ** 2)
         ss_tot = np.sum((populations - np.mean(populations)) ** 2)
         r_squared = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0
 
         return PKaFitResult(
-            fitted_pKa=popt[0],
+            fitted_pka=popt[0],
             fit_type=fit_type,
             r_squared=r_squared,
-            n_points=len(pH_values),
-            pH_values=pH_values,
+            n_points=len(ph_values),
+            ph_values=ph_values,
             populations=populations,
         )
 
     except Exception:
         # Fitting failed - return estimate from midpoint
         return PKaFitResult(
-            fitted_pKa=np.mean(pH_values),
+            fitted_pka=np.mean(ph_values),
             fit_type="fit_failed",
-            n_points=len(pH_values),
-            pH_values=pH_values,
+            n_points=len(ph_values),
+            ph_values=ph_values,
             populations=populations,
         )
 
@@ -1770,12 +1918,13 @@ def fit_pka_from_replicas(
 def check_pka_convergence(
     data_dir: Path,
     patch_info: "pd.DataFrame",
-    effective_pH: float,
-    delta_pKa: float,
-    nreps: int,
+    effective_ph: float | None = None,
+    delta_pka: float | None = None,
+    nreps: int | None = None,
     tolerance: float = 1.5,
     ncentral: int | None = None,
     lambda_threshold: float = 0.8,
+    **deprecated_kwargs: object,
 ) -> tuple[bool, dict[str, PKaFitResult]]:
     """Check if fitted pKa values are within tolerance of theoretical values.
 
@@ -1788,8 +1937,8 @@ def check_pka_convergence(
     Args:
         data_dir: Path to data/ directory with Lambda files
         patch_info: DataFrame with patch info including TAG column
-        effective_pH: Base pH for central replica
-        delta_pKa: pH increment between replicas
+        effective_ph: Base pH for central replica
+        delta_pka: pH increment between replicas
         nreps: Number of replicas
         tolerance: Maximum allowed pKa deviation
         ncentral: Central replica index (defaults to nreps // 2)
@@ -1798,11 +1947,31 @@ def check_pka_convergence(
     Returns:
         Tuple of (converged: bool, fit_results: dict mapping site_id to PKaFitResult)
     """
+    effective_ph = _consume_deprecated_alias(
+        deprecated_kwargs,
+        name="effective_ph",
+        alias="effective_pH",
+        value=effective_ph,
+    )
+    delta_pka = _consume_deprecated_alias(
+        deprecated_kwargs,
+        name="delta_pka",
+        alias="delta_pKa",
+        value=delta_pka,
+    )
+    _reject_unexpected_kwargs(deprecated_kwargs)
+    if effective_ph is None:
+        raise TypeError("missing required argument 'effective_ph'")
+    if delta_pka is None:
+        raise TypeError("missing required argument 'delta_pka'")
+    if nreps is None:
+        raise TypeError("missing required argument 'nreps'")
+
     if ncentral is None:
         ncentral = nreps // 2
 
     # Load per-replica data
-    replica_data = load_lambda_data_per_replica(data_dir, effective_pH, delta_pKa, nreps, ncentral)
+    replica_data = load_lambda_data_per_replica(data_dir, effective_ph, delta_pka, nreps, ncentral)
 
     if len(replica_data) < 3:
         # Not enough replicas for reliable fitting
@@ -1819,17 +1988,17 @@ def check_pka_convergence(
         site_patches = patch_info[patch_info["site"] == site_id]
 
         # Determine theoretical pKa from TAG values
-        theoretical_pKa = None
+        theoretical_pka = None
         site_type = "acidic"  # Default
-        pKa_values = []
+        pka_values = []
 
         for _, row in site_patches.iterrows():
             tag = str(row.get("TAG", "NONE")).strip().upper()
             parts = tag.split()
             if len(parts) >= 2:
                 try:
-                    pKa = float(parts[1])
-                    pKa_values.append(pKa)
+                    pka = float(parts[1])
+                    pka_values.append(pka)
                     if parts[0] == "UPOS":
                         site_type = "basic"
                     elif parts[0] == "UNEG":
@@ -1837,8 +2006,8 @@ def check_pka_convergence(
                 except ValueError:
                     pass
 
-        if pKa_values:
-            theoretical_pKa = np.mean(pKa_values)
+        if pka_values:
+            theoretical_pka = np.mean(pka_values)
 
         # Get state indices for this site (charged states for fitting)
         # Use global column offsets, not local enumerate indices
@@ -1862,12 +2031,12 @@ def check_pka_convergence(
         fit_results[str(site_id)] = fit_result
 
         # Check convergence
-        if theoretical_pKa is not None and fit_result.fit_type not in (
+        if theoretical_pka is not None and fit_result.fit_type not in (
             "constant",
             "insufficient_data",
             "fit_failed",
         ):
-            deviation = abs(fit_result.fitted_pKa - theoretical_pKa)
+            deviation = abs(fit_result.fitted_pka - theoretical_pka)
             if deviation > tolerance:
                 all_converged = False
 
@@ -1875,23 +2044,39 @@ def check_pka_convergence(
 
 
 def check_pka_convergence_simple(
-    fitted_pKa: float,
-    theoretical_pKas: list[float],
+    fitted_pka: float | None = None,
+    theoretical_pkas: list[float] | None = None,
     tolerance: float = 1.5,
+    **deprecated_kwargs: object,
 ) -> bool:
     """Simple check if fitted pKa is within tolerance of theoretical values.
 
     This is the legacy interface - use check_pka_convergence() for full analysis.
 
     Args:
-        fitted_pKa: The pKa value obtained from HH curve fitting
-        theoretical_pKas: List of theoretical/reference pKa values
+        fitted_pka: The pKa value obtained from HH curve fitting
+        theoretical_pkas: List of theoretical/reference pKa values
         tolerance: Maximum allowed deviation from any theoretical value
 
     Returns:
         True if fitted pKa is within tolerance of all theoretical values
     """
-    if not theoretical_pKas:
+    fitted_pka = _consume_deprecated_alias(
+        deprecated_kwargs,
+        name="fitted_pka",
+        alias="fitted_pKa",
+        value=fitted_pka,
+    )
+    theoretical_pkas = _consume_deprecated_alias(
+        deprecated_kwargs,
+        name="theoretical_pkas",
+        alias="theoretical_pKas",
+        value=theoretical_pkas,
+    )
+    _reject_unexpected_kwargs(deprecated_kwargs)
+    if fitted_pka is None:
+        raise TypeError("missing required argument 'fitted_pka'")
+    if not theoretical_pkas:
         return True  # No reference values, assume converged
 
-    return all(abs(fitted_pKa - pKa) <= tolerance for pKa in theoretical_pKas)
+    return all(abs(fitted_pka - pka) <= tolerance for pka in theoretical_pkas)

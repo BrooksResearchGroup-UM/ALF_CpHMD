@@ -18,17 +18,35 @@ from typing import TYPE_CHECKING, Any
 import yaml
 
 from cphmd import TOPPAR_DIR
+from cphmd.simulation.backends import (
+    AnalysisBackend,
+    DomdecConfig,
+    DynamicsBackend,
+    parse_analysis_backend,
+    parse_dynamics_backend,
+)
 
 if TYPE_CHECKING:
-    from cphmd.core.alf_runner import ALFConfig
     from cphmd.core.patching import PatchConfig
     from cphmd.setup.prepare_pdb import PreparePDBConfig
     from cphmd.setup.solvate import SolvationConfig
+    from cphmd.training.config import ALFConfig
 
 logger = logging.getLogger(__name__)
 
 _DEFAULTS_DIR = Path(__file__).parent / "defaults"
 _LOCAL_CONFIG_NAME = "cphmd_config.yaml"
+_DEFAULT_TOPOLOGY_FILES = (
+    "top_all36_prot.rtf",
+    "par_all36m_prot.prm",
+    "top_all36_na.rtf",
+    "par_all36_na.prm",
+    "toppar_water_ions.str",
+    "top_all36_cgenff.rtf",
+    "par_all36_cgenff.prm",
+    "my_files/titratable_residues.str",
+    "my_files/nucleic_c36.str",
+)
 
 
 @dataclass(frozen=True)
@@ -54,6 +72,7 @@ class NativeRuntimeConfig:
     start: int
     end: int
     phase: int
+    cent_ncres: int | bool
     temperature: float
     nsteps_per_segment: int
     nsavl: int
@@ -62,10 +81,23 @@ class NativeRuntimeConfig:
     checkpoint_every_segments: int
     archive: ArchiveConfig
     logging: LoggingConfig
+    dynamics_backend: DynamicsBackend = DynamicsBackend.BLADE
+    analysis_backend: AnalysisBackend = AnalysisBackend.CUDA_WHAM
+    domdec: DomdecConfig = DomdecConfig()
     ph: bool = False
     ph_values: tuple[float, ...] = ()
     replica_exchange: Any = None
     walltime_safety_factor: float = 2.0
+    production: Any | None = None
+    toppar_dir: Path = TOPPAR_DIR
+    topology_files: tuple[str, ...] = _DEFAULT_TOPOLOGY_FILES
+    extra_files: tuple[Path, ...] = ()
+    cutnb: float = 14.0
+    ctofnb: float = 12.0
+    ctonnb: float = 10.0
+    elec_type: str = "pmeex"
+    vdw_type: str = "vswitch"
+    fnex: float = 5.5
 
 
 def load_config(path: str | Path) -> NativeRuntimeConfig:
@@ -80,8 +112,18 @@ def load_config(path: str | Path) -> NativeRuntimeConfig:
     _reject_user_facing_use_blade(raw)
 
     alf = dict(raw.get("alf", {}) or {})
+    native = dict(raw.get("native", {}) or {})
     archive = dict(raw.get("archive", {}) or {})
     logging_cfg = dict(raw.get("logging", {}) or {})
+    if "production" in raw:
+        if raw["production"] is None:
+            production_section = {}
+        elif isinstance(raw["production"], dict):
+            production_section = dict(raw["production"])
+        else:
+            raise ValueError("production must be a mapping")
+    else:
+        production_section = None
 
     if "master_seed" in raw:
         master_seed = raw["master_seed"]
@@ -97,7 +139,7 @@ def load_config(path: str | Path) -> NativeRuntimeConfig:
 
     input_folder = _resolve_config_path(
         config_path.parent,
-        raw.get("run_dir") or alf.get("input_folder") or ".",
+        alf.get("input_folder") or raw.get("input_folder") or raw.get("run_dir") or ".",
     )
     run_dir = _resolve_config_path(config_path.parent, raw.get("run_dir") or input_folder)
 
@@ -105,12 +147,27 @@ def load_config(path: str | Path) -> NativeRuntimeConfig:
     if nreps < 1:
         raise ValueError("nreps must be >= 1")
 
-    lambda_precision = archive.get("lambda_precision", "full")
+    if production_section is not None:
+        lambda_precision = archive.get(
+            "lambda_precision",
+            production_section.get("lambda_precision", "shrinker"),
+        )
+    else:
+        lambda_precision = archive.get("lambda_precision", "full")
     if lambda_precision not in {"full", "shrinker"}:
         raise ValueError("archive.lambda_precision must be 'full' or 'shrinker'")
+    production = (
+        _parse_production_config(config_path, production_section, lambda_precision)
+        if production_section is not None
+        else None
+    )
 
     replica_exchange = alf.get("replica_exchange")
+    ph_enabled = _ph_enabled(alf)
     ph_values = _ph_values(alf, nreps)
+    dynamics_backend = parse_dynamics_backend(native.get("dynamics_backend", "blade"))
+    analysis_backend = parse_analysis_backend(native.get("analysis_backend", "cuda-wham"))
+    domdec = DomdecConfig.from_mapping(native.get("domdec"))
 
     return NativeRuntimeConfig(
         config_path=config_path,
@@ -120,8 +177,9 @@ def load_config(path: str | Path) -> NativeRuntimeConfig:
         nreps=nreps,
         master_seed=master_seed,
         start=int(alf.get("start", 1)),
-        end=int(alf.get("end", 1)),
+        end=int(alf.get("end", 200)),
         phase=int(alf.get("phase", 1)),
+        cent_ncres=alf.get("cent_ncres", False),
         temperature=float(alf.get("temperature", 298.15)),
         nsteps_per_segment=int(alf.get("nsteps_per_segment", alf.get("nsteps", 1000))),
         nsavl=int(alf.get("nsavl", 10)),
@@ -130,11 +188,49 @@ def load_config(path: str | Path) -> NativeRuntimeConfig:
         checkpoint_every_segments=int(alf.get("checkpoint_every_segments", 1)),
         archive=ArchiveConfig(lambda_precision=lambda_precision),
         logging=LoggingConfig(level=str(logging_cfg.get("level", "INFO"))),
-        ph=bool(alf.get("ph", False)),
+        dynamics_backend=dynamics_backend,
+        analysis_backend=analysis_backend,
+        domdec=domdec,
+        ph=ph_enabled,
         ph_values=ph_values,
         replica_exchange=replica_exchange,
         walltime_safety_factor=float(raw.get("walltime_safety_factor", 2.0)),
+        production=production,
+        toppar_dir=_resolve_config_path(config_path.parent, alf.get("toppar_dir", TOPPAR_DIR)),
+        topology_files=tuple(alf.get("topology_files", _DEFAULT_TOPOLOGY_FILES)),
+        extra_files=tuple(
+            _resolve_config_path(config_path.parent, path) for path in alf.get("extra_files", [])
+        ),
+        cutnb=float(alf.get("cutnb", 14.0)),
+        ctofnb=float(alf.get("ctofnb", 12.0)),
+        ctonnb=float(alf.get("ctonnb", 10.0)),
+        elec_type=str(alf.get("elec_type", "pmeex")),
+        vdw_type=str(alf.get("vdw_type") or "vswitch"),
+        fnex=float(alf.get("fnex", 5.5)),
     )
+
+
+def _parse_production_config(
+    config_path: Path,
+    section: dict[str, Any],
+    lambda_precision: str,
+):
+    from cphmd.training.production_hooks import ProductionConfig
+
+    cfg = dict(section)
+    if "bias_file" not in cfg:
+        raise ValueError("production.bias_file is required")
+    if "n_chunks" not in cfg:
+        raise ValueError("production.n_chunks is required")
+    cfg["bias_file"] = _resolve_config_path(config_path.parent, cfg["bias_file"])
+    cfg["topology_files"] = [
+        _resolve_config_path(config_path.parent, path) for path in cfg.get("topology_files", [])
+    ]
+    cfg["extra_files"] = [
+        _resolve_config_path(config_path.parent, path) for path in cfg.get("extra_files", [])
+    ]
+    cfg["lambda_precision"] = lambda_precision
+    return ProductionConfig(**cfg)
 
 
 def _resolve_config_path(base: Path, value: str | Path) -> Path:
@@ -146,12 +242,14 @@ def _resolve_config_path(base: Path, value: str | Path) -> Path:
 
 def _reject_user_facing_use_blade(raw: dict[str, Any]) -> None:
     if "use_blade" in raw:
-        raise ValueError("use_blade is an internal test-only flag and is not accepted in YAML")
+        raise ValueError(
+            "use_blade is not accepted in YAML; use native.dynamics_backend instead"
+        )
     for section_name, section in raw.items():
         if isinstance(section, dict) and "use_blade" in section:
             raise ValueError(
-                f"{section_name}.use_blade is not accepted in YAML; BLADE is enabled "
-                "by the native runtime"
+                f"{section_name}.use_blade is not accepted in YAML; use "
+                "native.dynamics_backend instead"
             )
 
 
@@ -167,7 +265,21 @@ def _ph_values(alf: dict[str, Any], nreps: int) -> tuple[float, ...]:
         return tuple(start + step * idx for idx in range(nreps))
     if "ph" in alf and isinstance(alf["ph"], (int, float)) and not isinstance(alf["ph"], bool):
         return (float(alf["ph"]),)
+    if "pH" in alf and isinstance(alf["pH"], (int, float)) and not isinstance(alf["pH"], bool):
+        return (float(alf["pH"]),)
     return tuple(float(7.0) for _ in range(nreps))
+
+
+def _ph_enabled(alf: dict[str, Any]) -> bool:
+    if "ph" in alf:
+        value = alf["ph"]
+    elif "pH" in alf:
+        value = alf["pH"]
+    else:
+        return False
+    if isinstance(value, bool):
+        return value
+    return isinstance(value, (int, float))
 
 
 def load_yaml_config(path: str | Path) -> dict[str, Any]:
@@ -292,7 +404,7 @@ def config_to_alf(
     Returns:
         Populated ALFConfig dataclass.
     """
-    from cphmd.core.alf_runner import ALFConfig
+    from cphmd.training.config import ALFConfig
 
     cfg = _resolve_config_chain("alf", config_path, cli_overrides)
 
@@ -367,18 +479,6 @@ def config_to_alf(
             stacklevel=2,
         )
 
-    # Handle replica_exchange: nested dict → ReplicaExchangeConfig, bool → enabled flag
-    if "replica_exchange" in cfg:
-        re_cfg = cfg["replica_exchange"]
-        if isinstance(re_cfg, bool):
-            from cphmd.core.replica_exchange import ReplicaExchangeConfig
-
-            cfg["replica_exchange"] = ReplicaExchangeConfig(enabled=re_cfg)
-        elif isinstance(re_cfg, dict):
-            from cphmd.core.replica_exchange import ReplicaExchangeConfig
-
-            cfg["replica_exchange"] = ReplicaExchangeConfig(**re_cfg)
-
     # Deprecated: preset_config is now always auto-derived from elec_type + vdw_type
     if "preset_config" in cfg:
         import warnings
@@ -390,14 +490,6 @@ def config_to_alf(
             stacklevel=2,
         )
         cfg.pop("preset_config")
-
-    # Handle phase_transition: nested dict → PhaseTransitionConfig
-    if "phase_transition" in cfg:
-        pt_cfg = cfg["phase_transition"]
-        if isinstance(pt_cfg, dict):
-            from cphmd.core.phase_switcher import PhaseTransitionConfig
-
-            cfg["phase_transition"] = PhaseTransitionConfig(**pt_cfg)
 
     return ALFConfig(**cfg)
 
@@ -586,14 +678,13 @@ def _run_patch(config_path: Path) -> None:
 
 
 def _run_alf(config_path: Path) -> None:
-    """Run the ALF step.
+    """Run the ALF step through the native init/run command pair."""
+    from cphmd.cli.init_cmd import run_init
+    from cphmd.cli.run_cmd import run_simulation
 
-    Ensures mpi4py initializes MPI before pyCHARMM's C library loads.
-    """
-    from mpi4py import MPI  # noqa: F401 — must precede pyCHARMM
-
-    from cphmd.core.alf_runner import run_alf_simulation
-
-    config = config_to_alf(config_path)
-    run_alf_simulation(config)
+    cfg = load_config(config_path)
+    init_marker = cfg.run_dir / "state" / "initialized.json"
+    if not init_marker.exists():
+        run_init(config_path=config_path)
+    run_simulation(config_path=config_path)
     logger.info("ALF simulation complete")

@@ -14,6 +14,7 @@ class AtomSelection:
     resid: int | str | None = None
     resname: str | None = None
     atom_name: str | None = None
+    hydrogens: bool = False
     raw: str | None = None
 
 
@@ -28,6 +29,13 @@ class AtomRecord:
     z: float
     mass: float
     charge: float
+
+
+@dataclass(frozen=True)
+class ResidueRecord:
+    segid: str
+    resid: int | str
+    resname: str
 
 
 @dataclass(frozen=True)
@@ -46,3 +54,4 @@ class TopologySnapshot:
     atoms: tuple[AtomRecord, ...]
     natom: int
     cell: CellParameters | None = None
+    residues: tuple[ResidueRecord, ...] = ()

@@ -40,18 +40,16 @@ def finalize() -> None:
 def gpu_id_for_rank(comm) -> int:
     """Return the visible CUDA ordinal for this rank."""
     visible_devices = _visible_cuda_devices()
+    slurm_devices = [] if visible_devices else _slurm_gpu_devices()
     local_rank = _local_rank(comm)
 
     if local_rank is None:
-        local_rank = _fallback_local_rank(comm, visible_devices)
+        local_rank = _fallback_local_rank(comm, visible_devices, slurm_devices)
 
-    if visible_devices and local_rank >= len(visible_devices):
-        raise MPIInitError(
-            "More local ranks than visible CUDA devices: "
-            f"local rank {local_rank} cannot map to a visible CUDA ordinal "
-            f"because CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES')!r} "
-            f"exposes {len(visible_devices)} device(s)."
-        )
+    if visible_devices:
+        return local_rank % len(visible_devices)
+    if slurm_devices:
+        return slurm_devices[local_rank % len(slurm_devices)]
 
     return local_rank
 
@@ -90,9 +88,11 @@ def _shared_memory_local_rank(comm) -> int | None:
             free()
 
 
-def _fallback_local_rank(comm, visible_devices: list[str]) -> int:
+def _fallback_local_rank(comm, visible_devices: list[str], slurm_devices: list[int]) -> int:
     if visible_devices:
         return rank(comm)
+    if slurm_devices:
+        return 0
 
     gpus_per_node = os.environ.get("CPHMD_GPUS_PER_NODE")
     if gpus_per_node is None:
@@ -110,6 +110,17 @@ def _fallback_local_rank(comm, visible_devices: list[str]) -> int:
         raise MPIInitError("CPHMD_GPUS_PER_NODE must be positive")
 
     return rank(comm) % per_node
+
+
+def _slurm_gpu_devices() -> list[int]:
+    for env_var in ("SLURM_STEP_GPUS", "SLURM_JOB_GPUS"):
+        value = os.environ.get(env_var)
+        if value:
+            try:
+                return [int(part) for part in value.replace(",", " ").split()]
+            except ValueError as exc:
+                raise MPIInitError(f"Invalid {env_var} value {value!r}") from exc
+    return []
 
 
 def _visible_cuda_devices() -> list[str]:

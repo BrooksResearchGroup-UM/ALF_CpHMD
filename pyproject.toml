@@ -7,7 +7,7 @@ name = "cphmd"
 version = "0.1.0"
 description = "ALF-based Constant pH Molecular Dynamics simulation package"
 readme = "README.md"
-license = {text = "MIT"}
+license = {text = "Research use only - see LICENSE"}
 requires-python = ">=3.9"
 dependencies = [
     "numpy>=1.20",
@@ -40,10 +40,23 @@ cphmd = "cphmd.cli.main:app"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["cphmd*"]
+include = ["cphmd*", "toppar"]
 
 [tool.setuptools.package-data]
+"cphmd" = ["data/G_imp/*.dat"]
 "cphmd.config" = ["*.yaml", "defaults/*.yaml"]
+"cphmd.wham" = ["build.sh", "libwham.so", "src/Makefile", "src/*.cu", "src/*.h"]
+"toppar" = [
+    "*.crd",
+    "*.history",
+    "*.inp",
+    "*.prm",
+    "*.rtf",
+    "*.str",
+    "my_files/*.str",
+    "stream/cphmd/*.str",
+    "stream/prot/*.str",
+]
 
 [tool.black]
 line-length = 100
@@ -59,4 +72,6 @@ markers = [
 
 [tool.ruff]
 line-length = 100
+
+[tool.ruff.lint]
 select = ["E", "F", "I", "N", "W"]

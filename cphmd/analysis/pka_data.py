@@ -20,6 +20,33 @@ def _parquet():
 
     return pq
 
+
+def _schema_lambda_scale(schema) -> int | None:
+    metadata = schema.metadata or {}
+    raw_scale = metadata.get(b"lambda_scale")
+    if raw_scale is None:
+        return None
+    try:
+        return int(raw_scale.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return None
+
+
+def _dequantize_shrinker_columns(table) -> pd.DataFrame:
+    df = table.to_pandas()
+    scale = _schema_lambda_scale(table.schema)
+    if scale is None or scale == 1:
+        return df
+
+    for name in df.columns:
+        if name == "time":
+            continue
+        field = table.schema.field(name)
+        if str(field.type) == "uint16":
+            df[name] = df[name].astype(np.float64) / float(scale)
+    return df
+
+
 # ---------------------------------------------------------------------------
 # Discovery
 # ---------------------------------------------------------------------------
@@ -139,7 +166,7 @@ def _read_parquet_columns(file_path: str, columns: list[str]) -> pd.DataFrame:
     try:
         pq = _parquet()
         table = pq.read_table(file_path, columns=columns)
-        return table.to_pandas()
+        return _dequantize_shrinker_columns(table)
     except Exception:
         return pd.DataFrame()
 
@@ -218,7 +245,8 @@ def apply_cutoff(
 
     for sim, ph_data in data.items():
         for ph, df in ph_data.items():
-            bool_df = df.apply(lambda col: (col > cutoff).astype(bool))
+            lambda_df = df.drop(columns=["time"], errors="ignore")
+            bool_df = lambda_df.apply(lambda col: (col > cutoff).astype(bool))
             rearranged.setdefault(ph, {})[sim] = bool_df
 
     return rearranged
@@ -507,8 +535,8 @@ def prepare_fit_data(
                     float(errors[ph][sim][state_columns[0]])
                 )
 
-    pH_vals = np.array(sorted(map(float, combined_pop.keys())))
-    pop_per_pH = {str(p): combined_pop[str(p)] for p in pH_vals}
-    err_per_pH = {str(p): combined_err.get(str(p), []) for p in pH_vals}
+    ph_vals = np.array(sorted(map(float, combined_pop.keys())))
+    pop_per_ph = {str(p): combined_pop[str(p)] for p in ph_vals}
+    err_per_ph = {str(p): combined_err.get(str(p), []) for p in ph_vals}
 
-    return pH_vals, pop_per_pH, err_per_pH
+    return ph_vals, pop_per_ph, err_per_ph

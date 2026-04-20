@@ -422,11 +422,12 @@ def identify_transition_region(
 
 def _bootstrap_sample_2state(args: tuple, max_retries: int = 2) -> np.ndarray | None:
     """Resample 2-state data and fit sigmoid.  Returns params or None."""
-    import random as _rng
+    import random
 
     from scipy.optimize import curve_fit
 
-    pH_values, pop_per_pH, errors, guess, bounds, transition_mask = args
+    pH_values, pop_per_pH, errors, guess, bounds, transition_mask, sample_idx = args
+    rng = random.Random(int(sample_idx))
     pH_keys = [str(p) for p in pH_values]
 
     attempts = 0
@@ -442,28 +443,34 @@ def _bootstrap_sample_2state(args: tuple, max_retries: int = 2) -> np.ndarray | 
                 if errors is not None:
                     err_list = errors[key]
                     sigma_resampled.append(
-                        float(np.mean(err_list)) if isinstance(err_list, (list, np.ndarray)) else float(err_list)
+                        float(np.mean(err_list))
+                        if isinstance(err_list, (list, np.ndarray))
+                        else float(err_list)
                     )
             else:
                 max_val = max(sublist)
                 min_val = min(sublist)
                 if max_val - min_val >= 0.01:
-                    idx = _rng.randrange(len(sublist))
+                    idx = rng.randrange(len(sublist))
                     y_resampled.append(sublist[idx])
                     if errors is not None:
                         err_list = errors[key]
                         sigma_resampled.append(
-                            float(np.mean(err_list)) if isinstance(err_list, (list, np.ndarray)) else float(err_list)
+                            float(np.mean(err_list))
+                            if isinstance(err_list, (list, np.ndarray))
+                            else float(err_list)
                         )
                 else:
                     y_resampled.append(sum(sublist) / len(sublist))
                     if errors is not None:
                         err_list = errors[key]
                         sigma_resampled.append(
-                            float(np.mean(err_list)) if isinstance(err_list, (list, np.ndarray)) else float(err_list)
+                            float(np.mean(err_list))
+                            if isinstance(err_list, (list, np.ndarray))
+                            else float(err_list)
                         )
 
-        y_arr = np.array(y_resampled)
+        y_arr = np.clip(np.array(y_resampled, dtype=float), 1e-6, 1.0 - 1e-6)
         sigma_arr = np.array(sigma_resampled) if sigma_resampled else None
 
         if sigma_arr is not None:
@@ -485,7 +492,7 @@ def _bootstrap_sample_2state(args: tuple, max_retries: int = 2) -> np.ndarray | 
 
 def _bootstrap_sample_multistate(args: tuple, max_retries: int = 2) -> np.ndarray | None:
     """Resample multi-state data and fit.  Returns params or None."""
-    import random as _rng
+    import random
 
     from scipy.optimize import curve_fit
 
@@ -498,9 +505,10 @@ def _bootstrap_sample_multistate(args: tuple, max_retries: int = 2) -> np.ndarra
         bounds,
         n_states,
         transition_mask,
+        sample_idx,
     ) = args
+    rng = random.Random(int(sample_idx))
 
-    n_pH = len(pH_values)
     pH_keys = [str(p) for p in pH_values]
     attempts = 0
 
@@ -527,7 +535,7 @@ def _bootstrap_sample_multistate(args: tuple, max_retries: int = 2) -> np.ndarra
                     max_val = max(sublist)
                     min_val = min(sublist)
                     if max_val - min_val >= 0.005:
-                        idx = _rng.randrange(len(sublist))
+                        idx = rng.randrange(len(sublist))
                         y_stacked.append(sublist[idx])
                         if err_dict is not None:
                             err_list = err_dict[key]
@@ -546,7 +554,7 @@ def _bootstrap_sample_multistate(args: tuple, max_retries: int = 2) -> np.ndarra
                                 else float(err_list)
                             )
 
-        y_arr = np.array(y_stacked)
+        y_arr = np.clip(np.array(y_stacked, dtype=float), 1e-6, 1.0 - 1e-6)
         x_arr = np.tile(pH_values, n_states)
         sigma_arr = np.array(sigma_stacked) if sigma_stacked else None
 
@@ -638,8 +646,8 @@ def bootstrap_fit_2state(
 
     # Build args for workers
     args_list = [
-        (pH_values, populations, errors, guess, bounds, transition_mask)
-        for _ in range(n_samples)
+        (pH_values, populations, errors, guess, bounds, transition_mask, sample_idx)
+        for sample_idx in range(n_samples)
     ]
 
     # Execute bootstrap
@@ -684,9 +692,7 @@ def bootstrap_fit_2state(
     )
 
 
-def _derive_micro_pkas(
-    pka_macro: float, f_taut: float, main_slope_sign: int = -1
-) -> list[float]:
+def _derive_micro_pkas(pka_macro: float, f_taut: float, main_slope_sign: int = -1) -> list[float]:
     """Derive micro-pKa values from macro pKa and tautomer fraction.
 
     For a 3-state system with tautomer fraction *f_taut*:
@@ -749,8 +755,9 @@ def bootstrap_fit_multistate(
             bounds,
             n_states,
             transition_mask,
+            sample_idx,
         )
-        for _ in range(n_samples)
+        for sample_idx in range(n_samples)
     ]
 
     if n_jobs == 1:
@@ -781,9 +788,7 @@ def bootstrap_fit_multistate(
     hill_median = float(np.median(hill_vals))
     hill_err = float((np.percentile(hill_vals, 97.5) - np.percentile(hill_vals, 2.5)) / 2.0)
     ftaut_median = float(np.median(ftaut_vals))
-    ftaut_err = float(
-        (np.percentile(ftaut_vals, 97.5) - np.percentile(ftaut_vals, 2.5)) / 2.0
-    )
+    ftaut_err = float((np.percentile(ftaut_vals, 97.5) - np.percentile(ftaut_vals, 2.5)) / 2.0)
 
     # Derive micro-pKas for each bootstrap sample
     micro_pka_samples = np.array(
@@ -792,7 +797,11 @@ def bootstrap_fit_multistate(
     micro_median = [float(np.median(micro_pka_samples[:, j])) for j in range(2)]
     micro_err = [
         float(
-            (np.percentile(micro_pka_samples[:, j], 97.5) - np.percentile(micro_pka_samples[:, j], 2.5)) / 2.0
+            (
+                np.percentile(micro_pka_samples[:, j], 97.5)
+                - np.percentile(micro_pka_samples[:, j], 2.5)
+            )
+            / 2.0
         )
         for j in range(2)
     ]

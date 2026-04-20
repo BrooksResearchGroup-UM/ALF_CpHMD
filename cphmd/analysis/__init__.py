@@ -1,185 +1,105 @@
 """Analysis module - post-simulation analysis tools.
 
-This module provides tools for analyzing ALF/CpHMD simulation results:
-- Energy profile visualization and convergence tracking
-- Volume analysis for hydration studies
+Exports are resolved lazily so importing ``cphmd.analysis`` does not load
+pyCHARMM-bound optional analysis modules.
 """
 
-from .dca import (
-    DCAResult,
-    bootstrap_moments_dca,
-    get_model_dca,
-    get_variance_dca,
-)
-from .energy_profiles import (
-    EnergyProfileConfig,
-    EnergyProfileResult,
-    analyze_energy_profiles,
-    generate_simplex_grid,
-    total_energy,
-)
-from .henderson_hasselbalch import (
-    HHFitResult,
-    SiteHHResult,
-    SubstatePopulation,
-    compute_block_weights,
-    compute_theoretical_populations,
-    fit_hh_curve,
-    generate_hh_analysis,
-    logistic,
-    plot_hh_curves,
-    plot_site_substates,
-    three_state_hh,
-    two_state_acidic_hh,
-    two_state_basic_hh,
-    write_hh_csv,
-)
-from .ldin_parser import (
-    SiteInfo,
-    StateInfo,
-    parse_block_str,
-)
-from .pka_analyzer import (
-    PKaAnalysisConfig,
-    PKaAnalyzer,
-    PKaResults,
-    SitePKaResult,
-)
-from .pka_data import (
-    apply_cutoff,
-    build_site_map,
-    compute_populations,
-    compute_total_population,
-    discover_parquets,
-    get_site_columns,
-    load_lambda_data,
-    prepare_fit_data,
-    skip_equilibration,
-)
-from .pka_fitting import (
-    FitResult,
-    MultiStateFitResult,
-    bootstrap_fit_2state,
-    bootstrap_fit_multistate,
-    build_2state_guess,
-    build_multistate_guess,
-    correct_pka,
-    identify_transition_region,
-    make_multi_sigmoid,
-    quick_prefit,
-    sigmoid,
-)
-from .pka_plots import (
-    RESNAME_LABELS,
-    plot_pka,
-    plot_pka_convergence,
-)
-from .plot_style import (
-    apply_pub_style,
-    clean_axes,
-    get_state_colors,
-    savefig,
-)
-from .population_convergence import (
-    generate_population_plots,
-    plot_population_convergence,
-    read_populations_from_runs,
-)
-from .rmsd_convergence_plot import (
-    generate_rmsd_convergence_plots,
-    plot_b_bias_convergence,
-    plot_pairwise_rmsd_convergence,
-    plot_rmsd_convergence,
-)
-from .volume import (
-    VolumeConfig,
-    VolumeResult,
-    calculate_volume,
-)
-from .wham_profiles import (
-    plot_wham_profiles,
-)
+from __future__ import annotations
 
-__all__ = [
+from importlib import import_module
+
+_EXPORTS: dict[str, str] = {
     # Energy profiles
-    "EnergyProfileConfig",
-    "EnergyProfileResult",
-    "analyze_energy_profiles",
-    "generate_simplex_grid",
-    "total_energy",
+    "EnergyProfileConfig": "cphmd.analysis.energy_profiles",
+    "EnergyProfileResult": "cphmd.analysis.energy_profiles",
+    "analyze_energy_profiles": "cphmd.analysis.energy_profiles",
+    "generate_simplex_grid": "cphmd.analysis.energy_profiles",
+    "total_energy": "cphmd.analysis.energy_profiles",
     # Volume
-    "VolumeConfig",
-    "VolumeResult",
-    "calculate_volume",
+    "VolumeConfig": "cphmd.analysis.volume",
+    "VolumeResult": "cphmd.analysis.volume",
+    "calculate_volume": "cphmd.analysis.volume",
     # DCA / Potts Model
-    "DCAResult",
-    "get_model_dca",
-    "get_variance_dca",
-    "bootstrap_moments_dca",
+    "DCAResult": "cphmd.analysis.dca",
+    "get_model_dca": "cphmd.analysis.dca",
+    "get_variance_dca": "cphmd.analysis.dca",
+    "bootstrap_moments_dca": "cphmd.analysis.dca",
     # Population convergence
-    "read_populations_from_runs",
-    "plot_population_convergence",
-    "generate_population_plots",
+    "read_populations_from_runs": "cphmd.analysis.population_convergence",
+    "plot_population_convergence": "cphmd.analysis.population_convergence",
+    "generate_population_plots": "cphmd.analysis.population_convergence",
     # RMSD convergence
-    "plot_rmsd_convergence",
-    "plot_pairwise_rmsd_convergence",
-    "plot_b_bias_convergence",
-    "generate_rmsd_convergence_plots",
+    "plot_rmsd_convergence": "cphmd.analysis.rmsd_convergence_plot",
+    "plot_pairwise_rmsd_convergence": "cphmd.analysis.rmsd_convergence_plot",
+    "plot_b_bias_convergence": "cphmd.analysis.rmsd_convergence_plot",
+    "generate_rmsd_convergence_plots": "cphmd.analysis.rmsd_convergence_plot",
     # Henderson-Hasselbalch
-    "HHFitResult",
-    "SubstatePopulation",
-    "SiteHHResult",
-    "logistic",
-    "three_state_hh",
-    "two_state_basic_hh",
-    "two_state_acidic_hh",
-    "compute_block_weights",
-    "compute_theoretical_populations",
-    "fit_hh_curve",
-    "plot_hh_curves",
-    "plot_site_substates",
-    "write_hh_csv",
-    "generate_hh_analysis",
+    "HHFitResult": "cphmd.analysis.henderson_hasselbalch",
+    "SubstatePopulation": "cphmd.analysis.henderson_hasselbalch",
+    "SiteHHResult": "cphmd.analysis.henderson_hasselbalch",
+    "logistic": "cphmd.analysis.henderson_hasselbalch",
+    "three_state_hh": "cphmd.analysis.henderson_hasselbalch",
+    "two_state_basic_hh": "cphmd.analysis.henderson_hasselbalch",
+    "two_state_acidic_hh": "cphmd.analysis.henderson_hasselbalch",
+    "compute_block_weights": "cphmd.analysis.henderson_hasselbalch",
+    "compute_theoretical_populations": "cphmd.analysis.henderson_hasselbalch",
+    "fit_hh_curve": "cphmd.analysis.henderson_hasselbalch",
+    "plot_hh_curves": "cphmd.analysis.henderson_hasselbalch",
+    "plot_site_substates": "cphmd.analysis.henderson_hasselbalch",
+    "write_hh_csv": "cphmd.analysis.henderson_hasselbalch",
+    "generate_hh_analysis": "cphmd.analysis.henderson_hasselbalch",
     # LDIN parser
-    "StateInfo",
-    "SiteInfo",
-    "parse_block_str",
+    "StateInfo": "cphmd.analysis.ldin_parser",
+    "SiteInfo": "cphmd.analysis.ldin_parser",
+    "parse_block_str": "cphmd.analysis.ldin_parser",
     # pKa analysis
-    "PKaAnalysisConfig",
-    "PKaAnalyzer",
-    "PKaResults",
-    "SitePKaResult",
+    "PKaAnalysisConfig": "cphmd.analysis.pka_analyzer",
+    "PKaAnalyzer": "cphmd.analysis.pka_analyzer",
+    "PKaResults": "cphmd.analysis.pka_analyzer",
+    "SitePKaResult": "cphmd.analysis.pka_analyzer",
     # pKa data loading
-    "discover_parquets",
-    "build_site_map",
-    "get_site_columns",
-    "load_lambda_data",
-    "apply_cutoff",
-    "skip_equilibration",
-    "compute_populations",
-    "compute_total_population",
-    "prepare_fit_data",
+    "discover_parquets": "cphmd.analysis.pka_data",
+    "build_site_map": "cphmd.analysis.pka_data",
+    "get_site_columns": "cphmd.analysis.pka_data",
+    "load_lambda_data": "cphmd.analysis.pka_data",
+    "apply_cutoff": "cphmd.analysis.pka_data",
+    "skip_equilibration": "cphmd.analysis.pka_data",
+    "compute_populations": "cphmd.analysis.pka_data",
+    "compute_total_population": "cphmd.analysis.pka_data",
+    "prepare_fit_data": "cphmd.analysis.pka_data",
     # pKa fitting
-    "FitResult",
-    "MultiStateFitResult",
-    "sigmoid",
-    "make_multi_sigmoid",
-    "build_2state_guess",
-    "build_multistate_guess",
-    "quick_prefit",
-    "correct_pka",
-    "identify_transition_region",
-    "bootstrap_fit_2state",
-    "bootstrap_fit_multistate",
+    "FitResult": "cphmd.analysis.pka_fitting",
+    "MultiStateFitResult": "cphmd.analysis.pka_fitting",
+    "sigmoid": "cphmd.analysis.pka_fitting",
+    "make_multi_sigmoid": "cphmd.analysis.pka_fitting",
+    "build_2state_guess": "cphmd.analysis.pka_fitting",
+    "build_multistate_guess": "cphmd.analysis.pka_fitting",
+    "quick_prefit": "cphmd.analysis.pka_fitting",
+    "correct_pka": "cphmd.analysis.pka_fitting",
+    "identify_transition_region": "cphmd.analysis.pka_fitting",
+    "bootstrap_fit_2state": "cphmd.analysis.pka_fitting",
+    "bootstrap_fit_multistate": "cphmd.analysis.pka_fitting",
     # pKa plots
-    "RESNAME_LABELS",
-    "plot_pka",
-    "plot_pka_convergence",
+    "RESNAME_LABELS": "cphmd.analysis.pka_plots",
+    "plot_pka": "cphmd.analysis.pka_plots",
+    "plot_pka_convergence": "cphmd.analysis.pka_plots",
     # WHAM free energy profiles
-    "plot_wham_profiles",
+    "plot_wham_profiles": "cphmd.analysis.wham_profiles",
     # Plot styling
-    "apply_pub_style",
-    "clean_axes",
-    "get_state_colors",
-    "savefig",
-]
+    "apply_pub_style": "cphmd.analysis.plot_style",
+    "clean_axes": "cphmd.analysis.plot_style",
+    "get_state_colors": "cphmd.analysis.plot_style",
+    "savefig": "cphmd.analysis.plot_style",
+}
+
+__all__ = list(_EXPORTS)
+
+
+def __getattr__(name: str):
+    try:
+        module_name = _EXPORTS[name]
+    except KeyError as exc:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from exc
+    value = getattr(import_module(module_name), name)
+    globals()[name] = value
+    return value

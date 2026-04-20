@@ -18,6 +18,7 @@ import numpy as np
 import pandas as pd
 
 from cphmd import TOPPAR_DIR
+from cphmd.core.patch_applier import PatchApplier, ensure_patches_streamed
 from cphmd.native import system
 from cphmd.native.types import AtomSelection
 
@@ -138,7 +139,6 @@ class PatchConfig:
             "par_all36_cgenff.prm",
             "my_files/titratable_residues.str",
             "my_files/nucleic_c36.str",
-            "my_files/his_patches.str",
         ]
     )
     extra_files: list[str | Path] = field(default_factory=list)
@@ -684,6 +684,25 @@ def _read_topology_files(config: PatchConfig, verbose: bool = True) -> None:
         system.set_prnlev(5)
 
 
+def _declares_histidine_patches(path: Path) -> bool:
+    if path.name.lower() == "his_patches.str":
+        return True
+    try:
+        text = path.read_text(encoding="utf-8", errors="ignore").upper()
+    except OSError:
+        return False
+    return "PRES HSDP" in text and "PRES HSEP" in text
+
+
+def _config_loads_histidine_patches(config: PatchConfig, toppar_dir: Path) -> bool:
+    paths: list[Path] = []
+    for file_name in config.topology_files:
+        path = Path(file_name)
+        paths.append(path if path.is_absolute() else toppar_dir / path)
+    paths.extend(Path(path) for path in config.extra_files)
+    return any(_declares_histidine_patches(path) for path in paths)
+
+
 def _detect_disulfide_bonds(
     uni: Universe, residues: list[tuple[str, int, str]]
 ) -> tuple[list[tuple[str, int, str]], set[tuple[str, int, str]]]:
@@ -768,8 +787,7 @@ def _stream_charmm_script(script: str, directory: Path, prefix: str = "patching"
     handle = tempfile.NamedTemporaryFile(
         "w",
         suffix=".inp",
-        prefix=f".{prefix}_",
-        dir=directory,
+        prefix=f"{prefix}_",
         delete=False,
     )
     path = Path(handle.name)
@@ -788,17 +806,18 @@ def _convert_histidines_for_segment(
     tmp_dir: Path | None,
 ) -> None:
     """Convert HSD/HSE residues to HSP before selection filtering."""
-    for seg_id, resid, resname in his_residues:
-        print(f"Patching HSP {seg_id} {resid}")
-        system.rename_residues(AtomSelection(segid=seg_id, resid=resid), "HSP")
-        system.patch(f"{resname}P", seg_id, resid)
-        if tmp_dir is not None:
-            _stream_charmm_script(
-                f"HBUILD sele segid {seg_id} .and. hydrogen end",
-                tmp_dir,
-                "hbuild_his",
-            )
-        titratable_list.append((seg_id, resid, "HSP"))
+    applier = PatchApplier()
+    segids = list(dict.fromkeys(segid for segid, _, _ in his_residues))
+    for seg_id in segids:
+        results = applier.apply_to_topology(
+            candidate_resnames=frozenset({"HSD", "HSE"}),
+            segid_filter=seg_id,
+        )
+        for result in results:
+            print(f"Patching {result.patch_name} {result.segid} {result.resid}")
+            titratable_list.append((result.segid, result.resid, result.target_resname))
+        if tmp_dir is not None and results:
+            system.hbuild(AtomSelection(segid=seg_id, hydrogens=True))
 
 
 def _filter_titratable_residues(
@@ -863,6 +882,8 @@ def patch_system(config: PatchConfig) -> Path:
 
     # Load topology
     _read_topology_files(config)
+    if not _config_loads_histidine_patches(config, toppar_dir):
+        ensure_patches_streamed(force=True)
     system.set_iofmt(extended=True)
 
     # Ligand fragments may have fractional charge — suppress PSF charge warning
@@ -938,7 +959,7 @@ def patch_system(config: PatchConfig) -> Path:
 
         _convert_histidines_for_segment(titratable_list, his_residues, tmp_dir)
 
-        _stream_charmm_script("HBuild", tmp_dir, "hbuild")
+        system.hbuild()
         system.write_psf(tmp_dir / f"{seg_id.lower()}.psf")
         system.write_coor(tmp_dir / f"{seg_id.lower()}.crd")
 
@@ -951,10 +972,6 @@ def patch_system(config: PatchConfig) -> Path:
     print("Final list of residues selected for patching:")
     for seg, resid, resn in titratable_list:
         print(f"  Segment: {seg}, Residue ID: {resid}, Residue Name: {resn}")
-
-    # Update HSD/HSE → HSP in universe
-    uni.universe.loc[uni.universe["res_name"] == "HSD", "res_name"] = "HSP"
-    uni.universe.loc[uni.universe["res_name"] == "HSE", "res_name"] = "HSP"
 
     # Initialize patches.dat
     patches_file = output_folder / "patches.dat"
@@ -980,7 +997,7 @@ def patch_system(config: PatchConfig) -> Path:
         system.ic_build()
         system.ic_prm_fill(comp=True)
         # Build coordinates for newly added hydrogens (e.g., H36, H37 from ligand patches)
-        _stream_charmm_script("HBUILD", tmp_dir, "hbuild")
+        system.hbuild()
         system.write_coor(tmp_dir / f"{seg_id.lower()}.crd")
         system.write_psf(tmp_dir / f"{seg_id.lower()}.psf")
 
@@ -1061,20 +1078,20 @@ def _apply_patches(
             system.read_psf(tmp_dir / f"{seg_id.lower()}.psf")
             system.read_coor(tmp_dir / f"{seg_id.lower()}.crd")
 
-        # Build REPLICATE command
+        # Replicate the titratable atom group into one segment per patch state.
         n_rep = len(patches_topology.patches[resname]) + 1
-        charmm_cmd = f"REPLicate {resid} NREP {n_rep} SETUP -\n"
-
-        # Build selection for atoms to replicate
         atoms = patches_topology.atom_groups[resname]
-        select_cmd = f"SELEct segid {seg_id} .and. resid {resid} .and. ("
-        select_cmd += " .or. ".join([f"-\ntype {atom}" for atom in atoms])
-        select_cmd += ") END\n"
-
-        _stream_charmm_script(charmm_cmd + select_cmd, tmp_dir, "replicate")
+        system.replicate_atoms(
+            seg_id,
+            resid,
+            atoms,
+            replica_segid=str(resid),
+            nreplica=n_rep,
+            setup=True,
+        )
 
         # Delete atoms in original residue
-        _stream_charmm_script(f"DELEte ATOMs {select_cmd}", tmp_dir, "delete_original")
+        system.delete_atoms_by_names(seg_id, resid, atoms)
 
         # Process each patch
         # Check if a reference_patch is defined (ligand with explicit reference state)
@@ -1098,10 +1115,8 @@ def _apply_patches(
 
         j = 1
         for patch in [resname + "O"] + patches_topology.patches[resname]:
-            cmd = f"! Working on {patch} {seg_id}:{resid}{j}:{resid}\n"
-
             if patch != resname + "O":
-                cmd += f"PATCH {patch} {resid}{j} {resid} SETUP\n"
+                system.patch(patch, f"{resid}{j}", resid, setup=True)
 
                 atoms_str = " ".join(patches_topology.atom_groups[patch])
                 if ref_patch and patch.upper() == ref_patch:
@@ -1140,10 +1155,9 @@ def _apply_patches(
                 else:
                     f.write(f"{seg_id},{resid},{patch},s{idx}s{j},{atoms_str},NONE\n")
 
-            cmd += f"RENAMe RESName {patch} SELE segid {resid}{j} END\n"
-            cmd += f"JOIN {seg_id} {resid}{j}\n"
+            system.rename_residues(AtomSelection(segid=f"{resid}{j}"), patch)
+            system.join_segments(seg_id, f"{resid}{j}")
             j += 1
-            _stream_charmm_script(cmd, tmp_dir, "patch_join")
 
         # Build AUTO ANGLES selection, excluding patches from previously processed
         # sites at the same (seg_id, resid). Without exclusion, AUTO ANGLES
@@ -1172,16 +1186,9 @@ def _apply_patches(
         # Delete connections between different patches within this site
         patches = [resname + "O"] + patches_topology.patches[resname]
         for pair in itertools.combinations(patches, 2):
-            first_selection = (
-                f"SELEct segid {seg_id} .and. resid {resid} .and. resname {pair[0]} END"
-            )
-            second_selection = (
-                f"SELEct segid {seg_id} .and. resid {resid} .and. resname {pair[1]} END"
-            )
-            _stream_charmm_script(
-                f"DELETE CONN ATOMs {first_selection} {second_selection}",
-                tmp_dir,
-                "delete_conn",
+            system.delete_connectivity(
+                AtomSelection(segid=seg_id, resid=resid, resname=pair[0]),
+                AtomSelection(segid=seg_id, resid=resid, resname=pair[1]),
             )
 
         # Track this site's patches for future exclusion

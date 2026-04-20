@@ -21,13 +21,15 @@ def report_status(run_dir: Path) -> dict[str, Any]:
     summary_path = run_dir / "status_summary.json"
     if summary_path.exists() and time.time() - summary_path.stat().st_mtime < SUMMARY_STALE_SECS:
         try:
-            return json.loads(summary_path.read_text())
+            summary = json.loads(summary_path.read_text())
         except json.JSONDecodeError:
             return {
                 "run_dir": str(run_dir),
                 "state": "error",
                 "errors": [f"status summary corrupt at {summary_path}"],
             }
+        if _summary_has_expected_ranks(summary, init_marker):
+            return summary
 
     ranks: dict[str, dict[str, Any]] = {}
     errors: list[str] = []
@@ -98,3 +100,24 @@ def register(app: typer.Typer) -> None:
             typer.echo(render_status(report))
         if report.get("state") == "error":
             raise typer.Exit(2)
+
+
+def _summary_has_expected_ranks(summary: dict[str, Any], init_marker: Path) -> bool:
+    expected = _expected_ranks(init_marker)
+    if not expected:
+        return True
+    return expected.issubset(set((summary.get("ranks") or {}).keys()))
+
+
+def _expected_ranks(init_marker: Path) -> set[str]:
+    try:
+        payload = json.loads(init_marker.read_text())
+    except (OSError, json.JSONDecodeError):
+        return set()
+    try:
+        nreps = int(payload.get("nreps", 0))
+    except (TypeError, ValueError):
+        return set()
+    if nreps <= 1:
+        return set()
+    return {f"rep{rank:02d}" for rank in range(nreps)}

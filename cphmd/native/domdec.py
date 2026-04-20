@@ -1,0 +1,35 @@
+from __future__ import annotations
+
+from cphmd.native.errors import CpHMDNativeError, wrap_exception
+from cphmd.simulation.backends import DomdecConfig
+
+
+def enable(*, gpu: bool, gpu_id: int | None, config: DomdecConfig) -> None:
+    try:
+        import pycharmm.domdec as domdec
+
+        kwargs = config.to_kwargs()
+        kwargs["gpu"] = gpu
+        if gpu_id is not None:
+            kwargs["gpuid"] = int(gpu_id)
+        domdec.enable(**kwargs)
+    except Exception as exc:
+        raise wrap_exception(exc, CpHMDNativeError, "enabling DOMDEC") from exc
+
+
+def energy(*, gpu: bool) -> None:
+    try:
+        import pycharmm.domdec as domdec
+
+        domdec.energy(gpu=gpu)
+    except Exception as exc:
+        raise wrap_exception(exc, CpHMDNativeError, "running DOMDEC energy") from exc
+
+
+def disable() -> None:
+    try:
+        import pycharmm.domdec as domdec
+
+        domdec.disable()
+    except Exception as exc:
+        raise wrap_exception(exc, CpHMDNativeError, "disabling DOMDEC") from exc

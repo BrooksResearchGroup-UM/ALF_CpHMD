@@ -176,6 +176,113 @@ def _generate_named_call_statements(selection_names: list[str]) -> str:
     return "\n".join(lines) + "\n\n"
 
 
+def _generate_block_header(n_blocks: int) -> str:
+    """Generate a BLOCK command header."""
+    return f"BLOCK {n_blocks}\n\n"
+
+
+def _generate_call_statements(patch_info: pd.DataFrame) -> str:
+    """Generate CALL statements for atom selections."""
+    lines = [
+        "!----------------------------------------",
+        "! Set up l-dynamics by setting BLOCK parameters",
+        "!----------------------------------------\n",
+    ]
+
+    for idx, row in patch_info.iterrows():
+        lines.append(
+            f"CALL {idx + 2} SELEct segid {row['SEGID']} .and. resid {row['RESID']} "
+            f".and. resname {row['PATCH']} END"
+        )
+
+    return "\n".join(lines) + "\n\n"
+
+
+def _generate_exclusions(patch_info: pd.DataFrame) -> str:
+    """Generate ADEXCL statements for intra-site exclusions."""
+    lines = [
+        "!----------------------------------------",
+        "! Exclude blocks from each other",
+        "!----------------------------------------\n",
+    ]
+
+    for idx1, row1 in patch_info.iterrows():
+        for idx2, row2 in patch_info.iterrows():
+            if idx2 > idx1 and row1["site"] == row2["site"]:
+                lines.append(f"adexcl {idx1 + 2:<3} {idx2 + 2:<3}")
+
+    return "\n".join(lines) + "\n\n"
+
+
+def _generate_rmla_msld(
+    patch_info: pd.DataFrame,
+    constraint_type: str = "fnex",
+    fnex: float = 5.5,
+    fpie_width: float = 1.0,
+    fpie_force: float = 100.0,
+    no_constraint: bool = False,
+    electrostatics: str = "pmeex",
+) -> str:
+    """Generate RMLA and MSLD/MSMA statements."""
+    lines = [
+        "!------------------------------------------",
+        "! Bond/angle/improper at full strength; dihedrals lambda-scaled",
+        "! (Hayes & Brooks 2024: scale dihedrals, unscale bond+angle)",
+        "!------------------------------------------\n",
+        "rmla bond thet impr\n",
+        "!------------------------------------------",
+        "! MSLD - numbers assign each block to the specified site",
+        "!------------------------------------------\n",
+        "MSLD 0 -",
+    ]
+
+    for i, select in enumerate(patch_info["SELECT"]):
+        site_num = select.lower().split("s")[1]
+        if i < len(patch_info) - 1:
+            lines.append(f"{site_num}  -")
+        else:
+            lines.append(f"{site_num} -")
+
+    if no_constraint:
+        constraint_str = ""
+    elif constraint_type == "fpie":
+        constraint_str = f"fpie widt {fpie_width} forc {fpie_force}"
+    else:
+        constraint_str = f"fnex {fnex}"
+
+    lines.extend([
+        f"{constraint_str} \n",
+        "!------------------------------------------",
+        "! Constructs the interaction matrix",
+        "!------------------------------------------\n",
+        "MSMA\n",
+    ])
+
+    if electrostatics in ("pmeex", "pme_ex"):
+        lines.extend([
+            "!------------------------------------------",
+            "! PME exclusions for electrostatics",
+            "!------------------------------------------\n",
+            "PMEL EX\n",
+        ])
+    elif electrostatics in ("pmeon", "pme_on"):
+        lines.extend([
+            "!------------------------------------------",
+            "! PME ON for electrostatics",
+            "!------------------------------------------\n",
+            "PMEL ON\n",
+        ])
+    elif electrostatics in ("pmenn", "pme_nn"):
+        lines.extend([
+            "!------------------------------------------",
+            "! PME no-exclusions for electrostatics",
+            "!------------------------------------------\n",
+            "PMEL NN\n",
+        ])
+
+    return "\n".join(lines)
+
+
 def _ensure_site_columns(patch_info: pd.DataFrame) -> pd.DataFrame:
     """Return patch_info with integer site/sub columns and contiguous index."""
     df = patch_info.copy()
@@ -400,13 +507,6 @@ def _build_energy_block_command(
     Returns:
         CHARMM BLOCK command string.
     """
-    from .block_builder import (
-        generate_block_header,
-        generate_call_statements,
-        generate_exclusions,
-        generate_rmla_msld,
-    )
-
     # For legacy mode, build synthetic patch_info from nsubs
     if legacy or patch_info is None:
         patch_info = _synthetic_patch_info(nsubs)
@@ -447,15 +547,15 @@ def _build_energy_block_command(
     elif legacy:
         call_str = _generate_legacy_call_statements(nsubs)
     else:
-        call_str = generate_call_statements(patch_info)
+        call_str = _generate_call_statements(patch_info)
 
     parts = [
-        generate_block_header(n_blocks),
+        _generate_block_header(n_blocks),
         call_str,
-        generate_exclusions(patch_info),
+        _generate_exclusions(patch_info),
         dynamics_setup,
         ldin_str,
-        generate_rmla_msld(patch_info, no_constraint=True),
+        _generate_rmla_msld(patch_info, no_constraint=True),
         _generate_zero_ldbv(patch_info, fnex=fnex),
         "END",
     ]

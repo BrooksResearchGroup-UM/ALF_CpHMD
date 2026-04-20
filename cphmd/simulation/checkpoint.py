@@ -25,11 +25,13 @@ class CheckpointManager:
         *,
         native_modules: Iterable[ModuleType],
         pycharmm_version: str | None = None,
+        require_charmm_restart: bool = False,
     ):
         self.ctx = ctx
         self.native_modules = tuple(native_modules)
         self.pycharmm_version = pycharmm_version or metadata.version("pycharmm")
         self.native_api_fingerprint = compute(self.native_modules)
+        self.require_charmm_restart = bool(require_charmm_restart)
 
     def resume_or_fresh(self) -> tuple[LoopState, dict[str, Any]]:
         path = self.ctx.checkpoint_path
@@ -39,6 +41,7 @@ class CheckpointManager:
         payload = json.loads(path.read_text())
         self._validate(payload)
         state = LoopState(**payload["loop_state"])
+        self._validate_charmm_resume_payload(payload, state)
         return state, payload.get("rng_state", {})
 
     def write(self, state: LoopState, *, rng_state: dict[str, Any]) -> Path:
@@ -61,11 +64,11 @@ class CheckpointManager:
     def write_final(self, state: LoopState, *, rng_state: dict[str, Any]) -> Path:
         return self.write(state, rng_state=rng_state)
 
-    def write_status_summary(self, state: LoopState) -> Path:
+    def write_status_summary(self, state: LoopState, *, run_state: str = "running") -> Path:
         payload = {
             "schema_version": 1,
             "run_dir": str(self.ctx.run_dir),
-            "state": "running",
+            "state": run_state,
             "segments": state.segment_idx,
             "ranks": {
                 f"rep{self.ctx.rank:02d}": {
@@ -136,6 +139,7 @@ class CheckpointManager:
                 handle,
                 schema_version=np.array([1], dtype=np.int32),
                 **self._sidecar_metadata(state),
+                **self._bias_topology_metadata(),
                 b=bias_snapshot.b,
                 c=bias_snapshot.c,
                 x=bias_snapshot.x,
@@ -150,6 +154,16 @@ class CheckpointManager:
             "loop_cycle_idx": np.array([state.cycle_idx], dtype=np.int64),
             "loop_phase": np.array([state.phase], dtype=np.int64),
             "config_hash": np.array([self.ctx.config_hash]),
+        }
+
+    def _bias_topology_metadata(self) -> dict[str, np.ndarray]:
+        nsubs = [
+            sum(1 for value in self.ctx.nsubsites[1:] if value == site)
+            for site in range(1, self.ctx.nsites + 1)
+        ]
+        return {
+            "bias_nsubs": np.asarray(nsubs, dtype=np.int32),
+            "lambda_headers": np.asarray(self.ctx.lambda_headers),
         }
 
     def _validate_sidecar_metadata(self, data, state: LoopState) -> None:
@@ -194,3 +208,18 @@ class CheckpointManager:
                 raise CheckpointMismatchError(
                     f"checkpoint {key} mismatch: expected {value!r}, found {payload.get(key)!r}"
                 )
+
+    def _validate_charmm_resume_payload(
+        self,
+        payload: dict[str, Any],
+        state: LoopState,
+    ) -> None:
+        if not self.require_charmm_restart:
+            return
+        if state.segment_idx <= 0 and state.run_idx <= 0 and state.cycle_idx <= 0:
+            return
+        if not payload.get("charmm_restart"):
+            raise CheckpointMismatchError(
+                "checkpoint lacks CHARMM restart metadata; rerun from initialization or "
+                "create a checkpoint with restart files before resuming"
+            )

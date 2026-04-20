@@ -1457,7 +1457,8 @@ def convert_lambda_binary_to_parquet(
         output_path: Path to output .parquet file.
         input_files: List of input binary lambda file paths.
     """
-    from cphmd.utils.lambda_io import read_lambda_binary, write_lambda_parquet
+    from cphmd.analysis.legacy_lmd_io import read_legacy_lmd_binary
+    from cphmd.utils.lambda_io import write_lambda_parquet
 
     nsubs = alf_info.get("nsubs") if isinstance(alf_info, dict) else None
 
@@ -1465,7 +1466,7 @@ def convert_lambda_binary_to_parquet(
     for input_file in input_files:
         input_path = Path(input_file)
         if input_path.exists():
-            data, _ = read_lambda_binary(str(input_path))
+            data, _ = read_legacy_lmd_binary(str(input_path))
             all_data.append(data)
 
     if all_data:
