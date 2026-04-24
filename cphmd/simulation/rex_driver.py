@@ -81,19 +81,20 @@ class REXDriver:
             self.exchanger,
             label=current_label,
             ldin_blocks=self._ldin_blocks(),
+            msld_theta_blocks=self._ldin_blocks(),
             include_lambdas=True,
-            include_ph=True,
+            include_ph=False,
             metadata={"ph": local_ph},
         )
-        signs = np.asarray(self.ctx.rex_signs, dtype=np.float64)
+        signs = self._sign_vector_for_state(local_state)
 
         def acceptance_fn(local, partner) -> float:
             return self.native_rex.ph_lambda_probability(
                 np.asarray(local.lambdas, dtype=np.float64),
                 np.asarray(partner.lambdas, dtype=np.float64),
                 signs,
-                float(local.ph),
-                float(partner.ph),
+                self._state_ph(local),
+                self._state_ph(partner),
             )
 
         exchange_result = self.native_rex.attempt_neighbor_swap(
@@ -116,6 +117,33 @@ class REXDriver:
             accepted=stats.accepted,
             exchange_result=exchange_result,
         )
+
+    def _sign_vector_for_state(self, state) -> np.ndarray:
+        signs = np.asarray(self.ctx.rex_signs, dtype=np.float64)
+        lambdas = np.asarray(state.lambdas, dtype=np.float64)
+        if lambdas.ndim != 1:
+            raise ValueError(f"direct exchange lambdas must be 1D, got shape {lambdas.shape}")
+        if signs.shape == lambdas.shape:
+            return signs
+        if signs.shape[0] == lambdas.shape[0] - 1:
+            return np.concatenate((np.array([0.0], dtype=np.float64), signs))
+        raise ValueError(
+            "rex_signs must match the direct lambda vector or exclude only the "
+            f"environment block ({signs.shape} vs {lambdas.shape})"
+        )
+
+    def _state_ph(self, state) -> float:
+        metadata = getattr(state, "metadata", None) or {}
+        ph = metadata.get("ph")
+        if ph is not None:
+            return float(ph)
+        ph = getattr(state, "ph", None)
+        if ph is not None:
+            return float(ph)
+        label = getattr(state, "label", None)
+        if label is not None and 0 <= int(label) < len(self.ctx.replica_ph_values):
+            return float(self.ctx.replica_ph_values[int(label)])
+        raise ValueError("replica exchange state is missing pH metadata")
 
     def _load_native_rex(self) -> Any:
         return importlib.import_module("cphmd.native.rex")

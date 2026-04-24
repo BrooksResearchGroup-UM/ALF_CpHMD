@@ -12,7 +12,7 @@ def build_exchanger(comm=None, seed: int | None = None):
     try:
         from pycharmm.replica_exchange import DirectLabelExchanger
 
-        return DirectLabelExchanger(comm=comm, seed=seed)
+        return DirectLabelExchanger(comm=comm, seed=seed, abort_on_error=False)
     except Exception as exc:
         raise wrap_exception(
             exc,
@@ -25,6 +25,7 @@ def snapshot_state(
     exchanger,
     label: int,
     ldin_blocks: Sequence[int],
+    msld_theta_blocks: Sequence[int] | None = None,
     include_lambdas: bool = True,
     include_ph: bool = True,
     include_temperature: bool = False,
@@ -39,6 +40,7 @@ def snapshot_state(
             include_temperature=include_temperature,
             include_ffix=include_ffix,
             ldin_blocks=list(ldin_blocks),
+            msld_theta_blocks=list(msld_theta_blocks or ()),
             metadata=metadata or {},
         )
     except Exception as exc:

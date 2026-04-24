@@ -10,7 +10,6 @@ import numpy as np
 from cphmd.native.errors import DynamicsRunError, wrap_exception
 from cphmd.simulation.backends import DomdecConfig, DynamicsBackend, parse_dynamics_backend
 
-_LAMBDA_OUTPUT_UNIT = 24
 _TABLE_METADATA_COLUMNS = frozenset({"STEP", "TIME"})
 
 
@@ -64,37 +63,26 @@ def run_segment(
             echeck=-1,
             iuncrd=-1,
             iunwri=-1,
-            iunldm=_LAMBDA_OUTPUT_UNIT,
             lambdata=True,
         )
         if backend is DynamicsBackend.BLADE:
             script_kwargs["blade"] = True
         if iseed is not None:
             _set_rng_seeds(pycharmm, int(iseed))
-        with tempfile.TemporaryDirectory(prefix="cphmd_lmd_") as tmpdir:
-            lmd_path = Path(tmpdir) / "segment.lmd"
-            # CHARMM requires a lambda output unit even when pyCHARMM collects tables in memory.
-            lmd = pycharmm.CharmmFile(
-                file_name=str(lmd_path),
-                file_unit=_LAMBDA_OUTPUT_UNIT,
-                read_only=False,
-                formatted=False,
-            )
-            try:
-                script = pycharmm.DynamicsScript(**script_kwargs)
-                script.run()
-            finally:
-                lmd.close()
-            lambda_matrix, used_lmd_fallback = _lambda_matrix_from_sources(
-                script.lambdata_bixlamsq,
-                lmd_path=lmd_path,
+        with tempfile.TemporaryDirectory(prefix="cphmd_lambda_") as tmpdir:
+            lambda_parquet_path = Path(tmpdir) / "segment.parquet"
+            script_kwargs["lambda_parquet"] = lambda_parquet_path
+            script = pycharmm.DynamicsScript(**script_kwargs)
+            script.run()
+            lambda_matrix = _lambda_matrix_from_parquet(
+                lambda_parquet_path,
                 expected_columns=len(lambda_headers) if lambda_headers is not None else None,
             )
             return SegmentResult(
                 lambda_matrix=lambda_matrix,
                 bias_matrix=_bias_matrix_from_table(
                     script.lambdata_bias,
-                    allow_missing=used_lmd_fallback,
+                    allow_missing=True,
                     row_count=lambda_matrix.shape[0],
                 ),
             )
@@ -207,33 +195,25 @@ def _lambda_matrix_from_table(
     return values
 
 
-def _lambda_matrix_from_sources(
-    table: Any,
-    *,
-    lmd_path: Path,
-    expected_columns: int | None = None,
-) -> tuple[np.ndarray, bool]:
-    if table is not None:
-        return _lambda_matrix_from_table(table, expected_columns=expected_columns), False
-    return _lambda_matrix_from_lmd_file(lmd_path, expected_columns=expected_columns), True
-
-
-def _lambda_matrix_from_lmd_file(
+def _lambda_matrix_from_parquet(
     path: str | Path,
     *,
     expected_columns: int | None = None,
 ) -> np.ndarray:
-    from cphmd.utils.lambda_io import read_lambda_values
+    import pandas as pd
 
-    values = np.asarray(read_lambda_values(path), dtype=np.float32)
+    frame = pd.read_parquet(path)
+    values = frame.drop(
+        columns=_metadata_columns(frame),
+        errors="ignore",
+    ).to_numpy(dtype=np.float32)
     if values.ndim != 2:
-        raise DynamicsRunError("lambda file fallback did not return a 2D matrix")
+        raise DynamicsRunError("lambda parquet did not return a 2D matrix")
     if values.shape[1] == 0:
-        raise DynamicsRunError("lambda file fallback has no lambda columns")
+        raise DynamicsRunError("lambda parquet has no lambda columns")
     if expected_columns is not None and values.shape[1] != expected_columns:
         raise DynamicsRunError(
-            f"lambda file fallback has {values.shape[1]} lambda columns; "
-            f"expected {expected_columns}"
+            f"lambda parquet has {values.shape[1]} lambda columns; expected {expected_columns}"
         )
     return values
 
