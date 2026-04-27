@@ -28,6 +28,8 @@ _EXPORTS: dict[str, str] = {
     "read_populations_from_runs": "cphmd.analysis.population_convergence",
     "plot_population_convergence": "cphmd.analysis.population_convergence",
     "generate_population_plots": "cphmd.analysis.population_convergence",
+    # ALF dashboard
+    "generate_alf_dashboard": "cphmd.analysis.alf_dashboard",
     # RMSD convergence
     "plot_rmsd_convergence": "cphmd.analysis.rmsd_convergence_plot",
     "plot_pairwise_rmsd_convergence": "cphmd.analysis.rmsd_convergence_plot",

@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import csv
+import json
 import logging
+import math
+import os
 from contextlib import nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -14,6 +18,8 @@ from cphmd.training.bias_snapshot import BiasSnapshot, LDBVTerm
 from cphmd.utils.seeds import derive_seed
 
 logger = logging.getLogger(__name__)
+_MIN_PLAUSIBLE_FNEX = 0.0
+_MAX_PLAUSIBLE_FNEX = 100.0
 
 
 class ProductionConfigError(RuntimeError):
@@ -42,12 +48,19 @@ class ProductionBiasSpec:
 
 
 @dataclass(frozen=True)
+class _PHBiasTag:
+    tag_type: str
+    pka: float | None
+
+
+@dataclass(frozen=True)
 class ProductionConfig:
-    bias_file: Path
     n_chunks: int
+    bias_file: Path | None = None
+    use_presets: bool = True
+    preset_config: str | None = None
     topology_files: list[Path] = field(default_factory=list)
     extra_files: list[Path] = field(default_factory=list)
-    vdw_type: str = "CHARMM"
     segments_per_chunk: int = 10
     ldin_mass: float = 10.0
     ldin_friction: float = 10.0
@@ -56,8 +69,8 @@ class ProductionConfig:
     lambda_precision: LambdaPrecision | str = LambdaPrecision.SHRINKER
 
     def __post_init__(self) -> None:
-        bias_file = Path(self.bias_file)
-        if not bias_file.is_absolute():
+        bias_file = None if self.bias_file is None else Path(self.bias_file)
+        if bias_file is not None and not bias_file.is_absolute():
             raise ValueError(f"ProductionConfig.bias_file must be absolute: {bias_file}")
         if self.n_chunks <= 0:
             raise ValueError("n_chunks must be positive")
@@ -73,12 +86,14 @@ class ProductionConfig:
                 "ProductionConfig.lambda_precision=FULL selected; production archives "
                 "default to SHRINKER to reduce storage."
             )
-        vdw_type = str(self.vdw_type).upper()
-        if vdw_type not in {"CHARMM", "OPLS"}:
-            raise ValueError(f"ProductionConfig.vdw_type must be 'CHARMM' or 'OPLS': {vdw_type!r}")
         object.__setattr__(self, "bias_file", bias_file)
+        object.__setattr__(self, "use_presets", bool(self.use_presets))
+        object.__setattr__(
+            self,
+            "preset_config",
+            None if self.preset_config is None else str(self.preset_config),
+        )
         object.__setattr__(self, "lambda_precision", precision)
-        object.__setattr__(self, "vdw_type", vdw_type)
         object.__setattr__(self, "topology_files", [Path(path) for path in self.topology_files])
         object.__setattr__(self, "extra_files", [Path(path) for path in self.extra_files])
 
@@ -88,6 +103,8 @@ def load_production_biases(
     *,
     nsubs: tuple[int, ...] | list[int] | None = None,
 ) -> ProductionBiasSpec:
+    if cfg.bias_file is None:
+        raise ProductionConfigError("production.bias_file is required for fixed-bias production")
     if not cfg.bias_file.exists():
         raise FileNotFoundError(f"ProductionConfig.bias_file does not exist: {cfg.bias_file}")
 
@@ -139,6 +156,76 @@ def load_production_biases(
     )
 
 
+def load_production_preset_biases(
+    cfg: ProductionConfig,
+    ctx: RunContext,
+) -> ProductionBiasSpec:
+    """Build a production bias spec from bundled residue presets."""
+    from cphmd.core.alf_utils import ALFInfo, _load_preset_biases
+    from cphmd.presets import list_presets
+
+    nsubs = _nsubs_from_context(ctx)
+    site_residue_types = _site_residue_types_from_context(ctx)
+    available = set(list_presets(cfg.preset_config))
+    missing = sorted({residue for residue in site_residue_types if residue not in available})
+    if missing:
+        preset_name = cfg.preset_config or "default"
+        raise ProductionConfigError(
+            f"Preset config {preset_name!r} has no biases for residues {missing}"
+        )
+
+    alf_info = ALFInfo(
+        name=site_residue_types[0] if len(set(site_residue_types)) == 1 else ctx.simulation_name,
+        nblocks=sum(nsubs),
+        nsubs=np.asarray(nsubs, dtype=np.int32),
+        nreps=max(1, len(ctx.replica_ph_values)),
+        ncentral=max(0, max(1, len(ctx.replica_ph_values)) // 2),
+        temp=cfg.temperature,
+        fnex=cfg.fnex,
+    )
+    b, c, x, s = _load_preset_biases(
+        alf_info,
+        preset_config=cfg.preset_config,
+        site_residue_types=list(site_residue_types),
+    )
+    snapshot = BiasSnapshot.from_arrays(b=b, c=c, x=x, s=s, nsubs=nsubs)
+    return ProductionBiasSpec(
+        schema_version=1,
+        nsubs=nsubs,
+        lambda_headers=ctx.lambda_headers,
+        fnex=cfg.fnex,
+        metadata_present=True,
+        intrinsic=tuple(
+            IntrinsicBias(block_id, bias) for block_id, bias in snapshot.intrinsic_biases
+        ),
+        ldbv_terms=snapshot.ldbv_terms,
+    )
+
+
+def write_production_bias_file(
+    path: str | Path,
+    snapshot: BiasSnapshot,
+    *,
+    lambda_headers: tuple[str, ...] | list[str],
+    fnex: float,
+) -> Path:
+    """Write a fixed-bias checkpoint consumable by production runs."""
+    out_path = Path(path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(
+        out_path,
+        schema_version=np.array([1], dtype=np.int32),
+        bias_nsubs=np.asarray(snapshot.nsubs, dtype=np.int32),
+        lambda_headers=np.asarray(tuple(lambda_headers)),
+        fnex=np.array([float(fnex)], dtype=np.float64),
+        b=np.asarray(snapshot.b, dtype=np.float64),
+        c=np.asarray(snapshot.c, dtype=np.float64),
+        x=np.asarray(snapshot.x, dtype=np.float64),
+        s=np.asarray(snapshot.s, dtype=np.float64),
+    )
+    return out_path
+
+
 class ProductionHooks:
     def __init__(
         self,
@@ -151,12 +238,17 @@ class ProductionHooks:
         self.cfg = cfg
         self.native_block = native_block
         self.bias_spec: ProductionBiasSpec | None = None
+        self._ph_bias_tags: dict[int, _PHBiasTag] | None = None
+        self._validated_runtime = False
 
     def on_system_loaded(self, ctx: RunContext, state: LoopState | None = None) -> None:
-        self._bootstrap_native_state(ctx, state=state, first_load=True)
+        self._bootstrap_native_state(ctx, state=state, phase="system_loaded")
+
+    def on_native_ready(self, ctx: RunContext, state: LoopState | None = None) -> None:
+        self._bootstrap_native_state(ctx, state=state, phase="native_ready")
 
     def before_segment(self, state: LoopState) -> LoopState:
-        if state.segment_idx % self.cfg.segments_per_chunk != 0:
+        if state.segment_idx != 0:
             return state
         return state.with_integrator_seed(self.chunk_seed(state.chunk_idx))
 
@@ -184,13 +276,18 @@ class ProductionHooks:
         partner_rank: int | None,
         accepted: bool,
     ) -> None:
-        if not accepted:
-            return
-        if not self.ctx.ph_enabled:
-            return
-        native = self._native_block()
-        native.set_ph(self._ph_for_state(state))
-        native.sync_state()
+        # The pyCHARMM exchanger already applies accepted pH/LDIN/FFIX state.
+        if not accepted or not _production_bias_debug_enabled():
+            return None
+        spec = self._load_and_validate_biases(self.ctx)
+        self._debug_bias_state(
+            self.ctx,
+            state,
+            self._native_block(),
+            spec,
+            phase="rex_after_exchange",
+        )
+        return None
 
     def is_done(self, state: LoopState) -> bool:
         return state.chunk_idx >= self.cfg.n_chunks
@@ -203,36 +300,27 @@ class ProductionHooks:
         ctx: RunContext,
         *,
         state: LoopState | None,
-        first_load: bool,
+        phase: str,
     ) -> None:
-        if not first_load:
-            native = self._native_block()
-            if ctx.ph_enabled:
-                current_state = state or LoopState(replica_label=ctx.replica_label)
-                native.set_ph(self._ph_for_state(current_state))
+        spec = self._load_and_validate_biases(ctx)
+        native = self._native_block()
+
+        current_state = state or LoopState(replica_label=ctx.replica_label)
+        if spec is None:
             native.sync_state()
+            if ctx.ph_enabled:
+                self._apply_ph_state(native, ctx, current_state, None)
+            self._debug_bias_state(ctx, state, native, None, phase=f"{phase}_simple")
             return
 
-        spec = load_production_biases(self.cfg, nsubs=_nsubs_from_context(ctx))
-        self._validate_bias_matches_topology(ctx, spec)
-        native = self._native_block()
-        live_fnex = native.get_fnex()
-        if not np.isclose(live_fnex, self.cfg.fnex):
-            raise ProductionConfigError(
-                f"Live FNEX={live_fnex} does not match configured FNEX={self.cfg.fnex}"
-            )
-        if spec.fnex is not None and not np.isclose(spec.fnex, self.cfg.fnex):
-            raise ProductionConfigError(
-                f"Bias snapshot FNEX={spec.fnex} does not match configured FNEX={self.cfg.fnex}"
-            )
-
-        if ctx.ph_enabled:
-            native.set_ph(self._ph_for_state(state or LoopState(replica_label=ctx.replica_label)))
         native.sync_state()
+        self._debug_bias_state(ctx, state, native, spec, phase=f"{phase}_before_apply")
+        if ctx.ph_enabled:
+            native.set_ph(self._ph_for_state(current_state))
         modify_biases = getattr(native, "modify_biases", None)
         with (modify_biases() if modify_biases is not None else nullcontext()):
             native.clear_biases()
-            for intrinsic in spec.intrinsic:
+            for intrinsic in self._intrinsic_biases_for_state(ctx, current_state, spec):
                 native.set_intrinsic_bias(intrinsic.block_id, intrinsic.bias)
             set_bias_count = getattr(native, "set_bias_count", None)
             if set_bias_count is not None:
@@ -240,7 +328,87 @@ class ProductionHooks:
             for index, term in enumerate(spec.ldbv_terms, start=1):
                 native.add_bias(*term.as_tuple(), index=index)
         native.sync_state()
-        self.bias_spec = spec
+        self._debug_bias_state(ctx, state, native, spec, phase=f"{phase}_after_apply")
+
+    def _apply_ph_state(
+        self,
+        native,
+        ctx: RunContext,
+        state: LoopState,
+        spec: ProductionBiasSpec | None,
+    ) -> None:
+        native.set_ph(self._ph_for_state(state))
+        if spec is not None:
+            for intrinsic in self._intrinsic_biases_for_state(ctx, state, spec):
+                native.set_intrinsic_bias(intrinsic.block_id, intrinsic.bias)
+        native.sync_state()
+
+    def _intrinsic_biases_for_state(
+        self,
+        ctx: RunContext,
+        state: LoopState,
+        spec: ProductionBiasSpec,
+    ) -> tuple[IntrinsicBias, ...]:
+        if not ctx.ph_enabled:
+            return spec.intrinsic
+        ph = self._ph_for_state(state)
+        tags = self._ph_bias_tags_for_context(ctx)
+        if not tags:
+            return spec.intrinsic
+        return tuple(
+            IntrinsicBias(
+                intrinsic.block_id,
+                _ldin_bias_at_ph(
+                    intrinsic.bias,
+                    ph,
+                    tags.get(intrinsic.block_id),
+                    self.cfg.temperature,
+                ),
+            )
+            for intrinsic in spec.intrinsic
+        )
+
+    def _ph_bias_tags_for_context(self, ctx: RunContext) -> dict[int, _PHBiasTag]:
+        if self._ph_bias_tags is None:
+            self._ph_bias_tags = _read_ph_bias_tags(ctx)
+        return self._ph_bias_tags
+
+    def _load_and_validate_biases(self, ctx: RunContext) -> ProductionBiasSpec | None:
+        if self.cfg.bias_file is None:
+            if not self.cfg.use_presets:
+                return None
+            if self.bias_spec is None:
+                spec = load_production_preset_biases(self.cfg, ctx)
+                self._validate_bias_matches_topology(ctx, spec)
+                self.bias_spec = spec
+            spec = self.bias_spec
+        else:
+            if self.bias_spec is None:
+                spec = load_production_biases(self.cfg, nsubs=_nsubs_from_context(ctx))
+                self._validate_bias_matches_topology(ctx, spec)
+                self.bias_spec = spec
+            spec = self.bias_spec
+
+        if not self._validated_runtime:
+            native = self._native_block()
+            live_fnex = native.get_fnex()
+            if _is_plausible_fnex(live_fnex) and not np.isclose(live_fnex, self.cfg.fnex):
+                raise ProductionConfigError(
+                    f"Live FNEX={live_fnex} does not match configured FNEX={self.cfg.fnex}"
+                )
+            if not _is_plausible_fnex(live_fnex):
+                logger.warning(
+                    "Ignoring invalid live FNEX read %s during production bootstrap; "
+                    "using configured FNEX=%s",
+                    live_fnex,
+                    self.cfg.fnex,
+                )
+            if spec.fnex is not None and not np.isclose(spec.fnex, self.cfg.fnex):
+                raise ProductionConfigError(
+                    f"Bias snapshot FNEX={spec.fnex} does not match configured FNEX={self.cfg.fnex}"
+                )
+            self._validated_runtime = True
+        return spec
 
     def _validate_bias_matches_topology(
         self,
@@ -285,6 +453,33 @@ class ProductionHooks:
 
         return block
 
+    def _debug_bias_state(
+        self,
+        ctx: RunContext,
+        state: LoopState | None,
+        native,
+        spec: ProductionBiasSpec | None,
+        *,
+        phase: str,
+    ) -> None:
+        if not _production_bias_debug_enabled():
+            return
+        payload = {
+            "schema_version": 1,
+            "phase": phase,
+            "rank": ctx.rank,
+            "segment_idx": None if state is None else state.segment_idx,
+            "chunk_idx": None if state is None else state.chunk_idx,
+            "replica_label": None if state is None else state.replica_label,
+            "expected": _expected_bias_payload(spec),
+            "live": _read_live_bias_state(native, ctx.ldin_blocks or ()),
+        }
+        path = ctx.rank_dir / f"production_bias_debug_{phase}.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + f".tmp.{os.getpid()}")
+        tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+        os.replace(tmp, path)
+
 
 def _nsubs_from_context(ctx: RunContext) -> tuple[int, ...]:
     """Return per-site lambda block counts from a validated run context."""
@@ -302,11 +497,135 @@ def _nsubs_from_context(ctx: RunContext) -> tuple[int, ...]:
     return tuple(counts)
 
 
-FixedBiasHooks = ProductionHooks
+_PATCH_RESIDUE_PREFIXES = {
+    "ARG": "ARG",
+    "ARU": "ARG",
+    "ASH": "ASP",
+    "ASP": "ASP",
+    "CYS": "CYS",
+    "GLH": "GLU",
+    "GLU": "GLU",
+    "HSD": "HSP",
+    "HSE": "HSP",
+    "HSP": "HSP",
+    "LYS": "LYS",
+    "TYR": "TYR",
+}
+
+
+def _site_residue_types_from_context(ctx: RunContext) -> tuple[str, ...]:
+    if not ctx.titratable_blocks:
+        raise ProductionConfigError("titratable_blocks is empty for preset production")
+    residues_by_site: dict[int, str] = {}
+    for block in ctx.titratable_blocks:
+        residue = _preset_residue_from_patch(block.resname)
+        previous = residues_by_site.setdefault(int(block.site), residue)
+        if previous != residue:
+            raise ProductionConfigError(
+                f"site {block.site} mixes preset residues {previous!r} and {residue!r}"
+            )
+    missing_sites = [site for site in range(1, ctx.nsites + 1) if site not in residues_by_site]
+    if missing_sites:
+        raise ProductionConfigError(f"missing titratable blocks for sites {missing_sites}")
+    return tuple(residues_by_site[site] for site in range(1, ctx.nsites + 1))
+
+
+def _preset_residue_from_patch(resname: str) -> str:
+    token = str(resname).strip().upper()
+    if len(token) < 3:
+        raise ProductionConfigError(f"cannot derive preset residue from patch name {resname!r}")
+    prefix = token[:3]
+    return _PATCH_RESIDUE_PREFIXES.get(prefix, prefix)
+
+
+def _read_ph_bias_tags(ctx: RunContext) -> dict[int, _PHBiasTag]:
+    path = ctx.run_dir / "prep" / "patches.dat"
+    if not path.exists():
+        return {}
+    tags: dict[int, _PHBiasTag] = {}
+    with path.open(newline="") as handle:
+        for block_id, row in enumerate(csv.DictReader(handle), start=2):
+            raw = str(row.get("TAG", "NONE")).strip()
+            parts = raw.split()
+            tag_type = parts[0].upper() if parts else "NONE"
+            pka = float(parts[1]) if len(parts) > 1 else None
+            tags[block_id] = _PHBiasTag(tag_type=tag_type, pka=pka)
+    return tags
+
+
+def _ldin_bias_at_ph(
+    reference_bias: float,
+    ph: float,
+    tag: _PHBiasTag | None,
+    temperature: float,
+) -> float:
+    if tag is None or tag.pka is None:
+        return float(reference_bias)
+    factor = math.log(10.0) * 0.0019872041 * float(temperature)
+    if tag.tag_type == "UPOS":
+        return float(reference_bias) + factor * (float(ph) - tag.pka)
+    if tag.tag_type == "UNEG":
+        return float(reference_bias) - factor * (float(ph) - tag.pka)
+    return float(reference_bias)
+
+
+def _is_plausible_fnex(value: float | None) -> bool:
+    if value is None:
+        return False
+    fnex = float(value)
+    return math.isfinite(fnex) and _MIN_PLAUSIBLE_FNEX < fnex < _MAX_PLAUSIBLE_FNEX
+
+
+def _production_bias_debug_enabled() -> bool:
+    return os.environ.get("CPHMD_DEBUG_PRODUCTION_BIAS", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _read_live_bias_state(native, ldin_blocks: tuple[int, ...]) -> dict[str, Any]:
+    state: dict[str, Any] = {"ldin": [], "bias_count": None, "biases": []}
+    get_ldin = getattr(native, "get_ldin_params", None)
+    if get_ldin is not None:
+        for block_id in ldin_blocks:
+            params = get_ldin(block_id)
+            state["ldin"].append({"block_id": int(block_id), "params": _jsonable(params)})
+    get_bias_count = getattr(native, "get_bias_count", None)
+    count = get_bias_count() if get_bias_count is not None else None
+    state["bias_count"] = None if count is None else int(count)
+    get_bias_params = getattr(native, "get_bias_params", None)
+    if count is not None and get_bias_params is not None:
+        for index in range(1, int(count) + 1):
+            params = get_bias_params(index)
+            if params is not None:
+                state["biases"].append(_jsonable(params))
+    return state
+
+
+def _expected_bias_payload(spec: ProductionBiasSpec | None) -> dict[str, Any] | None:
+    if spec is None:
+        return None
+    return {
+        "intrinsic": [[item.block_id, item.bias] for item in spec.intrinsic],
+        "ldbv_terms": [list(item.as_tuple()) for item in spec.ldbv_terms],
+    }
+
+
+def _jsonable(value):
+    if isinstance(value, dict):
+        return {str(key): _jsonable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(item) for item in value]
+    if isinstance(value, np.integer):
+        return int(value)
+    if isinstance(value, np.floating):
+        return float(value)
+    return value
 
 
 __all__ = [
-    "FixedBiasHooks",
     "IntrinsicBias",
     "LDBVTerm",
     "ProductionBiasSpec",
@@ -314,4 +633,6 @@ __all__ = [
     "ProductionConfigError",
     "ProductionHooks",
     "load_production_biases",
+    "load_production_preset_biases",
+    "write_production_bias_file",
 ]

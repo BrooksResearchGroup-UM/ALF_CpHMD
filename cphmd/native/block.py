@@ -60,6 +60,71 @@ def set_bias_count(count: int, *, pyblock=None) -> None:
         raise wrap_exception(exc, BiasRebuildError, "allocating native BLOCK bias slots") from exc
 
 
+def get_bias_count(*, pyblock=None) -> int | None:
+    block_mod = pyblock or _pyblock()
+    try:
+        biases = getattr(block_mod, "get_biases", None)
+        python_count = len(biases()) if biases is not None else None
+        getter = getattr(block_mod, "get_nbiasv_direct", None)
+        if getter is not None:
+            value = getter()
+            if value is not None:
+                direct_count = int(value)
+                if direct_count > 0 or python_count is None:
+                    return direct_count
+        return python_count
+    except Exception as exc:
+        raise wrap_exception(exc, BiasRebuildError, "reading native BLOCK bias count") from exc
+
+
+def get_bias_params(index: int, *, pyblock=None) -> dict | None:
+    block_mod = pyblock or _pyblock()
+    try:
+        getter = getattr(block_mod, "get_bias_params_direct", None)
+        if getter is not None:
+            params = getter(int(index))
+            if params is not None:
+                return {
+                    "index": int(index),
+                    "block_i": int(params["block_i"]),
+                    "block_j": int(params["block_j"]),
+                    "cls": int(params["cls"]),
+                    "ref": float(params.get("ref_up", params.get("ref", 0.0))),
+                    "cforce": float(params.get("force_const", params.get("cforce", 0.0))),
+                    "npower": int(params.get("power", params.get("npower", 0))),
+                }
+        python_biases = getattr(block_mod, "get_biases", None)
+        if python_biases is not None:
+            for item in python_biases():
+                if int(item.get("index", 0)) == int(index):
+                    return {
+                        "index": int(index),
+                        "block_i": int(item["block_i"]),
+                        "block_j": int(item["block_j"]),
+                        "cls": int(item["cls"]),
+                        "ref": float(item["ref"]),
+                        "cforce": float(item["cforce"]),
+                        "npower": int(item["npower"]),
+                    }
+        return None
+    except Exception as exc:
+        raise wrap_exception(exc, BiasRebuildError, "reading native BLOCK bias parameters") from exc
+
+
+def get_ldin_params(block_id: int, *, pyblock=None) -> dict | None:
+    block_mod = pyblock or _pyblock()
+    try:
+        getter = getattr(block_mod, "get_ldin_params_direct", None)
+        if getter is None:
+            return None
+        params = getter(int(block_id))
+        if params is None:
+            return None
+        return dict(params)
+    except Exception as exc:
+        raise wrap_exception(exc, BiasRebuildError, "reading native LDIN parameters") from exc
+
+
 def set_intrinsic_bias(block_id: int, bias: float, *, pyblock=None) -> None:
     block_mod = pyblock or _pyblock()
     try:
@@ -149,11 +214,20 @@ def sync_state(*, pyblock=None) -> None:
     block_mod = pyblock or _pyblock()
     try:
         sync = getattr(block_mod, "sync_state_from_charmm", None)
-        if sync is None:
+        if sync is not None:
+            ok = sync()
+            if not ok:
+                raise BiasRebuildError("failed to synchronize native BLOCK state")
+        try:
+            import pycharmm.blade as blade
+        except ImportError:
             return
-        ok = sync()
-        if not ok:
-            raise BiasRebuildError("failed to synchronize native BLOCK state")
+        is_enabled = getattr(blade, "is_enabled", None)
+        blade_sync = getattr(blade, "sync_state_from_charmm", None)
+        if is_enabled is not None and blade_sync is not None and is_enabled():
+            ok = blade_sync()
+            if not ok:
+                raise BiasRebuildError("failed to synchronize live BLaDE state")
     except BiasRebuildError:
         raise
     except Exception as exc:

@@ -7,14 +7,16 @@ import hashlib
 import importlib.util
 import json
 import logging
+import os
 import re
-from dataclasses import dataclass, fields
+import shutil
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
 import typer
 
-from cphmd.config.loader import NativeRuntimeConfig, load_config
+from cphmd.config.loader import NativeRuntimeConfig, alf_config_from_mapping, load_config
 from cphmd.simulation.backends import AnalysisBackend
 from cphmd.simulation.context import RunContext, TitratableBlock
 from cphmd.simulation.loop import SimulationLoop
@@ -66,7 +68,12 @@ class SegmentLimitHooks:
         return state.segment_idx >= self.max_segments
 
 
-def run_simulation(*, config_path: Path, rank: int | None = None) -> None:
+def run_simulation(
+    *,
+    config_path: Path,
+    rank: int | None = None,
+    run_dir: Path | None = None,
+) -> None:
     from cphmd.native.mpi import (
         gpu_id_for_rank,
     )
@@ -87,6 +94,8 @@ def run_simulation(*, config_path: Path, rank: int | None = None) -> None:
     from cphmd.cli._logging import install_excepthook, install_rank_logger
 
     cfg = load_config(config_path)
+    if run_dir is not None:
+        cfg = apply_run_dir_override(cfg, config_path, run_dir)
     rank_logger = install_rank_logger(
         rank=actual_rank,
         run_dir=cfg.run_dir,
@@ -114,8 +123,14 @@ def run_simulation(*, config_path: Path, rank: int | None = None) -> None:
                 "config master_seed %s differs from initialized value %s",
                 cfg.master_seed,
                 init_payload.get("master_seed"),
-            )
+        )
         raise SystemExit(2)
+
+    if actual_rank == 0:
+        _sync_run_prep_metadata(cfg)
+    barrier = getattr(comm, "Barrier", None)
+    if barrier is not None:
+        barrier()
 
     ctx = build_run_context(
         cfg,
@@ -125,6 +140,7 @@ def run_simulation(*, config_path: Path, rank: int | None = None) -> None:
     )
     if actual_rank == 0:
         _ensure_initial_block_file(cfg, ctx)
+        _sync_run_prep_metadata(cfg)
     barrier = getattr(comm, "Barrier", None)
     if barrier is not None:
         barrier()
@@ -145,6 +161,7 @@ def build_run_context(
     if patch_metadata is not None:
         nsites, nsubsites, lambda_headers, titratable_blocks = patch_metadata
         n_lambda_blocks = len(lambda_headers)
+        rex_signs = _rex_signs_from_patches(_prep_dir(cfg))
     else:
         alf_info = load_alf_info(cfg)
         if not alf_info:
@@ -160,6 +177,7 @@ def build_run_context(
             n_lambda_blocks=n_lambda_blocks,
             nsubsites=nsubsites,
         )
+        rex_signs = tuple(1.0 for _ in lambda_headers)
     replica_label = rank
     rex_requested = _rex_enabled(cfg.replica_exchange)
     if rex_requested and not cfg.ph:
@@ -167,6 +185,7 @@ def build_run_context(
     rex_interval = _rex_interval(
         cfg.replica_exchange,
         nsteps_per_segment=cfg.nsteps_per_segment,
+        time_step_ps=cfg.time_step_ps,
     )
     ph_values = _native_ph_values(cfg) if cfg.ph else ()
     if cfg.ph and not ph_values:
@@ -201,14 +220,68 @@ def build_run_context(
         ldin_blocks=tuple(range(2, n_lambda_blocks + 2)),
         rex_enabled=rex_enabled,
         replica_ph_values=ph_values,
-        rex_signs=tuple(1.0 for _ in lambda_headers),
+        rex_signs=rex_signs,
         rex_exchange_every_segments=rex_interval,
         comm=comm,
         simulation_name=cfg.run_dir.name,
         walltime_safety_factor=cfg.walltime_safety_factor,
         titratable_blocks=titratable_blocks,
-        startup_minimization_segments=5,
+        startup_minimization_segments=int(
+            os.environ.get("CPHMD_STARTUP_MINIMIZATION_SEGMENTS", "5")
+        ),
     )
+
+
+def _resolve_cli_run_dir(config_path: Path, run_dir: Path) -> Path:
+    path = Path(run_dir)
+    if path.is_absolute():
+        return path.resolve()
+    return (Path(config_path).resolve().parent / path).resolve()
+
+
+def apply_run_dir_override(
+    cfg: NativeRuntimeConfig,
+    config_path: Path,
+    run_dir: Path,
+) -> NativeRuntimeConfig:
+    resolved = _resolve_cli_run_dir(config_path, run_dir)
+    master_seed = cfg.master_seed
+    if cfg.production is not None:
+        repeat_index = _production_repeat_index(resolved)
+        if repeat_index is not None:
+            master_seed = _base_master_seed(cfg) + repeat_index - 1
+    return replace(cfg, run_dir=resolved, master_seed=master_seed)
+
+
+def _production_repeat_index(run_dir: Path) -> int | None:
+    match = re.fullmatch(r"sim_(\d+)", run_dir.name)
+    if match is None:
+        return None
+    repeat_index = int(match.group(1))
+    return repeat_index if repeat_index >= 1 else None
+
+
+def _base_master_seed(cfg: NativeRuntimeConfig) -> int:
+    raw_seed = cfg.raw.get("master_seed")
+    if raw_seed is not None:
+        return int(raw_seed)
+    for section_name in ("simulation", "alf"):
+        section = cfg.raw.get(section_name)
+        if isinstance(section, dict) and section.get("master_seed") is not None:
+            return int(section["master_seed"])
+    return int(cfg.master_seed)
+
+
+def _sync_run_prep_metadata(cfg: NativeRuntimeConfig) -> None:
+    input_prep = cfg.input_folder / "prep"
+    run_prep = cfg.run_dir / "prep"
+    if not input_prep.exists() or input_prep.resolve() == run_prep.resolve():
+        return
+    run_prep.mkdir(parents=True, exist_ok=True)
+    for name in ("patches.dat", "block.str", "alf_info.py"):
+        source = input_prep / name
+        if source.exists():
+            shutil.copy2(source, run_prep / name)
 
 
 def build_hooks(cfg: NativeRuntimeConfig, ctx: RunContext):
@@ -254,6 +327,10 @@ def build_hooks(cfg: NativeRuntimeConfig, ctx: RunContext):
             cycle_every_segments=repeats,
             end_cycle=cfg.end,
             cache_segments=repeats,
+            generate_dashboard_plots=bool(getattr(alf_config, "generate_dashboard_plots", True)),
+            generate_population_plots=bool(getattr(alf_config, "generate_population_plots", False)),
+            generate_g_profiles_2d=bool(getattr(alf_config, "generate_g_profiles_2d", False)),
+            generate_g_profiles_3d=bool(getattr(alf_config, "generate_g_profiles_3d", False)),
         ),
         nsubs=nsubs,
         cycle_runner=ALFCycleRunner(
@@ -261,6 +338,7 @@ def build_hooks(cfg: NativeRuntimeConfig, ctx: RunContext):
             rebuilder=BiasRebuilder(),
         ),
         replica_ph_values=ctx.replica_ph_values,
+        work_dir=cfg.run_dir,
     )
 
 
@@ -325,53 +403,62 @@ def _native_ph_values(cfg: NativeRuntimeConfig) -> tuple[float, ...]:
 
 
 def _has_explicit_ph_ladder(cfg: NativeRuntimeConfig) -> bool:
-    alf = cfg.raw.get("alf", {}) if isinstance(cfg.raw.get("alf", {}), dict) else {}
-    return any(key in alf for key in ("ph_values", "pH_values", "ph_start", "ph_end")) or (
-        ("ph" in alf and isinstance(alf["ph"], (int, float)) and not isinstance(alf["ph"], bool))
-        or ("pH" in alf and isinstance(alf["pH"], (int, float)) and not isinstance(alf["pH"], bool))
+    runtime = _runtime_raw_section(cfg)
+    return any(key in runtime for key in ("ph_values", "pH_values", "ph_start", "ph_end")) or (
+        (
+            "ph" in runtime
+            and isinstance(runtime["ph"], (int, float))
+            and not isinstance(runtime["ph"], bool)
+        )
+        or (
+            "pH" in runtime
+            and isinstance(runtime["pH"], (int, float))
+            and not isinstance(runtime["pH"], bool)
+        )
     )
+
+
+def _runtime_raw_section(cfg: NativeRuntimeConfig) -> dict[str, Any]:
+    if cfg.production is not None and isinstance(cfg.raw.get("simulation"), dict):
+        return cfg.raw["simulation"]
+    if isinstance(cfg.raw.get("alf"), dict):
+        return cfg.raw["alf"]
+    return {}
 
 
 def _alf_config_from_native_config(cfg: NativeRuntimeConfig):
-    from cphmd.training.config import ALFConfig
-
     alf_section = dict(cfg.raw.get("alf", {}) or {})
-    if "pH" in alf_section and "ph" not in alf_section:
-        alf_section["ph"] = alf_section.pop("pH")
-    allowed = {field.name for field in fields(ALFConfig)}
-    values = {key: value for key, value in alf_section.items() if key in allowed}
-    values.update(
-        {
-            "input_folder": cfg.input_folder,
-            "toppar_dir": cfg.toppar_dir,
-            "topology_files": list(cfg.topology_files),
-            "extra_files": list(cfg.extra_files),
-            "start": cfg.start,
-            "end": cfg.end,
-            "phase": cfg.phase,
-            "nreps": cfg.nreps,
-            "temperature": cfg.temperature,
-            "cutnb": cfg.cutnb,
-            "ctofnb": cfg.ctofnb,
-            "ctonnb": cfg.ctonnb,
-            "elec_type": cfg.elec_type,
-            "vdw_type": cfg.vdw_type,
-            "fnex": cfg.fnex,
-            "ph": cfg.ph,
-        }
-    )
-    return ALFConfig(**values)
+    if "input_folder" not in alf_section:
+        alf_section["input_folder"] = cfg.input_folder
+    alf_config = alf_config_from_mapping(alf_section)
+    alf_config.input_folder = cfg.input_folder
+    alf_config.toppar_dir = cfg.toppar_dir
+    alf_config.topology_files = list(cfg.topology_files)
+    alf_config.extra_files = list(cfg.extra_files)
+    alf_config.start = cfg.start
+    alf_config.end = cfg.end
+    alf_config.phase = cfg.phase
+    alf_config.nreps = cfg.nreps
+    alf_config.temperature = cfg.temperature
+    alf_config.cutnb = cfg.cutnb
+    alf_config.ctofnb = cfg.ctofnb
+    alf_config.ctonnb = cfg.ctonnb
+    alf_config.elec_type = cfg.elec_type
+    alf_config.vdw_type = cfg.vdw_type
+    alf_config.fnex = cfg.fnex
+    alf_config.ph = cfg.ph
+    return alf_config
 
 
 def find_system_files(cfg: NativeRuntimeConfig) -> tuple[Path, Path]:
     input_prep = cfg.input_folder / "prep"
     run_prep = cfg.run_dir / "prep"
     candidates = (
-        (cfg.run_dir / "solvated.psf", cfg.run_dir / "solvated.crd"),
         (input_prep / "system_hmr.psf", input_prep / "system_hmr.crd"),
         (input_prep / "system.psf", input_prep / "system.crd"),
         (run_prep / "system_hmr.psf", run_prep / "system_hmr.crd"),
         (run_prep / "system.psf", run_prep / "system.crd"),
+        (cfg.run_dir / "solvated.psf", cfg.run_dir / "solvated.crd"),
     )
     for psf_path, crd_path in candidates:
         if psf_path.exists() and crd_path.exists():
@@ -492,6 +579,21 @@ def _read_patch_rows(path: Path) -> list[dict[str, str]]:
         return [dict(row) for row in reader]
 
 
+def _rex_signs_from_patches(prep_dir: Path) -> tuple[float, ...]:
+    rows = _read_patch_rows(prep_dir / "patches.dat")
+    signs: list[float] = []
+    for row in rows:
+        tag = str(row.get("TAG", "NONE")).strip().upper()
+        flag = tag.split()[0] if tag else "NONE"
+        if flag == "UPOS":
+            signs.append(1.0)
+        elif flag == "UNEG":
+            signs.append(-1.0)
+        else:
+            signs.append(0.0)
+    return tuple(signs)
+
+
 def _rex_enabled(replica_exchange: Any) -> bool:
     if isinstance(replica_exchange, dict):
         return bool(replica_exchange.get("enabled", False))
@@ -500,27 +602,126 @@ def _rex_enabled(replica_exchange: Any) -> bool:
     return bool(getattr(replica_exchange, "enabled", False))
 
 
-def _rex_interval(replica_exchange: Any, *, nsteps_per_segment: int = 1) -> int:
+def _rex_interval(
+    replica_exchange: Any,
+    *,
+    nsteps_per_segment: int = 1,
+    time_step_ps: float = 1.0,
+) -> int:
     if isinstance(replica_exchange, dict):
+        removed = sorted(
+            key for key in ("apply_state", "backend") if key in replica_exchange
+        )
+        if removed:
+            key = removed[0]
+            raise ValueError(
+                f"replica_exchange.{key} is removed; use the direct pyCHARMM exchange path"
+            )
+        interval_keys = [
+            key
+            for key in (
+                "exchange_every_segments",
+                "exchange_interval_ps",
+                "exchange_interval_steps",
+                "exchange_freq",
+            )
+            if key in replica_exchange
+        ]
+        if len(interval_keys) > 1:
+            keys = ", ".join(f"replica_exchange.{key}" for key in interval_keys)
+            raise ValueError(f"conflicting replica exchange interval keys: {keys}")
         if "exchange_every_segments" in replica_exchange:
             return max(1, int(replica_exchange["exchange_every_segments"]))
-        exchange_freq = replica_exchange.get("exchange_freq")
+        if "exchange_interval_ps" in replica_exchange:
+            return _rex_segments_from_ps(
+                replica_exchange["exchange_interval_ps"],
+                nsteps_per_segment=nsteps_per_segment,
+                time_step_ps=time_step_ps,
+            )
+        if "exchange_interval_steps" in replica_exchange:
+            return _rex_segments_from_steps(
+                replica_exchange["exchange_interval_steps"],
+                nsteps_per_segment=nsteps_per_segment,
+            )
+        if "exchange_freq" in replica_exchange:
+            return _rex_segments_from_steps(
+                replica_exchange["exchange_freq"],
+                nsteps_per_segment=nsteps_per_segment,
+                name="replica_exchange.exchange_freq",
+            )
     else:
-        every_segments = getattr(replica_exchange, "exchange_every_segments", None)
+        values = {
+            "exchange_every_segments": getattr(replica_exchange, "exchange_every_segments", None),
+            "exchange_interval_ps": getattr(replica_exchange, "exchange_interval_ps", None),
+            "exchange_interval_steps": getattr(
+                replica_exchange,
+                "exchange_interval_steps",
+                None,
+            ),
+            "exchange_freq": getattr(replica_exchange, "exchange_freq", None),
+        }
+        present = [key for key, value in values.items() if value is not None]
+        if len(present) > 1:
+            keys = ", ".join(f"replica_exchange.{key}" for key in present)
+            raise ValueError(f"conflicting replica exchange interval keys: {keys}")
+        every_segments = values["exchange_every_segments"]
         if every_segments is not None:
             return max(1, int(every_segments))
-        exchange_freq = getattr(replica_exchange, "exchange_freq", None)
-    if exchange_freq is None:
-        exchange_freq = 1000 if _rex_enabled(replica_exchange) else None
-    if exchange_freq is None:
-        return 1
+        exchange_interval_ps = values["exchange_interval_ps"]
+        if exchange_interval_ps is not None:
+            return _rex_segments_from_ps(
+                exchange_interval_ps,
+                nsteps_per_segment=nsteps_per_segment,
+                time_step_ps=time_step_ps,
+            )
+        exchange_interval_steps = values["exchange_interval_steps"]
+        if exchange_interval_steps is not None:
+            return _rex_segments_from_steps(
+                exchange_interval_steps,
+                nsteps_per_segment=nsteps_per_segment,
+            )
+        exchange_freq = values["exchange_freq"]
+        if exchange_freq is not None:
+            return _rex_segments_from_steps(
+                exchange_freq,
+                nsteps_per_segment=nsteps_per_segment,
+                name="replica_exchange.exchange_freq",
+            )
+    return 1
+
+
+def _rex_segments_from_ps(
+    value: Any,
+    *,
+    nsteps_per_segment: int,
+    time_step_ps: float,
+) -> int:
+    interval_ps = float(value)
+    if interval_ps <= 0:
+        raise ValueError("replica_exchange.exchange_interval_ps must be positive")
+    md_block_ps = max(1, int(nsteps_per_segment)) * float(time_step_ps)
+    ratio = interval_ps / md_block_ps
+    rounded = round(ratio)
+    if rounded <= 0 or abs(ratio - rounded) > 1e-9:
+        raise ValueError(
+            "replica_exchange.exchange_interval_ps must be divisible by the MD block length"
+        )
+    return int(rounded)
+
+
+def _rex_segments_from_steps(
+    value: Any,
+    *,
+    nsteps_per_segment: int,
+    name: str = "replica_exchange.exchange_interval_steps",
+) -> int:
+    interval_steps = int(value)
+    if interval_steps <= 0:
+        raise ValueError(f"{name} must be positive")
     segment_steps = max(1, int(nsteps_per_segment))
-    exchange_freq = int(exchange_freq)
-    if exchange_freq <= 0:
-        raise ValueError("replica_exchange.exchange_freq must be positive")
-    if exchange_freq % segment_steps != 0:
-        raise ValueError("replica_exchange.exchange_freq must be divisible by nsteps_per_segment")
-    return max(1, exchange_freq // segment_steps)
+    if interval_steps % segment_steps != 0:
+        raise ValueError(f"{name} must be divisible by the MD block length")
+    return max(1, interval_steps // segment_steps)
 
 
 def _prep_dir(cfg: NativeRuntimeConfig) -> Path:
@@ -984,5 +1185,6 @@ def register(app: typer.Typer) -> None:
     @app.command("run")
     def _cmd(
         config: Path = typer.Option(..., "-c", "--config", exists=True),
+        run_dir: Path | None = typer.Option(None, "--run-dir", "-r"),
     ) -> None:
-        run_simulation(config_path=config)
+        run_simulation(config_path=config, run_dir=run_dir)

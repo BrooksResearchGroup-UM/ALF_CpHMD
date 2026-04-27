@@ -153,39 +153,35 @@ def get_populations_from_lambda(
 
     data_dir = analysis_dir / "data"
 
-    from cphmd.utils.lambda_io import read_lambda_values
+    from cphmd.utils.lambda_io import group_lambda_files_by_replica, read_lambda_values
 
-    for tag in range(ndupl):
-        # Prefer .parquet, fall back to .dat for old runs
-        data_file = data_dir / f"Lambda.{tag}.0.parquet"
-        if not data_file.exists():
-            data_file = data_dir / f"Lambda.{tag}.0.dat"
-        if not data_file.exists():
-            continue
+    replica_lambda_files = group_lambda_files_by_replica(data_dir)
 
-        data = read_lambda_values(data_file)
-        if data.ndim == 1:
-            data = data.reshape(1, -1)
-        total_frames += data.shape[0]
+    for replica_idx in range(ndupl):
+        for data_file in replica_lambda_files.get(replica_idx, []):
+            data = read_lambda_values(data_file)
+            if data.ndim == 1:
+                data = data.reshape(1, -1)
+            total_frames += data.shape[0]
 
-        # Vectorized state assignment: for each site, find the first
-        # lambda > cutoff using argmax on the boolean mask.
-        ibuff = 0
-        for isite in range(len(nsubs)):
-            n = int(nsubs[isite])
-            site_lambdas = data[:, ibuff : ibuff + n]  # (frames, n)
-            above = site_lambdas > lc  # boolean mask
+            # Vectorized state assignment: for each site, find the first
+            # lambda > cutoff using argmax on the boolean mask.
+            ibuff = 0
+            for isite in range(len(nsubs)):
+                n = int(nsubs[isite])
+                site_lambdas = data[:, ibuff : ibuff + n]  # (frames, n)
+                above = site_lambdas > lc  # boolean mask
 
-            # argmax returns the first True index per row; if no lambda
-            # exceeds the cutoff, the frame contributes no count.
-            has_state = above.any(axis=1)  # which frames have a state
-            state_idx = above.argmax(axis=1)  # first True per row
+                # argmax returns the first True index per row; if no lambda
+                # exceeds the cutoff, the frame contributes no count.
+                has_state = above.any(axis=1)  # which frames have a state
+                state_idx = above.argmax(axis=1)  # first True per row
 
-            # Count occurrences of each state
-            for j in range(n):
-                counts[ibuff + j] += np.sum((state_idx == j) & has_state)
+                # Count occurrences of each state
+                for j in range(n):
+                    counts[ibuff + j] += np.sum((state_idx == j) & has_state)
 
-            ibuff += n
+                ibuff += n
 
     # Convert to fractions
     if total_frames > 0:

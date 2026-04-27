@@ -18,13 +18,11 @@ sbatch submit.sh          # SLURM batch
 ## CLI Equivalent
 
 ```bash
-cphmd run alf -i solvated -c cphmd_config.yaml
+cphmd init -c cphmd_config.yaml
+mpirun -np <nreps> cphmd run -c cphmd_config.yaml
 ```
 
-Or without config file:
-```bash
-cphmd run alf -i solvated --analysis-method hybrid --hydrogens --g-imp-bins 20,32,32
-```
+Set `analysis_method: hybrid` and any hybrid-analysis options in `cphmd_config.yaml`.
 
 ## How Hybrid Works
 

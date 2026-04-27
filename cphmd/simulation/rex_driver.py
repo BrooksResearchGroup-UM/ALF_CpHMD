@@ -3,7 +3,7 @@ from __future__ import annotations
 import importlib
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, is_dataclass, replace
 from typing import Any
 
 import numpy as np
@@ -54,6 +54,8 @@ class REXStepResult:
 
 
 class REXDriver:
+    """Thermodynamic-neighbor label diffusion using pyCHARMM direct state exchange."""
+
     def __init__(self, ctx: RunContext, *, native_rex: Any | None = None):
         self.ctx = ctx
         self.config = REXConfig(
@@ -80,12 +82,15 @@ class REXDriver:
         local_state = self.native_rex.snapshot_state(
             self.exchanger,
             label=current_label,
-            ldin_blocks=self._ldin_blocks(),
-            msld_theta_blocks=self._ldin_blocks(),
+            ldin_blocks=self._direct_ldin_blocks(),
+            msld_theta_blocks=self._msld_theta_blocks(),
             include_lambdas=True,
-            include_ph=False,
-            metadata={"ph": local_ph},
+            include_ph=True,
+            include_ffix=True,
+            metadata=self._state_metadata(current_label, local_ph),
         )
+        local_state = _with_canonical_ph(local_state, local_ph)
+        self._debug_state("pre", state, local_state)
         signs = self._sign_vector_for_state(local_state)
 
         def acceptance_fn(local, partner) -> float:
@@ -102,15 +107,28 @@ class REXDriver:
             state.rex_attempt_idx,
             local_state,
             acceptance_fn,
-            apply_state=True,
         )
+        next_label = self._next_label(current_label, exchange_result)
+        post_state = self.native_rex.snapshot_state(
+            self.exchanger,
+            label=next_label,
+            ldin_blocks=self._direct_ldin_blocks(),
+            msld_theta_blocks=self._msld_theta_blocks(),
+            include_lambdas=True,
+            include_ph=True,
+            include_ffix=True,
+            metadata=self._state_metadata(
+                next_label,
+                float(self.ctx.replica_ph_values[next_label]),
+            ),
+        )
+        self._debug_state("post", state, post_state, exchange_result=exchange_result)
         decisions = tuple(getattr(exchange_result, "decisions", ()) or ())
         self._record_first_decisions(state, decisions)
         stats = ExchangeStats(
             attempted=self._stats_or_empty(current_state.rex_attempted),
             accepted=self._stats_or_empty(current_state.rex_accepted),
         ).record_decisions(decisions)
-        next_label = self._next_label(current_label, exchange_result)
         return REXStepResult(
             replica_label=next_label,
             attempted=stats.attempted,
@@ -153,7 +171,15 @@ class REXDriver:
             return self.ctx.replica_label
         return state.replica_label
 
-    def _ldin_blocks(self) -> tuple[int, ...]:
+    def _direct_ldin_blocks(self) -> tuple[int, ...]:
+        blocks = tuple(self.ctx.ldin_blocks or ())
+        if not blocks or blocks[0] == 1:
+            return blocks
+        return (1, *blocks)
+
+    def _msld_theta_blocks(self) -> tuple[int, ...]:
+        if not self.ctx.dynamics_backend.uses_blade:
+            return ()
         return tuple(self.ctx.ldin_blocks or ())
 
     def _stats_or_empty(self, values: tuple[int, ...]) -> tuple[int, ...]:
@@ -161,6 +187,13 @@ class REXDriver:
         if not values:
             return tuple(0 for _ in range(n_pairs))
         return tuple(values)
+
+    def _state_metadata(self, label: int, ph: float) -> dict[str, float | int]:
+        return {
+            "replica_label": int(label),
+            "ph": float(ph),
+            "temperature": float(self.ctx.temperature),
+        }
 
     def _next_label(self, current_label: int, exchange_result: Any) -> int:
         next_label = getattr(exchange_result, "replica_label", None)
@@ -215,6 +248,42 @@ class REXDriver:
         tmp_path.write_text(json.dumps(recorded, indent=2, sort_keys=True) + "\n")
         os.replace(tmp_path, path)
 
+    def _debug_state(
+        self,
+        phase: str,
+        state: LoopState,
+        rex_state: Any,
+        *,
+        exchange_result=None,
+    ) -> None:
+        if os.environ.get("CPHMD_DEBUG_REX_STATE", "").strip().lower() not in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }:
+            return
+        payload = {
+            "phase": phase,
+            "rank": self.ctx.rank,
+            "attempt": state.rex_attempt_idx,
+            "segment": state.segment_idx,
+            "state": _state_payload(rex_state),
+        }
+        if exchange_result is not None:
+            payload["exchange"] = {
+                "accepted": bool(getattr(exchange_result, "accepted", False)),
+                "partner_rank": _optional_int(getattr(exchange_result, "partner_rank", None)),
+                "replica_label": _optional_int(getattr(exchange_result, "replica_label", None)),
+                "decisions": list(getattr(exchange_result, "decisions", ()) or ()),
+                "partner_state": _state_payload(getattr(exchange_result, "partner_state", None)),
+            }
+        path = self.ctx.rank_dir / f"rex_debug_attempt_{state.rex_attempt_idx:06d}_{phase}.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = path.with_suffix(path.suffix + f".tmp.{os.getpid()}")
+        tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+        os.replace(tmp_path, path)
+
 
 def _optional_float(value: Any) -> float | None:
     if value is None:
@@ -223,3 +292,66 @@ def _optional_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _optional_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _with_canonical_ph(state: Any, ph: float) -> Any:
+    if is_dataclass(state):
+        return replace(state, ph=float(ph))
+    try:
+        state.ph = float(ph)
+    except Exception:
+        pass
+    return state
+
+
+def _state_payload(state: Any) -> dict[str, Any] | None:
+    if state is None:
+        return None
+    values = asdict(state) if is_dataclass(state) else state if isinstance(state, dict) else None
+    return {
+        "type": f"{type(state).__module__}.{type(state).__qualname__}",
+        "dataclass": bool(is_dataclass(state)),
+        "label": _optional_int(_value(state, values, "label")),
+        "ph": _optional_float(_value(state, values, "ph")),
+        "temperature": _optional_float(_value(state, values, "temperature")),
+        "metadata": dict(_value(state, values, "metadata") or {}),
+        "lambdas": _float_list(_value(state, values, "lambdas")),
+        "ldin": [_object_payload(item) for item in (_value(state, values, "ldin") or ())],
+        "msld_theta": [
+            _object_payload(item) for item in (_value(state, values, "msld_theta") or ())
+        ],
+    }
+
+
+def _object_payload(item: Any) -> dict[str, Any]:
+    values = asdict(item) if is_dataclass(item) else item if isinstance(item, dict) else None
+    payload = {
+        "type": f"{type(item).__module__}.{type(item).__qualname__}",
+        "dataclass": bool(is_dataclass(item)),
+    }
+    for name in ("block_id", "lambda_sq", "velocity", "mass", "bias", "friction", "theta"):
+        value = _value(item, values, name)
+        if value is not None:
+            payload[name] = _optional_int(value) if name == "block_id" else _optional_float(value)
+    return payload
+
+
+def _value(obj: Any, values: Any, name: str) -> Any:
+    if isinstance(values, dict):
+        return values.get(name)
+    return getattr(obj, name, None)
+
+
+def _float_list(values: Any) -> list[float] | None:
+    if values is None:
+        return None
+    return [float(value) for value in np.asarray(values, dtype=np.float64).reshape(-1)]

@@ -7,20 +7,20 @@ master_seed: 20260418
 
 solvation:
   input_file: pdb/glu
-  output_dir: solvated
+  output_dir: .
   crystal_type: OCTAHEDRAL
   padding: 10.0
   salt_concentration: 0.15
 
 patch:
-  input_folder: solvated
-  output_folder: solvated/prep
+  input_folder: .
+  output_folder: prep
   hmr: true
   selected_residues:
     - GLU
 
 alf:
-  input_folder: solvated
+  input_folder: .
   start: 1
   end: 200
   auto_phase_switch: true

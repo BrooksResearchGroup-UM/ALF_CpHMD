@@ -13,12 +13,15 @@ _EXPORTS = {
     "ALFTrainingConfig": ("cphmd.training.alf_hooks", "ALFTrainingConfig"),
     "BiasRebuilder": ("cphmd.training.bias_rebuilder", "BiasRebuilder"),
     "BiasSnapshot": ("cphmd.training.bias_snapshot", "BiasSnapshot"),
-    "FixedBiasHooks": ("cphmd.training.production_hooks", "FixedBiasHooks"),
     "LDBVTerm": ("cphmd.training.bias_snapshot", "LDBVTerm"),
     "NativeALFAnalyzer": ("cphmd.training.native_analyzer", "NativeALFAnalyzer"),
     "ProductionConfig": ("cphmd.training.production_hooks", "ProductionConfig"),
     "ProductionHooks": ("cphmd.training.production_hooks", "ProductionHooks"),
     "SegmentCache": ("cphmd.training.segment_cache", "SegmentCache"),
+    "write_production_bias_file": (
+        "cphmd.training.production_hooks",
+        "write_production_bias_file",
+    ),
 }
 
 __all__ = list(_EXPORTS)

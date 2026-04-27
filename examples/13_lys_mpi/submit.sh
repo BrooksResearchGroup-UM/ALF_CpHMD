@@ -20,11 +20,12 @@ cd "$SLURM_SUBMIT_DIR"
 # python run.py solvate
 # python run.py patch
 
-# Step 2: Run ALF with MPI (one replica per GPU)
+# Step 2: Initialize then run ALF with MPI (one replica per GPU)
 # nreps is auto-detected from MPI communicator size (= ntasks)
-# Per-rank output goes to solvated/python_log_rank{0..4}.out
+# Per-rank output goes to python_log_rank{0..4}.out
+cphmd init -c cphmd_config.yaml
 mpirun -np "$SLURM_NTASKS" \
     --bind-to none --map-by slot \
     --mca pml ob1 --mca btl tcp,self \
     -x OMP_NUM_THREADS=1 \
-    cphmd run alf -c cphmd_config.yaml --pH
+    cphmd run -c cphmd_config.yaml

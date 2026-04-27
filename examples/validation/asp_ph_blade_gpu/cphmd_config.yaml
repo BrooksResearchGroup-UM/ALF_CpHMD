@@ -6,7 +6,7 @@ native:
   analysis_backend: disabled
 
 alf:
-  input_folder: ../../01_asp_water/solvated
+  input_folder: ../../01_asp_water
   nreps: 1
   start: 1
   end: 5

@@ -48,6 +48,6 @@ sbatch submit.sh
 
 After convergence (~50-100 runs):
 - `pdb/asp.pdb` — Built structure
-- `solvated/prep/` — Patched system files
-- `solvated/analysis*/` — Bias parameters per iteration
-- `solvated/run*/` — MD trajectory data
+- `prep/` — Patched system files
+- `analysis*/` — Bias parameters per iteration
+- `run*/` — MD trajectory data

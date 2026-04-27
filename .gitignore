@@ -51,10 +51,9 @@ docs/_build/
 .AppleDouble
 .LSOverride
 
-# Examples (tracked separately)
-examples/*/prep
-
 # Simulation outputs (CpHMD specific)
+local_runs/
+sim_[0-9]*/
 *.dcd
 *.rst
 *.log
@@ -75,7 +74,13 @@ logs/
 **/python_log_rank*.out
 *.parquet
 
-# Solvation intermediates (prep/ has final files)
+# Example solvation outputs generated before patching (prep/ has final files)
+examples/*/box.dat
+examples/*/molecule.*
+examples/*/solvated.*
+examples/*/waterbox.*
+
+# Nested solvation intermediates from older example layouts
 **/solvated/molecule.*
 **/solvated/solvated.*
 **/solvated/waterbox.*

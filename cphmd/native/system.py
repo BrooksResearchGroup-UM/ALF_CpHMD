@@ -845,6 +845,15 @@ def cons_harm_clear() -> None:
         raise wrap_exception(exc, SystemLoadError, "clearing harmonic constraints") from exc
 
 
+def noe_reset() -> None:
+    try:
+        ok = _pycharmm_restraints().noe_reset()
+        if ok is False:
+            raise SystemLoadError("pyCHARMM restraints.noe_reset returned failure")
+    except Exception as exc:
+        raise wrap_exception(exc, SystemLoadError, "resetting NOE restraints") from exc
+
+
 def nbonds_setup(
     *,
     cutnb: float,
@@ -1117,3 +1126,10 @@ def energy_get_total() -> float:
         return float(_pycharmm_energy().get_total())
     except Exception as exc:
         raise wrap_exception(exc, SystemLoadError, "querying total energy") from exc
+
+
+def energy_get_gradient_rms() -> float:
+    try:
+        return float(_pycharmm_energy().get_grms())
+    except Exception as exc:
+        raise wrap_exception(exc, SystemLoadError, "querying gradient RMS") from exc

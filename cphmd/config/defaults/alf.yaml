@@ -64,4 +64,5 @@ coupling: 0
 # Replica exchange (pH-ladder swaps between dynamics segments)
 replica_exchange:
   enabled: false
-  exchange_freq: 1000
+  # Use either exchange_interval_ps or exchange_interval_steps, not both.
+  exchange_interval_ps: 4.0

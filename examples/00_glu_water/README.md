@@ -42,6 +42,6 @@ sbatch submit.sh
 ## Output
 
 After convergence (~50-100 runs):
-- `solvated/analysis*/` — Bias parameters per iteration
-- `solvated/run*/` — MD trajectory data
+- `analysis*/` — Bias parameters per iteration
+- `run*/` — MD trajectory data
 - `plots/` — Energy profile convergence plots

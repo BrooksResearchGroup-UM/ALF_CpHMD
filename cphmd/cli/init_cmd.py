@@ -8,7 +8,7 @@ from pathlib import Path
 
 import typer
 
-from cphmd.cli.run_cmd import build_run_context
+from cphmd.cli.run_cmd import _sync_run_prep_metadata, apply_run_dir_override, build_run_context
 from cphmd.config.loader import NativeRuntimeConfig, load_config
 from cphmd.simulation.checkpoint import CheckpointManager
 from cphmd.simulation.context import LoopState
@@ -20,11 +20,14 @@ RNG_INIT_DOMAINS = ("rex", "dynamics", "velocity_init", "gimp_mc")
 def run_init(
     *,
     config_path: Path,
+    run_dir: Path | None = None,
     force: bool = False,
     reinit_build: bool = False,
     force_reinit: bool = False,
 ) -> None:
     cfg = load_config(config_path)
+    if run_dir is not None:
+        cfg = apply_run_dir_override(cfg, config_path, run_dir)
     state_dir = cfg.run_dir / "state"
     init_marker = state_dir / "initialized.json"
     tmp_dir = cfg.run_dir / ".init_tmp"
@@ -54,6 +57,7 @@ def run_init(
     try:
         status_summary.unlink(missing_ok=True)
         _maybe_run_setup_pipeline(cfg, reinit_build=reinit_build)
+        _sync_run_prep_metadata(cfg)
         state_dir.mkdir(parents=True, exist_ok=True)
         _write_initial_checkpoints(cfg)
         _write_rng_states(cfg)
@@ -122,12 +126,14 @@ def register(app: typer.Typer) -> None:
     @app.command("init")
     def _cmd(
         config: Path = typer.Option(..., "-c", "--config", exists=True),
+        run_dir: Path | None = typer.Option(None, "--run-dir", "-r"),
         force: bool = typer.Option(False, "--force"),
         reinit_build: bool = typer.Option(False, "--reinit-build"),
         force_reinit: bool = typer.Option(False, "--force-reinit"),
     ) -> None:
         run_init(
             config_path=config,
+            run_dir=run_dir,
             force=force,
             reinit_build=reinit_build,
             force_reinit=force_reinit,

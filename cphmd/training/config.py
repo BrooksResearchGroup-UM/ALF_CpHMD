@@ -128,11 +128,30 @@ class ALFReplicaExchangeConfig:
     """Compatibility configuration for native pH replica exchange."""
 
     enabled: bool = False
-    exchange_freq: int | None = 1000
+    exchange_interval_ps: float | None = None
+    exchange_interval_steps: int | None = None
+    exchange_freq: int | None = None
     exchange_every_segments: int | None = None
-    backend: str = "native"
 
     def __post_init__(self) -> None:
+        interval_values = {
+            "exchange_interval_ps": self.exchange_interval_ps,
+            "exchange_interval_steps": self.exchange_interval_steps,
+            "exchange_freq": self.exchange_freq,
+            "exchange_every_segments": self.exchange_every_segments,
+        }
+        present = [name for name, value in interval_values.items() if value is not None]
+        if len(present) > 1:
+            keys = ", ".join(f"replica_exchange.{name}" for name in present)
+            raise ValueError(f"conflicting replica exchange interval keys: {keys}")
+        if self.exchange_interval_ps is not None:
+            self.exchange_interval_ps = float(self.exchange_interval_ps)
+            if self.exchange_interval_ps <= 0:
+                raise ValueError("replica_exchange.exchange_interval_ps must be positive")
+        if self.exchange_interval_steps is not None:
+            self.exchange_interval_steps = int(self.exchange_interval_steps)
+            if self.exchange_interval_steps <= 0:
+                raise ValueError("replica_exchange.exchange_interval_steps must be positive")
         if self.exchange_freq is not None:
             self.exchange_freq = int(self.exchange_freq)
             if self.exchange_freq <= 0:
@@ -141,7 +160,6 @@ class ALFReplicaExchangeConfig:
             self.exchange_every_segments = int(self.exchange_every_segments)
             if self.exchange_every_segments <= 0:
                 raise ValueError("replica_exchange.exchange_every_segments must be positive")
-        self.backend = str(self.backend)
 
 
 @dataclass(init=False)
@@ -173,6 +191,10 @@ class ALFConfig:
     convergence_mode: ConvergenceMode = "population"
     cleanup_old_analysis: bool = False
     generate_hh_plots: bool = True
+    generate_dashboard_plots: bool = True
+    generate_population_plots: bool = False
+    generate_g_profiles_2d: bool = False
+    generate_g_profiles_3d: bool = False
     cent_ncres: int | bool = False
     use_presets: bool = False
     bias_guess: bool = True

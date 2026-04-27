@@ -8,6 +8,7 @@ cutoff thresholds for population analysis.
 from __future__ import annotations
 
 import os
+from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -71,15 +72,41 @@ def _get_parquet_metadata(file_path: str | Path) -> dict[str, str]:
         return {"file_path": str(file_path), "error": str(exc)}
 
 
-def discover_parquets(folder: Path | str, n_jobs: int = 1) -> pd.DataFrame:
+def _folder_list(folders: Path | str | Sequence[Path | str]) -> list[Path]:
+    if isinstance(folders, (str, Path)):
+        return [Path(folders)]
+    return [Path(folder) for folder in folders]
+
+
+def _get_parquet_metadata_for_root(args: tuple[Path, str, bool]) -> dict[str, str]:
+    root, file_path, use_root_as_simulation = args
+    metadata = _get_parquet_metadata(file_path)
+    if use_root_as_simulation:
+        metadata["Simulation"] = root.name
+        metadata["Input Folder"] = str(root)
+    return metadata
+
+
+def _canonical_ph_label(value) -> str:
+    return str(float(value))
+
+
+def discover_parquets(
+    folder: Path | str | Sequence[Path | str],
+    n_jobs: int = 1,
+    *,
+    simulation_from_folder: bool = False,
+) -> pd.DataFrame:
     """Find all ``.parquet`` files recursively and extract schema metadata.
 
     Parameters
     ----------
-    folder : Path
-        Root directory to search.
+    folder : Path or sequence of Path
+        Root directory, or repeat directories, to search.
     n_jobs : int
         Number of threads for parallel I/O (default 1 = sequential).
+    simulation_from_folder : bool
+        If true, use each input folder name as the ``Simulation`` label.
 
     Returns
     -------
@@ -87,23 +114,46 @@ def discover_parquets(folder: Path | str, n_jobs: int = 1) -> pd.DataFrame:
         One row per file with columns: ``file_path``, ``pH``,
         ``Simulation``, ``nsubsites``, etc.
     """
-    folder = Path(folder)
-    parquet_files: list[str] = []
-    for root, _dirs, files in os.walk(folder):
-        for fname in files:
-            if fname.endswith(".parquet"):
-                parquet_files.append(os.path.join(root, fname))
+    folders = _folder_list(folder)
+    use_root_as_simulation = simulation_from_folder or len(folders) > 1
+    parquet_jobs: list[tuple[Path, str, bool]] = []
+    for folder_root in folders:
+        for root, _dirs, files in os.walk(folder_root):
+            for fname in files:
+                if fname.endswith(".parquet") and not fname.startswith(".native_lambda_"):
+                    parquet_jobs.append(
+                        (
+                            folder_root,
+                            os.path.join(root, fname),
+                            use_root_as_simulation,
+                        )
+                    )
 
-    if not parquet_files:
+    if not parquet_jobs:
         return pd.DataFrame()
 
     if n_jobs > 1:
         with ThreadPoolExecutor(max_workers=n_jobs) as pool:
-            metadata_list = list(pool.map(_get_parquet_metadata, parquet_files))
+            metadata_list = list(pool.map(_get_parquet_metadata_for_root, parquet_jobs))
     else:
-        metadata_list = [_get_parquet_metadata(f) for f in parquet_files]
+        metadata_list = [_get_parquet_metadata_for_root(job) for job in parquet_jobs]
 
-    return pd.DataFrame(metadata_list)
+    df = pd.DataFrame(metadata_list)
+    if "error" in df.columns and df["error"].notna().any():
+        bad = df.loc[df["error"].notna(), ["file_path", "error"]]
+        raise RuntimeError(
+            f"metadata scan failed for parquet files: {bad.to_dict('records')}"
+        )
+    if "pH" not in df.columns and "ph" in df.columns:
+        df["pH"] = df["ph"]
+    if "pH" in df.columns:
+        try:
+            df["pH"] = df["pH"].map(_canonical_ph_label)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError("invalid pH metadata in discovered parquets") from exc
+    if "Simulation" not in df.columns and "simulation" in df.columns:
+        df["Simulation"] = df["simulation"]
+    return df
 
 
 # ---------------------------------------------------------------------------
@@ -134,7 +184,15 @@ def build_site_map(patches_path: Path | str) -> pd.DataFrame:
     df["site"] = extracted[0].astype(int)
     df["sub"] = extracted[1].astype(int)
 
-    return df[["select", "segid", "resid", "patch", "tag", "site", "sub"]]
+    df["column"] = (
+        df["segid"].astype(str).str.strip()
+        + " "
+        + df["resid"].astype(str).str.strip()
+        + " "
+        + df["patch"].astype(str).str.strip()
+    )
+
+    return df[["select", "column", "segid", "resid", "patch", "tag", "site", "sub"]]
 
 
 def get_site_columns(site_map: pd.DataFrame, site_index: int) -> list[str]:
@@ -152,8 +210,37 @@ def get_site_columns(site_map: pd.DataFrame, site_index: int) -> list[str]:
     list[str]
         Sorted list of SELECT labels belonging to this site.
     """
-    mask = site_map["site"] == site_index
-    return sorted(site_map.loc[mask, "select"].tolist())
+    site_rows = site_map[site_map["site"] == site_index].sort_values("sub")
+    return site_rows["select"].tolist()
+
+
+def resolve_site_columns(
+    site_map: pd.DataFrame,
+    site_index: int,
+    metadata_df: pd.DataFrame,
+) -> list[str]:
+    """Return site columns compatible with the discovered parquet schema."""
+    select_columns = get_site_columns(site_map, site_index)
+    if not select_columns or "column" not in site_map.columns or metadata_df.empty:
+        return select_columns
+
+    site_rows = site_map[site_map["site"] == site_index].sort_values("sub")
+    native_columns = site_rows["column"].tolist()
+    if not native_columns:
+        return select_columns
+
+    try:
+        pq = _parquet()
+        file_path = str(metadata_df["file_path"].iloc[0])
+        schema_names = set(pq.ParquetFile(file_path).schema_arrow.names)
+    except Exception:
+        return select_columns
+
+    if set(select_columns).issubset(schema_names):
+        return select_columns
+    if set(native_columns).issubset(schema_names):
+        return native_columns
+    return select_columns
 
 
 # ---------------------------------------------------------------------------
@@ -167,8 +254,10 @@ def _read_parquet_columns(file_path: str, columns: list[str]) -> pd.DataFrame:
         pq = _parquet()
         table = pq.read_table(file_path, columns=columns)
         return _dequantize_shrinker_columns(table)
-    except Exception:
-        return pd.DataFrame()
+    except Exception as exc:
+        raise RuntimeError(
+            f"failed to read parquet columns {columns!r} from {file_path}"
+        ) from exc
 
 
 def load_lambda_data(
@@ -494,6 +583,33 @@ def compute_total_population(
     return populations, errors_out
 
 
+def compute_simulation_populations(
+    data: dict[str, dict[str, pd.DataFrame]],
+) -> tuple[dict[str, dict[str, pd.Series]], dict[str, dict[str, pd.Series]]]:
+    """Compute one population vector per independent simulation and pH.
+
+    The production workflow commonly runs ``sim_1``, ``sim_2``, and ``sim_3``
+    as separate jobs.  Keeping those entries separate gives the bootstrap a
+    real repeat axis while pooled populations remain available for plotting.
+    """
+    populations: dict[str, dict[str, pd.Series]] = {}
+    errors_out: dict[str, dict[str, pd.Series]] = {}
+
+    for ph, sim_dict in data.items():
+        for sim, df in sim_dict.items():
+            if df.empty:
+                continue
+            total_sum = df.sum().sum()
+            if total_sum == 0:
+                pop = pd.Series(0.0, index=df.columns)
+            else:
+                pop = df.sum(axis=0) / total_sum
+            populations.setdefault(ph, {})[sim] = pop
+            errors_out.setdefault(ph, {})[sim] = pd.Series(0.0, index=df.columns)
+
+    return populations, errors_out
+
+
 # ---------------------------------------------------------------------------
 # Prepare data for bootstrap / HH fitting
 # ---------------------------------------------------------------------------
@@ -528,10 +644,11 @@ def prepare_fit_data(
     combined_err: dict[str, list[float]] = {}
 
     for ph, sim_dict in populations.items():
+        ph_key = _canonical_ph_label(ph)
         for sim, pop_series in sim_dict.items():
-            combined_pop.setdefault(ph, []).append(float(pop_series[state_columns[0]]))
+            combined_pop.setdefault(ph_key, []).append(float(pop_series[state_columns[0]]))
             if errors is not None:
-                combined_err.setdefault(ph, []).append(
+                combined_err.setdefault(ph_key, []).append(
                     float(errors[ph][sim][state_columns[0]])
                 )
 

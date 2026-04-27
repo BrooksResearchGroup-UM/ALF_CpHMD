@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import atexit
 import os
-import random
+import secrets
 import shutil
 import tempfile
 import time
@@ -160,7 +160,7 @@ def ensure_patches_streamed(*, force: bool = False) -> Path:
     tmp_root = Path(os.environ.get("TMPDIR", tempfile.gettempdir()))
     _remove_stale_patch_tmpdirs(tmp_root)
 
-    suffix = random.getrandbits(32)
+    suffix = secrets.token_hex(8)
     stream_dir = tmp_root / f"{_PATCH_STREAM_DIR_PREFIX}{os.getpid()}_{suffix}"
     stream_dir.mkdir(parents=True, exist_ok=False)
     _register_patch_tmpdir(stream_dir)

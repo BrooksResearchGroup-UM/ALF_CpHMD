@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import warnings
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -28,6 +27,7 @@ class ShrinkerMetadata:
     nsites: int
     nsubsites: tuple[int, ...] | list[int]
     lambda_scale: int
+    replica_label: int | None = None
     title: str | None = None
     simulation: str | None = None
     name: str | None = None
@@ -55,10 +55,15 @@ class ShrinkerMetadata:
             raise ValueError("nsubsites must start with 0 for the environment block")
         if any(value < 1 or value > self.nsites for value in self.nsubsites[1:]):
             raise ValueError("nsubsites values after the environment block must be in [1, nsites]")
+        if self.replica_label is not None:
+            self.replica_label = int(self.replica_label)
+            if self.replica_label < 0:
+                raise ValueError("replica_label must be non-negative")
 
     def to_parquet_kv(self) -> dict[str, str]:
         metadata = {
             "pH": _format_scalar(self.ph),
+            "ph": _format_scalar(self.ph),
             "nblocks": _format_scalar(self.nblocks),
             "nsites": _format_scalar(self.nsites),
             "nsubsites": _format_nsubsites(self.nsubsites),
@@ -67,10 +72,12 @@ class ShrinkerMetadata:
         }
 
         optional_fields = {
+            "replica_label": self.replica_label,
             "Title": self.title,
             "Simulation": self.simulation,
             "Name": self.name,
             "Temperature": self.temperature,
+            "temperature": self.temperature,
             "Time Step": self.time_step,
             "Time Start": self.time_start,
             "Time End": self.time_end,
@@ -122,13 +129,9 @@ def _build_table(
         raw = np.asarray(lambda_matrix, dtype=np.float64)
         out_of_range = (raw < 0.0) | (raw > 1.0)
         if np.any(out_of_range):
-            warnings.warn(
-                (
-                    f"{int(np.count_nonzero(out_of_range))} lambda value(s) out of range; "
-                    "clipping to [0, 1]"
-                ),
-                UserWarning,
-                stacklevel=3,
+            raise ValueError(
+                f"{int(np.count_nonzero(out_of_range))} lambda value(s) out of range for "
+                "SHRINKER precision; expected all values in [0, 1]"
             )
 
         scaled = np.rint(raw * metadata.lambda_scale)

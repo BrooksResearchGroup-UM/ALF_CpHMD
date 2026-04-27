@@ -411,7 +411,7 @@ def compute_theoretical_populations(
       The micro-pKa is for the reaction: original + H+ -> UNEG
 
     Multiple substates of the same type compete via their micro-pKa values:
-    - HIS: UPOS HSD (pKa=6.6) vs HSE (pKa=7.0) -> HSD:HSE ~ 70:30
+    - HIS: UPOS HSD (pKa=7.25) vs HSE (pKa=6.64)
     - ASP: UNEG ASH1 (pKa=3.67) vs ASH2 (pKa=3.67) -> 50:50
 
     Args:

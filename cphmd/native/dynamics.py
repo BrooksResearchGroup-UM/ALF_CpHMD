@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import tempfile
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -31,12 +31,13 @@ def run_segment(
     dynamics_backend: DynamicsBackend | str | None = None,
     lambda_headers: tuple[str, ...] | list[str] | None = None,
     iseed: int | None = None,
-    blade: bool | None = None,
+    lambda_parquet_path: str | Path | None = None,
 ) -> SegmentResult:
     try:
         import pycharmm
 
-        backend = _resolve_backend(dynamics_backend, blade=blade)
+        backend = _resolve_backend(dynamics_backend)
+        native_lambda_parquet = _native_lambda_parquet_path(lambda_parquet_path)
         script_kwargs = dict(
             start=start,
             restart=False,
@@ -69,13 +70,14 @@ def run_segment(
             script_kwargs["blade"] = True
         if iseed is not None:
             _set_rng_seeds(pycharmm, int(iseed))
-        with tempfile.TemporaryDirectory(prefix="cphmd_lambda_") as tmpdir:
-            lambda_parquet_path = Path(tmpdir) / "segment.parquet"
-            script_kwargs["lambda_parquet"] = lambda_parquet_path
+        native_lambda_parquet.parent.mkdir(parents=True, exist_ok=True)
+        _unlink_if_present(native_lambda_parquet)
+        try:
+            script_kwargs["lambda_parquet"] = native_lambda_parquet
             script = pycharmm.DynamicsScript(**script_kwargs)
             script.run()
             lambda_matrix = _lambda_matrix_from_parquet(
-                lambda_parquet_path,
+                native_lambda_parquet,
                 expected_columns=len(lambda_headers) if lambda_headers is not None else None,
             )
             return SegmentResult(
@@ -86,6 +88,8 @@ def run_segment(
                     row_count=lambda_matrix.shape[0],
                 ),
             )
+        finally:
+            _unlink_if_present(native_lambda_parquet)
     except DynamicsRunError:
         raise
     except Exception as exc:
@@ -135,22 +139,29 @@ def preflight_domdec_energy(*, gpu: bool) -> None:
         raise wrap_exception(exc, DynamicsRunError, "preflighting DOMDEC energy") from exc
 
 
-def _resolve_backend(
-    dynamics_backend: DynamicsBackend | str | None,
-    *,
-    blade: bool | None,
-) -> DynamicsBackend:
+def _resolve_backend(dynamics_backend: DynamicsBackend | str | None) -> DynamicsBackend:
     if dynamics_backend is not None:
         return parse_dynamics_backend(dynamics_backend)
-    if blade is None:
-        return DynamicsBackend.BLADE
-    return DynamicsBackend.BLADE if blade else DynamicsBackend.DOMDEC_CPU
+    return DynamicsBackend.BLADE
 
 
 def _ntrfrq_for_backend(backend: DynamicsBackend, *, nsavl: int) -> int:
     if backend is DynamicsBackend.BLADE:
         return 0
     return max(1, int(nsavl))
+
+
+def _native_lambda_parquet_path(path: str | Path | None) -> Path:
+    if path is not None:
+        return Path(path)
+    return Path.cwd() / ".cphmd_native_lambda" / f"lambda_{os.getpid()}.parquet"
+
+
+def _unlink_if_present(path: Path) -> None:
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return
 
 
 def enable_fast_routines() -> None:

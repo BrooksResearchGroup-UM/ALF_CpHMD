@@ -15,7 +15,7 @@ This example demonstrates the recommended production setup: `mpirun` with
 
 - pyCHARMM environment with mpi4py (`conda activate chm_12.9`)
 - Multiple GPUs (one per replica; default 5 in `submit.sh`)
-- Pre-built `solvated/prep/` files (included, or run `python run.py solvate && python run.py patch`)
+- Pre-built `prep/` files (included, or run `python run.py solvate && python run.py patch`)
 
 ## Quick Start
 
@@ -24,7 +24,8 @@ This example demonstrates the recommended production setup: `mpirun` with
 sbatch submit.sh
 
 # Or run locally with 2 GPUs
-mpirun -np 2 cphmd run alf -c cphmd_config.yaml --pH
+cphmd init -c cphmd_config.yaml
+mpirun -np 2 cphmd run -c cphmd_config.yaml
 
 # Setup steps (if prep/ is missing)
 python run.py solvate
@@ -57,5 +58,5 @@ For multi-site proteins with different macro-pKas (e.g., ASP + LYS),
 | GPUs | 1 | 5 (configurable) |
 | Replicas | 1 | 5 (auto from MPI size) |
 | pH coupling | off (`pH` omitted) | on (`pH: true`, auto pKa=10.5) |
-| Launch | `python run.py alf` | `mpirun -np 5 cphmd run alf -c cphmd_config.yaml --pH` |
+| Launch | `python run.py alf` | `cphmd init -c cphmd_config.yaml && mpirun -np 5 cphmd run -c cphmd_config.yaml` |
 | SLURM | `--gres=gpu:1` | `--ntasks=5 --gpus-per-task=1` |

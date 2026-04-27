@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import asdict
-from importlib import metadata
 from pathlib import Path
 from types import ModuleType
 from typing import Any, Iterable
@@ -11,6 +10,7 @@ from typing import Any, Iterable
 import numpy as np
 
 from cphmd.simulation.context import LoopState, RunContext
+from cphmd.utils.pycharmm_version import resolve_pycharmm_version_string
 from cphmd.utils.native_fingerprint import compute
 
 
@@ -29,7 +29,9 @@ class CheckpointManager:
     ):
         self.ctx = ctx
         self.native_modules = tuple(native_modules)
-        self.pycharmm_version = pycharmm_version or metadata.version("pycharmm")
+        self.pycharmm_version = (
+            pycharmm_version if pycharmm_version is not None else resolve_pycharmm_version_string()
+        )
         self.native_api_fingerprint = compute(self.native_modules)
         self.require_charmm_restart = bool(require_charmm_restart)
 

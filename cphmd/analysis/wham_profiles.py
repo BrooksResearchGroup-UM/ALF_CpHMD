@@ -32,6 +32,9 @@ def plot_wham_profiles(
     output_dir: Path | None = None,
     main_plots_dir: Path | None = None,
     fmt: str = "png",
+    include_1d: bool = True,
+    include_2d: bool = True,
+    include_cross: bool = True,
 ) -> list[Path]:
     """Plot WHAM free energy profiles from multisite/G{n}.dat files.
 
@@ -50,6 +53,9 @@ def plot_wham_profiles(
         main_plots_dir: When set, outputs to organized subdirs under this path
             (wham_1d/, wham_transitions/, wham_2d/, wham_cross/).
         fmt: Image format (png, pdf, svg).
+        include_1d: Plot ptype 0/1 1D WHAM profiles.
+        include_2d: Plot ptype 2 joint WHAM profiles.
+        include_cross: Plot ptype 3 cross-site WHAM profiles when msprof is enabled.
 
     Returns:
         List of saved plot file paths.
@@ -74,7 +80,7 @@ def plot_wham_profiles(
     saved: list[Path] = []
 
     # Walk the G file index exactly as CUDA enumerates profiles
-    iG = 1
+    i_g = 1
     iblock = 0
 
     for isite in range(len(nsubs)):
@@ -86,12 +92,12 @@ def plot_wham_profiles(
                 # --- ptype 0: 1D substituent profiles ---
                 g1_data: dict[int, np.ndarray] = {}
                 for i in range(ns):
-                    g_path = ms_dir / f"G{iG}.dat"
-                    if g_path.exists():
+                    g_path = ms_dir / f"G{i_g}.dat"
+                    if include_1d and g_path.exists():
                         g1_data[i] = np.loadtxt(g_path)
-                    iG += 1
+                    i_g += 1
 
-                if g1_data:
+                if include_1d and g1_data:
                     p = _plot_1d_substituent(
                         g1_data, ns, isite, itt, wham_1d_dir, fmt,
                     )
@@ -102,12 +108,12 @@ def plot_wham_profiles(
                 g12_data: dict[tuple[int, int], np.ndarray] = {}
                 for i in range(ns):
                     for j in range(i + 1, ns):
-                        g_path = ms_dir / f"G{iG}.dat"
-                        if g_path.exists():
+                        g_path = ms_dir / f"G{i_g}.dat"
+                        if include_1d and g_path.exists():
                             g12_data[(i, j)] = np.loadtxt(g_path)
-                        iG += 1
+                        i_g += 1
 
-                if g12_data:
+                if include_1d and g12_data:
                     p = _plot_1d_transition(
                         g12_data, ns, isite, itt, wham_trans_dir, fmt,
                     )
@@ -119,12 +125,12 @@ def plot_wham_profiles(
                     g2_data: dict[tuple[int, int], np.ndarray] = {}
                     for i in range(ns):
                         for j in range(i + 1, ns):
-                            g_path = ms_dir / f"G{iG}.dat"
-                            if g_path.exists():
+                            g_path = ms_dir / f"G{i_g}.dat"
+                            if include_2d and g_path.exists():
                                 g2_data[(i, j)] = np.loadtxt(g_path)
-                            iG += 1
+                            i_g += 1
 
-                    if g2_data:
+                    if include_2d and g2_data:
                         p = _plot_2d_joint(
                             g2_data, ns, isite, itt, wham_2d_dir, fmt,
                         )
@@ -136,12 +142,12 @@ def plot_wham_profiles(
                 g11_data: dict[tuple[int, int], np.ndarray] = {}
                 for i in range(nsubs[isite]):
                     for j in range(nsubs[jsite]):
-                        g_path = ms_dir / f"G{iG}.dat"
-                        if g_path.exists():
+                        g_path = ms_dir / f"G{i_g}.dat"
+                        if include_cross and g_path.exists():
                             g11_data[(i, j)] = np.loadtxt(g_path)
-                        iG += 1
+                        i_g += 1
 
-                if g11_data:
+                if include_cross and g11_data:
                     p = _plot_cross_site(
                         g11_data, nsubs[isite], nsubs[jsite],
                         isite, jsite, itt, wham_cross_dir, fmt,
@@ -287,14 +293,14 @@ def _plot_2d_joint(
     fig = plt.figure(figsize=(5 * ncols, 4 * nrows))
 
     first = next(iter(g2_data.values()))
-    X, Y = _make_2d_grid(len(first))
-    bins = X.shape[0]
+    grid_x, grid_y = _make_2d_grid(len(first))
+    bins = grid_x.shape[0]
 
     for (i, j), g in sorted(g2_data.items()):
         g2d = g.reshape(bins, bins)
         subplot_idx = i * ncols + j
         ax = fig.add_subplot(nrows, ncols, subplot_idx, projection="3d")
-        ax.plot_surface(X, Y, g2d, cmap="viridis", alpha=0.8)
+        ax.plot_surface(grid_x, grid_y, g2d, cmap="viridis", alpha=0.8)
         ax.set_xlabel(f"$\\lambda_{{{i}}}$", fontsize=9)
         ax.set_ylabel(f"$\\lambda_{{{j}}}$", fontsize=9)
         ax.set_zlabel("G", fontsize=9)
@@ -329,14 +335,14 @@ def _plot_cross_site(
     fig = plt.figure(figsize=(5 * ns_j, 4 * ns_i))
 
     first = next(iter(g11_data.values()))
-    X, Y = _make_2d_grid(len(first))
-    bins = X.shape[0]
+    grid_x, grid_y = _make_2d_grid(len(first))
+    bins = grid_x.shape[0]
 
     for (i, j), g in sorted(g11_data.items()):
         g2d = g.reshape(bins, bins)
         subplot_idx = i * ns_j + j + 1
         ax = fig.add_subplot(ns_i, ns_j, subplot_idx, projection="3d")
-        ax.plot_surface(X, Y, g2d, cmap="viridis", alpha=0.8)
+        ax.plot_surface(grid_x, grid_y, g2d, cmap="viridis", alpha=0.8)
         ax.set_xlabel(f"$\\lambda_{{{i}}}^{{s{site_i + 1}}}$", fontsize=9)
         ax.set_ylabel(f"$\\lambda_{{{j}}}^{{s{site_j + 1}}}$", fontsize=9)
         ax.set_zlabel("G", fontsize=9)

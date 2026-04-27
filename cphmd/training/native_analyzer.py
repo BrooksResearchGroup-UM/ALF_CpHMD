@@ -15,8 +15,8 @@ from cphmd.core.bias_analyzer import BiasAnalyzer
 from cphmd.core.g_imp_provisioner import GImpProvisioner
 from cphmd.simulation.context import LoopState, RunContext
 from cphmd.training.bias_snapshot import BiasSnapshot
+from cphmd.training.lambda_compactor import compact_analysis_lambda
 from cphmd.training.segment_cache import SegmentCache
-from cphmd.utils.lambda_io import write_lambda_parquet
 
 
 @dataclass
@@ -44,8 +44,8 @@ class NativeALFAnalyzer:
             )
 
     def analyze(self, *, state: LoopState, cache: SegmentCache) -> BiasSnapshot:
-        if not cache.lambda_arrays:
-            raise RuntimeError("ALF cycle requested before any lambda segments were cached")
+        if not cache.segment_ids:
+            raise RuntimeError("ALF cycle requested before any segment ids were cached")
 
         analysis_idx = state.cycle_idx + 1
         analysis_dir = self.work_dir / f"analysis{analysis_idx}"
@@ -57,7 +57,7 @@ class NativeALFAnalyzer:
             self._ensure_g_imp(state.phase)
         self._barrier()
 
-        self._write_rank_lambda_files(analysis_dir, cache)
+        self._compact_rank_lambda_file(analysis_idx, cache.segment_ids)
         self._barrier()
 
         home = os.getcwd()
@@ -182,18 +182,20 @@ class NativeALFAnalyzer:
                 nblocks = int(self.alf_info["nblocks"])
                 np.savetxt(prev_path, np.zeros((nblocks, nblocks)), fmt=" %10.5f")
 
-    def _write_rank_lambda_files(self, analysis_dir: Path, cache: SegmentCache) -> None:
-        data_dir = analysis_dir / "data"
-        columns = ["time", *self.ctx.lambda_headers]
-        for repeat_idx, lambda_matrix in enumerate(cache.lambda_arrays):
-            lambda_matrix = np.asarray(lambda_matrix, dtype=np.float32)
-            times = np.arange(lambda_matrix.shape[0], dtype=np.float32)
-            out = np.column_stack([times, lambda_matrix])
-            write_lambda_parquet(
-                data_dir / f"Lambda.{repeat_idx}.{self.ctx.rank}.parquet",
-                out,
-                column_names=columns,
-            )
+    def _compact_rank_lambda_file(
+        self,
+        analysis_idx: int,
+        segment_ids: tuple[int, ...],
+    ) -> Path:
+        return compact_analysis_lambda(
+            run_dir=self.ctx.run_dir,
+            analysis_idx=analysis_idx,
+            replica_idx=self.ctx.rank,
+            segment_ids=segment_ids,
+            lambda_headers=self.ctx.lambda_headers,
+            output_root=self.work_dir,
+            replica_ph_values=self.ctx.replica_ph_values,
+        )
 
     def _ensure_g_imp(self, phase: int) -> None:
         resolve = getattr(self.config, "resolve_g_imp_bins", None)

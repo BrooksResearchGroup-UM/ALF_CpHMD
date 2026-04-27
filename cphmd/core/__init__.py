@@ -54,26 +54,6 @@ _EXPORTS: dict[str, tuple[str, str, str]] = {
         "ProductionConfig",
         "cphmd.training.production_hooks.ProductionConfig",
     ),
-    "ReplicaExchangeConfig": (
-        "cphmd.core.replica_exchange",
-        "_ReplicaExchangeConfig",
-        "cphmd.simulation.rex_driver.REXConfig",
-    ),
-    "ExchangeState": (
-        "cphmd.core.replica_exchange",
-        "_ExchangeState",
-        "cphmd.simulation.rex_driver.ExchangeStats",
-    ),
-    "ReplicaExchanger": (
-        "cphmd.core.replica_exchange",
-        "_ReplicaExchanger",
-        "cphmd.simulation.rex_driver.REXDriver",
-    ),
-    "DynamicsRunner": (
-        "cphmd.core.dynamics_runner",
-        "_DynamicsRunner",
-        "cphmd.simulation.loop.SimulationLoop",
-    ),
     "ALFInfo": ("cphmd.core.alf_utils", "ALFInfo", "cphmd.core.alf_utils.ALFInfo"),
     "PatchSpec": ("cphmd.core.patch_spec", "PatchSpec", "cphmd.core.patch_spec.PatchSpec"),
     "PATCH_REGISTRY": (
@@ -485,11 +465,6 @@ _EXPORTS: dict[str, tuple[str, str, str]] = {
 
 
 _STUB_EXPORTS: dict[str, tuple[str, str]] = {
-    "ALFSimulation": ("cphmd.simulation.loop.SimulationLoop with cphmd.training.ALFHooks", "class"),
-    "run_alf_simulation": (
-        "the CLI wiring that builds cphmd.simulation.loop.SimulationLoop",
-        "function",
-    ),
     "BlockConfig": ("cphmd.native.block", "class"),
     "build_block_command": ("cphmd.native.block", "function"),
     "read_variable_file": ("cphmd.native.block", "function"),
@@ -506,7 +481,6 @@ _STUB_EXPORTS: dict[str, tuple[str, str]] = {
     "BlockGeneratorConfig": ("cphmd.native.block", "class"),
     "BlockGeneratorResult": ("cphmd.native.block", "class"),
     "generate_block_files": ("cphmd.native.block", "function"),
-    "ProductionRunner": ("cphmd.training.production_hooks.ProductionHooks", "class"),
     "build_nsubsites_str": ("cphmd.training.production_hooks.ProductionHooks", "function"),
     "build_parquet_metadata": ("cphmd.training.production_hooks.ProductionHooks", "function"),
     "find_resume_point": ("cphmd.training.production_hooks.ProductionHooks", "function"),
@@ -519,10 +493,6 @@ _STUB_EXPORTS: dict[str, tuple[str, str]] = {
 _DEPRECATED_EXPORT_NAMES = {
     "ALFConfig",
     "ProductionConfig",
-    "ReplicaExchangeConfig",
-    "ExchangeState",
-    "ReplicaExchanger",
-    "DynamicsRunner",
 }
 
 

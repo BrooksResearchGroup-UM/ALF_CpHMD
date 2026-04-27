@@ -625,6 +625,33 @@ def _load_shift_file(
     return default_value
 
 
+def _parse_expected_lambda_file(
+    filepath: Path,
+    expected_analysis_idx: int,
+) -> tuple[int, int]:
+    from cphmd.utils.lambda_io import parse_lambda_filename
+
+    analysis_idx, replica_idx = parse_lambda_filename(filepath)
+    if analysis_idx != expected_analysis_idx:
+        raise ValueError(
+            f"{filepath} has analysis index {analysis_idx}; "
+            f"expected analysis index {expected_analysis_idx}"
+        )
+    return analysis_idx, replica_idx
+
+
+def _find_analysis_lambda_files(data_dir: Path) -> list[Path]:
+    from cphmd.utils.lambda_io import parse_lambda_filename
+
+    for suffix in (".parquet", ".dat", ".lmd"):
+        lambda_fpaths = sorted(path for path in data_dir.glob(f"Lambda*{suffix}") if path.is_file())
+        if lambda_fpaths:
+            for fpath in lambda_fpaths:
+                parse_lambda_filename(fpath)
+            return lambda_fpaths
+    return []
+
+
 def _load_simulation_data(
     alf_info: ALFInfo,
     start_cycle: int,
@@ -645,7 +672,7 @@ def _load_simulation_data(
     Returns:
         Tuple of (Lambda, b_list, c_list, x_list, s_list, jk_map).
     """
-    from cphmd.utils.lambda_io import find_lambda_files, read_lambda_values
+    from cphmd.utils.lambda_io import read_lambda_values
 
     ncentral = alf_info.ncentral
     NF = end_cycle - start_cycle + 1
@@ -658,7 +685,8 @@ def _load_simulation_data(
     jk_map: list[tuple[int, int, int]] = []
 
     for i in range(NF):
-        analysis_dir = Path(f"../analysis{start_cycle + i}")
+        expected_analysis_idx = start_cycle + i
+        analysis_dir = Path(f"../analysis{expected_analysis_idx}")
         data_dir = analysis_dir / "data"
 
         if not data_dir.is_dir():
@@ -674,23 +702,20 @@ def _load_simulation_data(
         x_fix_shift = _load_shift_file(analysis_dir, "x_fix_shift.dat", 0.0)
         s_fix_shift = _load_shift_file(analysis_dir, "s_fix_shift.dat", 0.0)
 
-        lambda_fpaths = find_lambda_files(data_dir)
+        lambda_fpaths = _find_analysis_lambda_files(data_dir)
 
         for fpath in lambda_fpaths:
-            try:
-                Lambda.append(read_lambda_values(fpath)[(skipE - 1)::skipE, :])
-                j, k = map(int, fpath.name.split(".")[1:3])
-                jk_map.append((j, k, i))
-                b_old = np.loadtxt(analysis_dir / "b_prev.dat")
-                b_list.append(b_old + b_shift * (k - ncentral) + b_fix_shift)
-                c_old = np.loadtxt(analysis_dir / "c_prev.dat")
-                c_list.append(c_old + c_shift * (k - ncentral) + c_fix_shift)
-                x_old = np.loadtxt(analysis_dir / "x_prev.dat")
-                x_list.append(x_old + x_shift * (k - ncentral) + x_fix_shift)
-                s_old = np.loadtxt(analysis_dir / "s_prev.dat")
-                s_list.append(s_old + s_shift * (k - ncentral) + s_fix_shift)
-            except (OSError, ValueError) as e:
-                logger.warning("Error loading file %s: %s", fpath, e)
+            analysis_idx, replica_idx = _parse_expected_lambda_file(fpath, expected_analysis_idx)
+            Lambda.append(read_lambda_values(fpath)[(skipE - 1)::skipE, :])
+            jk_map.append((analysis_idx, replica_idx, i))
+            b_old = np.loadtxt(analysis_dir / "b_prev.dat")
+            b_list.append(b_old + b_shift * (replica_idx - ncentral) + b_fix_shift)
+            c_old = np.loadtxt(analysis_dir / "c_prev.dat")
+            c_list.append(c_old + c_shift * (replica_idx - ncentral) + c_fix_shift)
+            x_old = np.loadtxt(analysis_dir / "x_prev.dat")
+            x_list.append(x_old + x_shift * (replica_idx - ncentral) + x_fix_shift)
+            s_old = np.loadtxt(analysis_dir / "s_prev.dat")
+            s_list.append(s_old + s_shift * (replica_idx - ncentral) + s_fix_shift)
 
     return Lambda, b_list, c_list, x_list, s_list, jk_map
 
@@ -723,12 +748,10 @@ def _load_bias_params(
         - c_list: quadratic coupling matrices, one per simulation
         - x_list: omega coupling matrices, one per simulation
         - s_list: chi coupling matrices, one per simulation
-        - jk_map: (j, k, analysis_idx) tuples for each simulation
+        - jk_map: (analysis_idx, replica_idx, analysis_offset) tuples for each simulation
         - lambda_files: Path objects for each lambda file (same order as bias lists)
         - skipE: passthrough of the subsample interval
     """
-    from cphmd.utils.lambda_io import find_lambda_files
-
     ncentral = alf_info.ncentral
     NF = end_cycle - start_cycle + 1
 
@@ -740,7 +763,8 @@ def _load_bias_params(
     lambda_files: list[Path] = []
 
     for i in range(NF):
-        analysis_dir = Path(f"../analysis{start_cycle + i}")
+        expected_analysis_idx = start_cycle + i
+        analysis_dir = Path(f"../analysis{expected_analysis_idx}")
         data_dir = analysis_dir / "data"
 
         if not data_dir.is_dir():
@@ -756,23 +780,20 @@ def _load_bias_params(
         x_fix_shift = _load_shift_file(analysis_dir, "x_fix_shift.dat", 0.0)
         s_fix_shift = _load_shift_file(analysis_dir, "s_fix_shift.dat", 0.0)
 
-        lambda_fpaths = find_lambda_files(data_dir)
+        lambda_fpaths = _find_analysis_lambda_files(data_dir)
 
         for fpath in lambda_fpaths:
-            try:
-                j, k = map(int, fpath.name.split(".")[1:3])
-                jk_map.append((j, k, i))
-                lambda_files.append(fpath)
-                b_old = np.loadtxt(analysis_dir / "b_prev.dat")
-                b_list.append(b_old + b_shift * (k - ncentral) + b_fix_shift)
-                c_old = np.loadtxt(analysis_dir / "c_prev.dat")
-                c_list.append(c_old + c_shift * (k - ncentral) + c_fix_shift)
-                x_old = np.loadtxt(analysis_dir / "x_prev.dat")
-                x_list.append(x_old + x_shift * (k - ncentral) + x_fix_shift)
-                s_old = np.loadtxt(analysis_dir / "s_prev.dat")
-                s_list.append(s_old + s_shift * (k - ncentral) + s_fix_shift)
-            except (OSError, ValueError) as e:
-                logger.warning("Error loading file %s: %s", fpath, e)
+            analysis_idx, replica_idx = _parse_expected_lambda_file(fpath, expected_analysis_idx)
+            jk_map.append((analysis_idx, replica_idx, i))
+            lambda_files.append(fpath)
+            b_old = np.loadtxt(analysis_dir / "b_prev.dat")
+            b_list.append(b_old + b_shift * (replica_idx - ncentral) + b_fix_shift)
+            c_old = np.loadtxt(analysis_dir / "c_prev.dat")
+            c_list.append(c_old + c_shift * (replica_idx - ncentral) + c_fix_shift)
+            x_old = np.loadtxt(analysis_dir / "x_prev.dat")
+            x_list.append(x_old + x_shift * (replica_idx - ncentral) + x_fix_shift)
+            s_old = np.loadtxt(analysis_dir / "s_prev.dat")
+            s_list.append(s_old + s_shift * (replica_idx - ncentral) + s_fix_shift)
 
     return b_list, c_list, x_list, s_list, jk_map, lambda_files, skipE
 
@@ -857,8 +878,8 @@ def _compute_gshift_data(
     """
     nf = len(jk_map)
     gshift_data = np.zeros((nf, nblocks), dtype=np.float64)
-    for sim_idx, (j, k, analysis_idx) in enumerate(jk_map):
-        analysis_dir = f"../analysis{start_cycle + analysis_idx}"
+    for sim_idx, (_analysis_idx, replica_idx, analysis_offset) in enumerate(jk_map):
+        analysis_dir = f"../analysis{start_cycle + analysis_offset}"
         try:
             b_shift_arr = np.atleast_1d(
                 _load_shift_file(analysis_dir, "b_shift.dat", 0.0)
@@ -873,7 +894,7 @@ def _compute_gshift_data(
             for block_idx in range(nblocks):
                 gshift_data[sim_idx, block_idx] = (
                     float(b_fix_shift_arr[block_idx])
-                    + float(b_shift_arr[block_idx]) * (k - ncentral)
+                    + float(b_shift_arr[block_idx]) * (replica_idx - ncentral)
                 )
         except Exception as e:
             print(

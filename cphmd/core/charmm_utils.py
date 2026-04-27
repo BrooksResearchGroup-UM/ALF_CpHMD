@@ -201,9 +201,7 @@ def clear_crystal() -> None:
 
 
 def clear_noe() -> None:
-    import pycharmm.restraints as restraints
-
-    restraints.noe_reset()
+    system.noe_reset()
 
 
 def reset_io_unit(unit: int = 91) -> None:

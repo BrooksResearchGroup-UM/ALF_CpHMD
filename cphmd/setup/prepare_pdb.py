@@ -11,6 +11,7 @@ PrepareSourceType = Literal["auto", "file", "rcsb"]
 
 _VALID_SOURCE_TYPES = {"auto", "file", "rcsb"}
 _RCSB_ID_PATTERN = re.compile(r"^[A-Za-z0-9]{4}$")
+_HISTIDINE_RESNAMES = {"HIS", "HSD", "HSE"}
 
 
 @dataclass
@@ -171,6 +172,32 @@ def _drop_ligand_like_chains(model) -> int:
     return len(chains_to_drop)
 
 
+def _iter_protein_residues(model):
+    for chain in getattr(model, "protein", []) or []:
+        residues = getattr(chain, "residues", None)
+        if residues is None:
+            get_residues = getattr(chain, "get_residues", None)
+            if get_residues is None:
+                continue
+            residues = get_residues()
+        yield from residues
+
+
+def _normalize_histidines_to_hsp(model) -> int:
+    normalized = 0
+    for residue in _iter_protein_residues(model):
+        resname = getattr(residue, "resname", "")
+        if not isinstance(resname, str):
+            continue
+        if resname.strip().upper() not in _HISTIDINE_RESNAMES:
+            continue
+        if not hasattr(residue, "original_resname"):
+            residue.original_resname = residue.resname
+        residue.resname = "HSP"
+        normalized += 1
+    return normalized
+
+
 def _validate_supported_input(model, config: PreparePDBConfig) -> None:
     ligand_chain_count = _count_ligand_like_chains(model)
     if ligand_chain_count > 0 and config.cgenff_executable_path is None:
@@ -273,6 +300,7 @@ def prepare_pdb_system(config: PreparePDBConfig) -> Path:
 
     if config.drop_ligands:
         _drop_ligand_like_chains(model)
+    _normalize_histidines_to_hsp(model)
     _validate_supported_input(model, config)
     _generate_topology(model, config)
     _validate_generated_topology(model)

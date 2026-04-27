@@ -59,7 +59,6 @@ class RunContext:
     dynamics_backend: DynamicsBackend | str = DynamicsBackend.BLADE
     analysis_backend: AnalysisBackend | str = AnalysisBackend.CUDA_WHAM
     domdec: DomdecConfig = field(default_factory=DomdecConfig)
-    use_blade: bool | None = None
     walltime_end_epoch: float | None = None
     walltime_safety_factor: float = 2.0
     titratable_blocks: tuple[TitratableBlock, ...] = ()
@@ -67,16 +66,9 @@ class RunContext:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "run_dir", Path(self.run_dir))
-        backend = (
-            DynamicsBackend.BLADE
-            if self.use_blade is True
-            else DynamicsBackend.DOMDEC_CPU
-            if self.use_blade is False
-            else parse_dynamics_backend(self.dynamics_backend)
-        )
+        backend = parse_dynamics_backend(self.dynamics_backend)
         object.__setattr__(self, "dynamics_backend", backend)
         object.__setattr__(self, "analysis_backend", parse_analysis_backend(self.analysis_backend))
-        object.__setattr__(self, "use_blade", backend.uses_blade)
         if not isinstance(self.domdec, DomdecConfig):
             object.__setattr__(self, "domdec", DomdecConfig.from_mapping(dict(self.domdec)))
         object.__setattr__(self, "lambda_headers", tuple(self.lambda_headers))
@@ -138,6 +130,9 @@ class RunContext:
 
     def segment_path(self, segment_idx: int) -> Path:
         return self.rank_dir / f"segment_{segment_idx:06d}.parquet"
+
+    def native_lambda_scratch_path(self, segment_idx: int) -> Path:
+        return self.rank_dir / f".native_lambda_segment_{segment_idx:06d}.parquet"
 
 
 @dataclass(frozen=True)
@@ -207,6 +202,8 @@ class LoopState:
 
 class LoopHooks(Protocol):
     def on_system_loaded(self, ctx: RunContext, state: LoopState | None = None) -> None: ...
+
+    def on_native_ready(self, ctx: RunContext, state: LoopState | None = None) -> None: ...
 
     def before_segment(self, state: LoopState) -> LoopState | None: ...
 

@@ -80,23 +80,21 @@ See `cphmd_config.yaml` for all settings. Key options:
 
 After solvation and patching:
 ```
-solvated/
-├── solvated.psf, solvated.crd, solvated.pdb
-├── waterbox.psf, waterbox.crd
-├── molecule.psf, molecule.crd
-├── box.dat
-└── prep/
-    ├── system.psf, system.crd     # Patched structure
-    ├── system_hmr.psf/crd         # HMR variant
-    ├── patches.dat                # Site definitions with pKa values
-    └── box.dat, fft.dat           # Box parameters
+solvated.psf, solvated.crd, solvated.pdb
+waterbox.psf, waterbox.crd
+molecule.psf, molecule.crd
+box.dat
+prep/
+├── system.psf, system.crd     # Patched structure
+├── system_hmr.psf/crd         # HMR variant
+├── patches.dat                # Site definitions with pKa values
+└── box.dat, fft.dat           # Box parameters
 ```
 
 After ALF simulation:
 ```
-solvated/
-├── analysis{N}/               # Bias parameters per iteration
-├── run{N}/                    # MD trajectories
-├── plots/                     # Population and convergence plots
-└── ewbs_state.json            # Convergence tracking
+analysis{N}/                   # Bias parameters per iteration
+run{N}/                        # MD trajectories
+plots/                         # Population and convergence plots
+ewbs_state.json                # Convergence tracking
 ```

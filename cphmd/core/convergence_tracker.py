@@ -691,15 +691,29 @@ class ConvergenceTracker:
         """Generate convergence and diagnostic plots after analysis."""
         plots_dir = input_folder / "plots"
 
-        from cphmd.analysis.population_convergence import generate_population_plots
-        exp = self._get_expected_pops(nsubs)
-        generate_population_plots(
-            input_folder=Path(".."),
-            max_run=run_idx,
-            output_dir=plots_dir,
-            nsubs=nsubs,
-            expected_pops=exp,
-        )
+        if getattr(self.config, "generate_dashboard_plots", True):
+            try:
+                from cphmd.analysis.alf_dashboard import generate_alf_dashboard
+                generate_alf_dashboard(
+                    input_folder=input_folder,
+                    max_run=run_idx,
+                    output_dir=plots_dir,
+                    nsubs=nsubs,
+                    title=input_folder.name,
+                )
+            except Exception as e:
+                print(f"Warning: ALF dashboard plot failed: {e}")
+
+        if getattr(self.config, "generate_population_plots", False):
+            from cphmd.analysis.population_convergence import generate_population_plots
+            exp = self._get_expected_pops(nsubs)
+            generate_population_plots(
+                input_folder=Path(".."),
+                max_run=run_idx,
+                output_dir=plots_dir,
+                nsubs=nsubs,
+                expected_pops=exp,
+            )
 
         try:
             if (Path("..") / f"analysis{run_idx}" / "multisite").is_dir():
@@ -739,20 +753,26 @@ class ConvergenceTracker:
         except Exception as e:
             print(f"Warning: b-bias convergence plot failed: {e}")
 
-        try:
-            from cphmd.analysis.energy_profiles import plot_1d_profiles
-            plot_1d_profiles(
-                analysis_dir=Path.cwd(), nsubs=list(nsubs),
-                main_plots_dir=plots_dir,
-            )
-        except Exception as e:
-            print(f"Warning: 1D energy profile plots failed: {e}")
+        if getattr(self.config, "generate_g_profiles_2d", False):
+            try:
+                from cphmd.analysis.energy_profiles import plot_1d_profiles
+                plot_1d_profiles(
+                    analysis_dir=Path.cwd(), nsubs=list(nsubs),
+                    main_plots_dir=plots_dir,
+                )
+            except Exception as e:
+                print(f"Warning: 1D energy profile plots failed: {e}")
 
-        try:
-            from cphmd.analysis.wham_profiles import plot_wham_profiles
-            plot_wham_profiles(
-                analysis_dir=Path.cwd(), nsubs=list(nsubs), msprof=msprof,
-                main_plots_dir=plots_dir,
-            )
-        except Exception as e:
-            print(f"Warning: WHAM profile plots failed: {e}")
+        if (getattr(self.config, "generate_g_profiles_2d", False)
+                or getattr(self.config, "generate_g_profiles_3d", False)):
+            try:
+                from cphmd.analysis.wham_profiles import plot_wham_profiles
+                plot_wham_profiles(
+                    analysis_dir=Path.cwd(), nsubs=list(nsubs), msprof=msprof,
+                    main_plots_dir=plots_dir,
+                    include_1d=False,
+                    include_2d=getattr(self.config, "generate_g_profiles_2d", False),
+                    include_cross=getattr(self.config, "generate_g_profiles_3d", False),
+                )
+            except Exception as e:
+                print(f"Warning: WHAM profile plots failed: {e}")

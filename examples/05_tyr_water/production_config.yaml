@@ -1,0 +1,36 @@
+master_seed: 20260418
+run_dir: sim_1
+
+native:
+  dynamics_backend: domdec-gpu
+  analysis_backend: disabled
+  domdec:
+    dlb: false
+
+archive:
+  lambda_precision: shrinker
+
+simulation:
+  input_folder: .
+  nreps: 5
+  ph: true
+  ph_values: [8.0, 9.0, 10.0, 11.0, 12.0]
+  temperature: 298.15
+  hmr: true
+  timestep_fs: 4.0
+  nsteps_per_segment: 1000
+  lambda_save_interval_ps: 0.2
+  coordinate_save_interval_ps: 20.0
+  checkpoint_interval_ps: 200.0
+  elec_type: pmeex
+  vdw_type: vswitch
+  restrains: SCAT
+  restrain_hydrogens: false
+  fnex: 5.5
+  replica_exchange:
+    enabled: true
+    exchange_interval_ps: 4.0
+
+production:
+  duration_ns: 2.0
+  use_presets: true

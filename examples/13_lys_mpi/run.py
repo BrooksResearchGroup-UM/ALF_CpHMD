@@ -4,6 +4,7 @@
 For MPI jobs (alf step), mpi4py must be imported BEFORE pyCHARMM
 so that MPI is already initialized when CHARMM's C library loads.
 """
+import os
 import sys
 from pathlib import Path
 
@@ -16,4 +17,6 @@ if step in ("alf", "all"):
 from cphmd.config import run_workflow
 
 if __name__ == "__main__":
-    run_workflow(Path(__file__).parent / "cphmd_config.yaml", step)
+    example_dir = Path(__file__).resolve().parent
+    os.chdir(example_dir)
+    run_workflow(example_dir / "cphmd_config.yaml", step)

@@ -515,6 +515,18 @@ def _bootstrap_sample_multistate(args: tuple, max_retries: int = 2) -> np.ndarra
     while attempts < max_retries:
         y_stacked = []
         sigma_stacked = []
+        sampled_indices: dict[str, int | None] = {}
+        for i, key in enumerate(pH_keys):
+            if transition_mask is not None and not transition_mask[i]:
+                sampled_indices[key] = None
+                continue
+            state_lists = [state_pop[key] for state_pop in all_state_pops]
+            n_repeats = min(len(values) for values in state_lists)
+            if n_repeats <= 1:
+                sampled_indices[key] = None
+                continue
+            max_spread = max(max(values) - min(values) for values in state_lists)
+            sampled_indices[key] = rng.randrange(n_repeats) if max_spread >= 0.005 else None
 
         for state_idx in range(n_states):
             pop_dict = all_state_pops[state_idx]
@@ -522,7 +534,8 @@ def _bootstrap_sample_multistate(args: tuple, max_retries: int = 2) -> np.ndarra
 
             for i, key in enumerate(pH_keys):
                 sublist = pop_dict[key]
-                if transition_mask is not None and not transition_mask[i]:
+                sampled_idx = sampled_indices[key]
+                if sampled_idx is None:
                     y_stacked.append(sum(sublist) / len(sublist))
                     if err_dict is not None:
                         err_list = err_dict[key]
@@ -532,27 +545,14 @@ def _bootstrap_sample_multistate(args: tuple, max_retries: int = 2) -> np.ndarra
                             else float(err_list)
                         )
                 else:
-                    max_val = max(sublist)
-                    min_val = min(sublist)
-                    if max_val - min_val >= 0.005:
-                        idx = rng.randrange(len(sublist))
-                        y_stacked.append(sublist[idx])
-                        if err_dict is not None:
-                            err_list = err_dict[key]
-                            sigma_stacked.append(
-                                float(np.mean(err_list))
-                                if isinstance(err_list, (list, np.ndarray))
-                                else float(err_list)
-                            )
-                    else:
-                        y_stacked.append(sum(sublist) / len(sublist))
-                        if err_dict is not None:
-                            err_list = err_dict[key]
-                            sigma_stacked.append(
-                                float(np.mean(err_list))
-                                if isinstance(err_list, (list, np.ndarray))
-                                else float(err_list)
-                            )
+                    y_stacked.append(sublist[sampled_idx])
+                    if err_dict is not None:
+                        err_list = err_dict[key]
+                        sigma_stacked.append(
+                            float(np.mean(err_list))
+                            if isinstance(err_list, (list, np.ndarray))
+                            else float(err_list)
+                        )
 
         y_arr = np.clip(np.array(y_stacked, dtype=float), 1e-6, 1.0 - 1e-6)
         x_arr = np.tile(pH_values, n_states)

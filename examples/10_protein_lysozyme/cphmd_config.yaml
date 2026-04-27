@@ -14,6 +14,7 @@ prepare:
   drop_ligands: true
 
 solvation:
+  output_dir: .
   crystal_type: OCTAHEDRAL
   padding: 10.0
   salt_concentration: 0.15
@@ -21,12 +22,12 @@ solvation:
   minimize: false
 
 patch:
-  input_folder: solvated
-  output_folder: solvated/prep
+  input_folder: .
+  output_folder: prep
   selected_residues: []  # Empty = patch all titratable residues found
 
 alf:
-  input_folder: solvated
+  input_folder: .
   pH: true
   temperature: 298.15
   end: 200

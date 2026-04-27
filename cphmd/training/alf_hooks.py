@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -15,6 +16,10 @@ class ALFTrainingConfig:
     cycle_every_segments: int
     end_cycle: int
     cache_segments: int
+    generate_dashboard_plots: bool = True
+    generate_population_plots: bool = False
+    generate_g_profiles_2d: bool = False
+    generate_g_profiles_3d: bool = False
 
     def __post_init__(self) -> None:
         if self.cycle_every_segments <= 0:
@@ -37,6 +42,7 @@ class ALFHooks:
         native_block: Any | None = None,
         replica_ph_values: tuple[float, ...] = (),
         cache: SegmentCache | None = None,
+        work_dir: Path | str | None = None,
     ):
         self.config = config
         self.nsubs = tuple(nsubs)
@@ -44,6 +50,7 @@ class ALFHooks:
         self.native_block = native_block
         self.replica_ph_values = tuple(replica_ph_values)
         self.cache = cache or SegmentCache(max_segments=config.cache_segments)
+        self.work_dir = Path(work_dir) if work_dir is not None else None
         self.last_snapshot: BiasSnapshot | None = None
 
     def on_system_loaded(self, ctx, state: LoopState | None = None) -> None:
@@ -74,6 +81,7 @@ class ALFHooks:
     def run_cycle(self, state: LoopState) -> BiasSnapshot:
         snapshot = self.cycle_runner.run_cycle(state=state, cache=self.cache)
         self.last_snapshot = snapshot
+        self._generate_cycle_plots(state)
         return snapshot
 
     def after_rex_swap(
@@ -83,11 +91,7 @@ class ALFHooks:
         partner_rank: int | None,
         accepted: bool,
     ) -> None:
-        if not accepted:
-            return
-        native = self._native_block()
-        native.set_ph(_ph_for_state_from_values(state, self.replica_ph_values))
-        native.sync_state()
+        return None
 
     def is_done(self, state: LoopState) -> bool:
         return state.cycle_idx >= self.config.end_cycle
@@ -98,6 +102,86 @@ class ALFHooks:
         from cphmd.native import block
 
         return block
+
+    def _generate_cycle_plots(self, state: LoopState) -> None:
+        if not (
+            self.config.generate_dashboard_plots
+            or self.config.generate_population_plots
+            or self.config.generate_g_profiles_2d
+            or self.config.generate_g_profiles_3d
+        ):
+            return
+        if not self._is_plot_rank():
+            return
+        work_dir = self._plot_work_dir()
+        if work_dir is None:
+            return
+
+        analysis_idx = state.cycle_idx + 1
+        plots_dir = work_dir / "plots"
+        if self.config.generate_dashboard_plots:
+            try:
+                from cphmd.analysis.alf_dashboard import generate_alf_dashboard
+
+                generate_alf_dashboard(
+                    work_dir,
+                    max_run=analysis_idx,
+                    output_dir=plots_dir,
+                    nsubs=self.nsubs,
+                    title=work_dir.name,
+                )
+            except Exception as exc:
+                print(f"Warning: ALF dashboard plot failed: {exc}")
+
+        if self.config.generate_population_plots:
+            try:
+                from cphmd.analysis.population_convergence import generate_population_plots
+
+                generate_population_plots(
+                    input_folder=work_dir,
+                    max_run=analysis_idx,
+                    output_dir=plots_dir,
+                    nsubs=list(self.nsubs),
+                )
+            except Exception as exc:
+                print(f"Warning: population convergence plots failed: {exc}")
+
+        if self.config.generate_g_profiles_2d or self.config.generate_g_profiles_3d:
+            try:
+                from cphmd.analysis.wham_profiles import plot_wham_profiles
+
+                analysis_dir = work_dir / f"analysis{analysis_idx}"
+                plot_wham_profiles(
+                    analysis_dir=analysis_dir,
+                    nsubs=list(self.nsubs),
+                    msprof=self._plot_msprof(),
+                    main_plots_dir=plots_dir,
+                    include_1d=False,
+                    include_2d=self.config.generate_g_profiles_2d,
+                    include_cross=self.config.generate_g_profiles_3d,
+                )
+            except Exception as exc:
+                print(f"Warning: WHAM profile plots failed: {exc}")
+
+    def _is_plot_rank(self) -> bool:
+        analyzer = getattr(self.cycle_runner, "analyzer", None)
+        ctx = getattr(analyzer, "ctx", None)
+        return int(getattr(ctx, "rank", 0)) == 0
+
+    def _plot_work_dir(self) -> Path | None:
+        if self.work_dir is not None:
+            return self.work_dir
+        analyzer = getattr(self.cycle_runner, "analyzer", None)
+        work_dir = getattr(analyzer, "work_dir", None)
+        return Path(work_dir) if work_dir is not None else None
+
+    def _plot_msprof(self) -> int:
+        analyzer = getattr(self.cycle_runner, "analyzer", None)
+        alf_info = getattr(analyzer, "alf_info", {})
+        ntersite = alf_info.get("ntersite") if isinstance(alf_info, dict) else None
+        if ntersite is not None and len(ntersite) >= 2:
+            return int(ntersite[1])
+        return 1 if self.config.generate_g_profiles_3d else 0
 
 
 def _ph_for_state(ctx, state: LoopState | None) -> float:

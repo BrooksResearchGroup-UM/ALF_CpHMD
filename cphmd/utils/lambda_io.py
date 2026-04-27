@@ -292,6 +292,42 @@ def find_lambda_files(data_dir: Path, pattern: str = "Lambda.*.*") -> list[Path]
     return sorted(data_dir.glob(f"{pattern}.lmd"))
 
 
+def parse_lambda_filename(filepath: str | Path) -> tuple[int, int]:
+    """Parse a Lambda filename into analysis and replica indices."""
+    filepath = Path(filepath)
+    parts = filepath.stem.split(".")
+    if len(parts) != 3 or parts[0] != "Lambda":
+        raise ValueError(
+            f"invalid Lambda filename '{filepath.name}'; "
+            "expected Lambda.<analysis_idx>.<replica_idx>"
+        )
+    try:
+        return int(parts[1]), int(parts[2])
+    except ValueError as exc:
+        raise ValueError(
+            f"invalid Lambda filename '{filepath.name}'; "
+            "analysis and replica indices must be integers"
+        ) from exc
+
+
+def group_lambda_files_by_replica(
+    data_dir: Path,
+    pattern: str = "Lambda.*.*",
+) -> dict[int, list[Path]]:
+    """Group lambda files by replica index.
+
+    Files are sorted by their first numeric filename field and then by name.
+    """
+    grouped: dict[int, list[tuple[int, Path]]] = {}
+    for filepath in find_lambda_files(data_dir, pattern):
+        analysis_idx, replica_idx = parse_lambda_filename(filepath)
+        grouped.setdefault(replica_idx, []).append((analysis_idx, filepath))
+    return {
+        replica_idx: [path for _, path in sorted(entries, key=lambda item: (item[0], item[1].name))]
+        for replica_idx, entries in sorted(grouped.items())
+    }
+
+
 def convert_lambda_to_parquet(
     input_path: str | Path, output_path: str | Path | None = None, compression: str = "snappy"
 ) -> Path:

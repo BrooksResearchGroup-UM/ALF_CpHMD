@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import logging
+import os
 import time
 from collections.abc import Callable, Iterable
 from types import ModuleType
@@ -58,6 +60,9 @@ class SimulationLoop:
         self._time_fn = time_fn or time.time
         self._stop_requested = False
         self._segment_seconds: list[float] = []
+        self._archive_seconds: list[float] = []
+        self._rex_seconds: list[float] = []
+        self._rex_hook_seconds: list[float] = []
         self._checkpoint_seconds: list[float] = []
         self._cycle_seconds: list[float] = []
         walltime_end = ctx.walltime_end_epoch
@@ -88,6 +93,9 @@ class SimulationLoop:
         else:
             self._initialize_native_dynamics()
             self._preflight_native_dynamics()
+        on_native_ready = getattr(self.hooks, "on_native_ready", None)
+        if on_native_ready is not None:
+            on_native_ready(self.ctx, state)
         stop_token = self._install_signal_handlers()
         try:
             while not self.hooks.is_done(state):
@@ -103,6 +111,7 @@ class SimulationLoop:
                     if next_state is not None:
                         state = next_state
                 segment_started = self._time_fn()
+                segment_seed = state.integrator_seed
                 lambda_matrix, bias_matrix = self._run_segment(
                     nsteps=self.ctx.nsteps_per_segment,
                     nsavl=self.ctx.nsavl,
@@ -113,19 +122,26 @@ class SimulationLoop:
                     dynamics_backend=self.ctx.dynamics_backend,
                     start=(not resumed and state.segment_idx == 0),
                     lambda_headers=self.ctx.lambda_headers,
-                    iseed=state.integrator_seed,
+                    iseed=segment_seed,
+                    lambda_parquet_path=self.ctx.native_lambda_scratch_path(state.segment_idx),
                 )
+                if segment_seed is not None:
+                    state = state.with_integrator_seed(None)
                 self._walltime_guard.record_segment_duration(
                     self._record_duration(self._segment_seconds, segment_started)
                 )
+                archive_started = self._time_fn()
                 self.archiver.write_segment(lambda_matrix, bias_matrix, state)
+                self._record_duration(self._archive_seconds, archive_started)
                 next_state = self.hooks.after_segment(state, lambda_matrix, bias_matrix)
                 if next_state is not None:
                     state = next_state
                 state = state.advance_segment()
                 if self.rex_driver is not None and self.rex_driver.should_attempt(state):
                     previous_accepted = state.rex_accepted
+                    rex_started = self._time_fn()
                     rex_result = self.rex_driver.attempt(state)
+                    self._record_duration(self._rex_seconds, rex_started)
                     state = state.with_rex_result(
                         replica_label=rex_result.replica_label,
                         attempted=rex_result.attempted,
@@ -133,11 +149,13 @@ class SimulationLoop:
                     )
                     after_rex_swap = getattr(self.hooks, "after_rex_swap", None)
                     if after_rex_swap is not None:
+                        rex_hook_started = self._time_fn()
                         after_rex_swap(
                             state,
                             partner_rank=_partner_rank(rex_result.exchange_result),
                             accepted=sum(state.rex_accepted) > sum(previous_accepted),
                         )
+                        self._record_duration(self._rex_hook_seconds, rex_hook_started)
                 if self._should_trigger_cycle(state):
                     cycle_started = self._time_fn()
                     snapshot = self.hooks.run_cycle(state)
@@ -175,6 +193,7 @@ class SimulationLoop:
         self.checkpoint.write_final(state, rng_state=_with_production_rng_state(rng_state, state))
         final_run_state = "stopped" if state.stop_requested else "completed"
         self._write_status_summary(state, run_state=final_run_state)
+        self._write_timing_summary(state, run_state=final_run_state)
         return state
 
     def _build_rex_driver(self):
@@ -216,19 +235,21 @@ class SimulationLoop:
             if preflight is not None:
                 preflight(gpu=self.ctx.dynamics_backend is DynamicsBackend.DOMDEC_GPU)
 
-    def _minimize_startup(self, state: LoopState) -> None:
+    def _minimize_startup(self, state: LoopState) -> bool:
         if self.ctx.startup_minimization_segments <= 0:
-            return
+            return False
         minimizer = self._native_minimizer()
         minimize = getattr(minimizer, "minimize_startup", None)
         if minimize is not None:
-            minimize(self.ctx, state, use_blade=self.ctx.use_blade)
+            return bool(minimize(self.ctx, state, dynamics_backend=self.ctx.dynamics_backend))
+        return False
 
     def _prepare_startup(self, state: LoopState) -> None:
         if self.ctx.dynamics_backend is DynamicsBackend.BLADE:
             self._initialize_native_dynamics()
+            if self._minimize_startup(state):
+                self._initialize_native_dynamics()
             self._preflight_native_dynamics()
-            self._minimize_startup(state)
             return
         self._minimize_startup(state)
         self._initialize_native_dynamics()
@@ -289,6 +310,31 @@ class SimulationLoop:
         writer = getattr(self.checkpoint, "write_status_summary", None)
         if writer is not None:
             writer(state, run_state=run_state)
+
+    def _write_timing_summary(self, state: LoopState, *, run_state: str) -> None:
+        if not _debug_timings_enabled():
+            return
+        payload = {
+            "schema_version": 1,
+            "rank": self.ctx.rank,
+            "replica_label": state.replica_label,
+            "segment_idx": state.segment_idx,
+            "cycle_idx": state.cycle_idx,
+            "run_state": run_state,
+            "timings": {
+                "segment_dynamics": _timing_stats(self._segment_seconds),
+                "archive": _timing_stats(self._archive_seconds),
+                "rex_exchange": _timing_stats(self._rex_seconds),
+                "rex_hook": _timing_stats(self._rex_hook_seconds),
+                "analysis_cycle": _timing_stats(self._cycle_seconds),
+                "checkpoint": _timing_stats(self._checkpoint_seconds),
+            },
+        }
+        path = self.ctx.rank_dir / "timing_summary.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(f"{path.name}.tmp")
+        tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+        os.replace(tmp, path)
 
     def _native_dynamics(self):
         if self._native_dynamics_override is not None:
@@ -360,3 +406,27 @@ def _with_production_rng_state(rng_state: dict[str, Any], state: LoopState) -> d
         "integrator_seed": state.integrator_seed,
     }
     return updated
+
+
+def _debug_timings_enabled() -> bool:
+    value = os.environ.get("CPHMD_DEBUG_TIMINGS", "")
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _timing_stats(values: list[float]) -> dict[str, float | int]:
+    if not values:
+        return {
+            "count": 0,
+            "total_s": 0.0,
+            "mean_s": 0.0,
+            "min_s": 0.0,
+            "max_s": 0.0,
+        }
+    total = float(sum(values))
+    return {
+        "count": len(values),
+        "total_s": total,
+        "mean_s": total / len(values),
+        "min_s": float(min(values)),
+        "max_s": float(max(values)),
+    }

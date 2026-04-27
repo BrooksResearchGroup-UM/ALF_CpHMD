@@ -12,6 +12,7 @@ Usage:
     python run.py all        # Run all steps
 """
 
+import os
 import sys
 from pathlib import Path
 
@@ -25,6 +26,8 @@ CONFIG = SCRIPT_DIR / "cphmd_config.yaml"
 
 
 def main():
+    os.chdir(SCRIPT_DIR)
+
     if len(sys.argv) < 2:
         print(__doc__)
         sys.exit(1)

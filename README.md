@@ -82,7 +82,7 @@ native:
   analysis_backend: disabled
 
 alf:
-  input_folder: examples/00_glu_water/solvated
+  input_folder: examples/00_glu_water
   nreps: 1
   start: 1
   end: 5
@@ -111,8 +111,13 @@ Set the analysis engine with `native.analysis_backend`:
 - `cuda-wham`: CUDA WHAM/LMALF analysis.
 - `disabled`: fixed-segment smoke mode with no ALF bias rebuild cycle.
 
-`use_blade` is deprecated and is not accepted in YAML. Use
-`native.dynamics_backend` instead.
+`use_blade` is not accepted in YAML. Use `native.dynamics_backend` instead.
+
+Runtime intervals can be written in time or step units. For example, use either
+`md_block_ps` or `md_block_steps`, either `exchange_interval_ps` or
+`exchange_interval_steps`, and either `production.duration_ns` or
+`production.duration_steps`. If both forms are present for the same quantity,
+the config is rejected.
 
 ## Examples
 

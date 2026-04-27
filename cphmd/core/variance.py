@@ -130,6 +130,39 @@ def get_variance(
     )
 
 
+def _collect_replica_lambda_files(
+    data_dir: Path,
+    nreps: int,
+    nf: int,
+) -> tuple[list[list[Path]], int]:
+    from cphmd.utils.lambda_io import group_lambda_files_by_replica
+
+    replica_groups = group_lambda_files_by_replica(data_dir)
+    missing_replicas = [
+        replica_idx for replica_idx in range(nreps) if replica_idx not in replica_groups
+    ]
+    if missing_replicas:
+        raise FileNotFoundError(
+            f"missing Lambda files for replicas {missing_replicas} in {data_dir}"
+        )
+
+    available_trials = min(len(replica_groups[replica_idx]) for replica_idx in range(nreps))
+    effective_nf = min(nf, available_trials)
+    if effective_nf <= 0:
+        raise FileNotFoundError(f"no Lambda files discovered in {data_dir}")
+    if effective_nf < nf:
+        logger.warning(
+            "Reducing variance trial count from %s to %s based on discovered Lambda files in %s",
+            nf,
+            effective_nf,
+            data_dir,
+        )
+    replica_lambda_files = [
+        replica_groups[replica_idx][:effective_nf] for replica_idx in range(nreps)
+    ]
+    return replica_lambda_files, effective_nf
+
+
 def _compute_variance(
     analysis_dir: Path,
     nbshift_dir: Path,
@@ -185,8 +218,16 @@ def _compute_variance(
     x_shift = np.loadtxt(nbshift_dir / "x_shift.dat")
     s_shift = np.loadtxt(nbshift_dir / "s_shift.dat")
 
+    data_dir = analysis_dir / "data"
+    replica_lambda_files, effective_nf = _collect_replica_lambda_files(data_dir, nreps, nf)
+
     # Load WHAM free energies
-    f = np.loadtxt(analysis_dir / "f.dat")
+    f = np.atleast_1d(np.loadtxt(analysis_dir / "f.dat")).reshape(-1)
+    expected_f_size = effective_nf * nreps
+    if f.size != expected_f_size:
+        raise ValueError(
+            f"f.dat in {analysis_dir} contained {f.size} values; expected {expected_f_size}"
+        )
 
     # Build index mapping from ligand state to block indices
     ind = np.zeros((nlig, len(nsubs)), dtype=int)
@@ -205,21 +246,17 @@ def _compute_variance(
         blk[:, i:] += nsubs[i - 1]
 
     # Pre-compute energies for all states
-    Eall = np.zeros((nreps, nf, nlig))
-    Eshift = np.zeros((nreps, nf, nlig))
-    lndenom = np.zeros((nreps, nf, nlig))
-    nframes = np.zeros((nreps, nf))
+    Eall = np.zeros((nreps, effective_nf, nlig))
+    Eshift = np.zeros((nreps, effective_nf, nlig))
+    lndenom = np.zeros((nreps, effective_nf, nlig))
+    nframes = np.zeros((nreps, effective_nf))
 
     from cphmd.utils.lambda_io import read_lambda_values
 
-    data_dir = analysis_dir / "data"
-
     for irep in range(nreps):
-        for itrial in range(nf):
+        for itrial in range(effective_nf):
             isim = itrial * nreps + irep
-            lf = data_dir / f"Lambda.{itrial}.{irep}.parquet"
-            if not lf.exists():
-                lf = data_dir / f"Lambda.{itrial}.{irep}.dat"
+            lf = replica_lambda_files[irep][itrial]
             L = read_lambda_values(lf)
             nframes[irep, itrial] = L.shape[0]
 
@@ -251,17 +288,15 @@ def _compute_variance(
                 )
 
     # Count endpoint occupancy and compute free energies per replica
-    PkeepA = np.zeros((nreps, nf, nlig))
+    PkeepA = np.zeros((nreps, effective_nf, nlig))
     rng = np.random.default_rng(seed)
 
     for irep in range(nreps):
-        Pkeep = np.zeros((nf, nlig))
-        G = np.zeros((nf, nlig))
+        Pkeep = np.zeros((effective_nf, nlig))
+        G = np.zeros((effective_nf, nlig))
 
-        for itrial in range(nf):
-            lf2 = data_dir / f"Lambda.{itrial}.{irep}.parquet"
-            if not lf2.exists():
-                lf2 = data_dir / f"Lambda.{itrial}.{irep}.dat"
+        for itrial in range(effective_nf):
+            lf2 = replica_lambda_files[irep][itrial]
             L = read_lambda_values(lf2)
 
             for j in range(nlig):
@@ -298,7 +333,7 @@ def _compute_variance(
         # Bootstrap uncertainty
         GS = np.zeros((nbs, nlig))
         for i in range(nbs):
-            bs_idx = rng.integers(0, nf, size=nf)
+            bs_idx = rng.integers(0, effective_nf, size=effective_nf)
             G_bs = G[bs_idx, :]
             finite_mask_bs = np.isfinite(G_bs)
             GS[i, :] = Gmin - kT * np.log(
@@ -317,8 +352,8 @@ def _compute_variance(
                 fp.write(f"{Value_rep[i]:8.3f} +/- {Error_rep[i]:5.3f}\n")
 
     # Combine replicas using WHAM reweighting
-    G = np.zeros((nf, nlig))
-    for itrial in range(nf):
+    G = np.zeros((effective_nf, nlig))
+    for itrial in range(effective_nf):
         for j in range(nlig):
             total_counts = np.sum(PkeepA[:, itrial, j])
             if total_counts == 0:
@@ -343,7 +378,7 @@ def _compute_variance(
     # Bootstrap uncertainty for combined estimate
     GS = np.zeros((nbs, nlig))
     for i in range(nbs):
-        bs_idx = rng.integers(0, nf, size=nf)
+        bs_idx = rng.integers(0, effective_nf, size=effective_nf)
         G_bs = G[bs_idx, :]
         finite_mask_bs = np.isfinite(G_bs)
         GS[i, :] = Gmin - kT * np.log(

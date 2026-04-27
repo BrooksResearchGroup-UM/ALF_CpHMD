@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import sys
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -30,8 +31,9 @@ logger = logging.getLogger(__name__)
 class PKaAnalysisConfig:
     """Configuration for pKa analysis."""
 
-    input_folder: str | Path
+    input_folder: str | Path | Sequence[str | Path]
     output_dir: str | Path = "analysis"
+    analysis_name: str | None = None
     lambda_cutoff: float = 0.97
     bin_size_ps: float = 1000.0
     fix_hill: bool = False
@@ -42,9 +44,17 @@ class PKaAnalysisConfig:
     transition_width: float = 2.0
     exp_pka: dict[str, float] | None = None
     min_ph_points: int = 3
+    input_folders: tuple[Path, ...] = field(init=False)
 
     def __post_init__(self):
-        self.input_folder = Path(self.input_folder)
+        if isinstance(self.input_folder, (str, Path)):
+            input_folders = (Path(self.input_folder),)
+        else:
+            input_folders = tuple(Path(folder) for folder in self.input_folder)
+        if not input_folders:
+            raise ValueError("input_folder must contain at least one production directory")
+        self.input_folders = input_folders
+        self.input_folder = input_folders[0]
         self.output_dir = Path(self.output_dir)
 
 
@@ -107,6 +117,7 @@ class PKaAnalyzer:
             build_site_map,
             discover_parquets,
             get_site_columns,
+            resolve_site_columns,
         )
 
         cfg = self.config
@@ -119,15 +130,26 @@ class PKaAnalyzer:
         plot_dir.mkdir(parents=True, exist_ok=True)
 
         # ---- 2. Discover parquets ----
-        metadata_df = discover_parquets(cfg.input_folder, n_jobs=cfg.n_jobs)
+        if len(cfg.input_folders) > 1:
+            metadata_df = discover_parquets(
+                cfg.input_folders,
+                n_jobs=cfg.n_jobs,
+                simulation_from_folder=True,
+            )
+        else:
+            metadata_df = discover_parquets(cfg.input_folder, n_jobs=cfg.n_jobs)
         if metadata_df.empty:
-            raise FileNotFoundError(f"No parquet files found in {cfg.input_folder}")
+            raise FileNotFoundError(
+                f"No parquet files found in {', '.join(str(path) for path in cfg.input_folders)}"
+            )
         logger.info("Discovered %d parquet files", len(metadata_df))
 
         # ---- 3. Build site map ----
         patches_path = self._find_file("patches.dat")
         if patches_path is None:
-            raise FileNotFoundError(f"patches.dat not found in {cfg.input_folder}")
+            raise FileNotFoundError(
+                f"patches.dat not found in {', '.join(str(path) for path in cfg.input_folders)}"
+            )
         site_map = build_site_map(patches_path)
         logger.info("Site map: %d entries, %d sites", len(site_map), site_map["site"].nunique())
 
@@ -149,13 +171,17 @@ class PKaAnalyzer:
         # Get unique site indices (skip site 0 which is typically the environment)
         site_indices = sorted(site_map["site"].unique())
 
-        folder_name = cfg.input_folder.name
+        folder_name = cfg.analysis_name or (
+            cfg.input_folder.name if len(cfg.input_folders) == 1 else "production"
+        )
+        site_errors: list[str] = []
 
         # ---- 6. Process each site ----
         for site_idx in site_indices:
-            site_cols = get_site_columns(site_map, site_idx)
-            if len(site_cols) <= 1:
+            legacy_site_cols = get_site_columns(site_map, site_idx)
+            if len(legacy_site_cols) <= 1:
                 continue  # Skip single-subsite entries (e.g., environment block)
+            site_cols = resolve_site_columns(site_map, site_idx, metadata_df)
 
             # Extract residue metadata from the site map
             site_rows = site_map[site_map["site"] == site_idx]
@@ -194,7 +220,11 @@ class PKaAnalyzer:
                 logger.error("Error processing site %s: %s", site_label, exc)
                 print(f"Error processing site {site_label}: {exc}")
                 sys.stdout.flush()
+                site_errors.append(f"{site_label}: {exc}")
                 continue
+
+        if site_errors:
+            raise RuntimeError("site analysis failures: " + "; ".join(site_errors))
 
         # ---- 7. Write summary files ----
         results.pka_summary_file = self._write_pka_summary(results.sites, data_dir, folder_name)
@@ -228,6 +258,7 @@ class PKaAnalyzer:
         """Process a single titratable site end-to-end."""
         from .pka_data import (
             apply_cutoff,
+            compute_simulation_populations,
             compute_total_population,
             load_lambda_data,
             skip_equilibration,
@@ -268,6 +299,7 @@ class PKaAnalyzer:
 
         # e. Compute total population (pooled across simulations)
         total_pops, total_errs = compute_total_population(bool_data, n_jobs=cfg.n_jobs)
+        sim_pops, sim_errs = compute_simulation_populations(bool_data)
 
         # f. Get LDIN site info
         site_info = self._find_ldin_site(ldin_data, segid_str, resid_str)
@@ -275,11 +307,10 @@ class PKaAnalyzer:
         # g. Get state patch names for labels
         state_names = self._get_state_names(site_cols, ldin_data, segid_str, resid_str)
 
-        # h. Prepare fit data for each state
-        # Wrap total_pops into the format expected by prepare_fit_data:
-        # {pH: {sim_name: pd.Series}} — use a single "pooled" simulation key
-        total_pops_wrapped = {ph: {"pooled": series} for ph, series in total_pops.items()}
-        total_errs_wrapped = {ph: {"pooled": series} for ph, series in total_errs.items()}
+        if n_states >= 3 and site_info is None:
+            raise RuntimeError(
+                f"multi-state site requires LDIN metadata: segid={segid_str} resid={resid_str}"
+            )
 
         ph_arr = np.array(sorted(map(float, total_pops.keys())))
 
@@ -289,45 +320,33 @@ class PKaAnalyzer:
                 ph_arr=ph_arr,
                 total_pops=total_pops,
                 total_errs=total_errs,
-                total_pops_wrapped=total_pops_wrapped,
-                total_errs_wrapped=total_errs_wrapped,
+                total_pops_wrapped=sim_pops,
+                total_errs_wrapped=sim_errs,
                 site_cols=site_cols,
                 site_info=site_info,
                 resid_str=resid_str,
+                segid_str=segid_str,
             )
         elif n_states >= 3 and site_info is not None:
             fit_result = self._fit_multistate(
                 ph_arr=ph_arr,
                 total_pops=total_pops,
                 total_errs=total_errs,
-                total_pops_wrapped=total_pops_wrapped,
-                total_errs_wrapped=total_errs_wrapped,
+                total_pops_wrapped=sim_pops,
+                total_errs_wrapped=sim_errs,
                 site_cols=site_cols,
                 site_info=site_info,
             )
-        else:
-            # Multi-state without LDIN info: fall back to per-state 2-state fits
-            fit_result = self._fit_2state(
-                ph_arr=ph_arr,
-                total_pops=total_pops,
-                total_errs=total_errs,
-                total_pops_wrapped=total_pops_wrapped,
-                total_errs_wrapped=total_errs_wrapped,
-                site_cols=site_cols,
-                site_info=site_info,
-                resid_str=resid_str,
-            )
-
         # j. Static pKa plot
         pka_plot_path = plot_dir / f"{folder_name}_{resn_str}_{resid_str}_pka.png"
         populations_for_plot, errors_for_plot = self._build_plot_arrays(
             ph_arr, total_pops, total_errs, site_cols
         )
-        exp_pka_val = cfg.exp_pka.get(resid_str) if cfg.exp_pka else None
+        exp_pka_val = self._exp_pka_value(segid_str, resid_str)
         try:
             plot_pka(
                 site_label=site_label,
-                ph_values=ph_arr,
+                pH_values=ph_arr,
                 populations=populations_for_plot,
                 errors=errors_for_plot,
                 fit_result=fit_result,
@@ -398,6 +417,7 @@ class PKaAnalyzer:
         site_cols: list[str],
         site_info,
         resid_str: str,
+        segid_str: str,
     ):
         """Perform 2-state bootstrap pKa fit on the first state column."""
         from .pka_data import prepare_fit_data
@@ -409,7 +429,7 @@ class PKaAnalyzer:
         )
 
         cfg = self.config
-        exp_pka_val = cfg.exp_pka.get(resid_str) if cfg.exp_pka else None
+        exp_pka_val = self._exp_pka_value(segid_str, resid_str)
 
         # Prepare fit data for state 0 (NONE / main state)
         ph_fit, pop_per_ph, err_per_ph = prepare_fit_data(
@@ -430,9 +450,11 @@ class PKaAnalyzer:
         # Quick prefit
         try:
             pka_approx, fitted_params = quick_prefit(ph_fit, mean_pops, guess, bounds)
-        except Exception:
-            pka_approx = 7.0
-            fitted_params = guess
+        except Exception as exc:
+            site_segid = site_info.segid if site_info is not None else segid_str
+            raise RuntimeError(
+                f"quick_prefit failed for segid={site_segid} resid={resid_str}"
+            ) from exc
 
         # Identify transition region
         all_state_pops = []
@@ -451,11 +473,11 @@ class PKaAnalyzer:
 
         # Bootstrap fit
         fit_result = bootstrap_fit_2state(
-            ph_values=ph_fit,
-            populations=pop_per_ph,
-            errors=err_per_ph,
-            guess=list(fitted_params),
-            bounds=bounds,
+            ph_fit,
+            pop_per_ph,
+            err_per_ph,
+            list(fitted_params),
+            bounds,
             n_samples=cfg.n_bootstrap,
             n_jobs=cfg.n_jobs,
             transition_mask=transition_mask,
@@ -497,15 +519,18 @@ class PKaAnalyzer:
             state_pop_dict: dict[str, list[float]] = {}
             state_err_dict: dict[str, list[float]] = {}
             state_mean_dict: dict[str, float] = {}
-            for ph_str, series in total_pops.items():
-                val = float(series[col]) if col in series.index else 0.0
-                state_pop_dict[ph_str] = [val]
-                state_mean_dict[ph_str] = val
-                if ph_str in total_errs and col in total_errs[ph_str].index:
-                    err_val = float(total_errs[ph_str][col])
-                else:
-                    err_val = 0.0
-                state_err_dict[ph_str] = [err_val]
+            for ph_str, sim_dict in total_pops_wrapped.items():
+                vals = [
+                    float(series[col]) if col in series.index else 0.0
+                    for series in sim_dict.values()
+                ]
+                errs = [
+                    float(series[col]) if col in series.index else 0.0
+                    for series in total_errs_wrapped.get(ph_str, {}).values()
+                ]
+                state_pop_dict[ph_str] = vals
+                state_err_dict[ph_str] = errs
+                state_mean_dict[ph_str] = float(np.mean(vals)) if vals else 0.0
             all_state_pops.append(state_pop_dict)
             all_state_errors.append(state_err_dict)
             mean_state_pops.append(state_mean_dict)
@@ -528,12 +553,12 @@ class PKaAnalyzer:
 
         # Bootstrap fit
         fit_result = bootstrap_fit_multistate(
-            ph_values=ph_fit,
-            all_state_pops=all_state_pops,
-            all_state_errors=all_state_errors,
-            func=func,
-            guess=guess,
-            bounds=bounds,
+            ph_fit,
+            all_state_pops,
+            all_state_errors,
+            func,
+            guess,
+            bounds,
             n_samples=cfg.n_bootstrap,
             n_jobs=cfg.n_jobs,
             transition_mask=transition_mask,
@@ -582,11 +607,9 @@ class PKaAnalyzer:
 
         # Determine number of time bins from the first available simulation
         n_bins = 0
-        for ph, sim_dict in bin_pops.items():
-            for sim, df in sim_dict.items():
+        for sim_dict in bin_pops.values():
+            for df in sim_dict.values():
                 n_bins = max(n_bins, len(df))
-                break
-            break
 
         if n_bins == 0:
             return None
@@ -625,11 +648,11 @@ class PKaAnalyzer:
 
             try:
                 fit = bootstrap_fit_2state(
-                    ph_values=ph_bin,
-                    populations=pop_for_fit,
-                    errors=err_for_fit if any(err_for_fit.values()) else None,
-                    guess=guess,
-                    bounds=bounds,
+                    ph_bin,
+                    pop_for_fit,
+                    err_for_fit if any(err_for_fit.values()) else None,
+                    guess,
+                    bounds,
                     n_samples=cfg.n_bootstrap_bin,
                     n_jobs=cfg.n_jobs,
                 )
@@ -662,15 +685,20 @@ class PKaAnalyzer:
     # ------------------------------------------------------------------
 
     def _find_file(self, filename: str) -> Path | None:
-        """Search for a file in common locations under input_folder."""
-        candidates = [
-            self.config.input_folder / "prep" / filename,
-            self.config.input_folder / filename,
-        ]
-        # Also search in prod_*/prep/ directories
-        for child in sorted(self.config.input_folder.iterdir()):
-            if child.is_dir() and child.name.startswith("prod_"):
-                candidates.append(child / "prep" / filename)
+        """Search for a file in common locations under input folders."""
+        candidates = []
+        for input_folder in self.config.input_folders:
+            candidates.extend(
+                [
+                    input_folder / "prep" / filename,
+                    input_folder / filename,
+                ]
+            )
+            if not input_folder.exists():
+                continue
+            for child in sorted(input_folder.iterdir()):
+                if child.is_dir() and child.name.startswith("prod_"):
+                    candidates.append(child / "prep" / filename)
 
         for path in candidates:
             if path.exists():
@@ -750,6 +778,15 @@ class PKaAnalyzer:
             errors.append(err_arr)
         return populations, errors
 
+    def _exp_pka_value(self, segid: str, resid: str) -> float | None:
+        if not self.config.exp_pka:
+            return None
+        for key in (f"{segid}:{resid}", f"{segid} {resid}", resid):
+            value = self.config.exp_pka.get(key)
+            if value is not None:
+                return value
+        return None
+
     def _write_pka_summary(
         self, sites: list[SitePKaResult], data_dir: Path, folder_name: str
     ) -> Path:
@@ -818,7 +855,7 @@ class PKaAnalyzer:
                 fit = site.fit_result
                 if fit is None:
                     continue
-                exp_val = self.config.exp_pka.get(site.resid)
+                exp_val = self._exp_pka_value(site.segid, site.resid)
                 if exp_val is None:
                     continue
 

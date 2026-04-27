@@ -10,14 +10,14 @@ from cphmd.native.errors import ExchangeTransportError, wrap_exception
 
 def build_exchanger(comm=None, seed: int | None = None):
     try:
-        from pycharmm.replica_exchange import DirectLabelExchanger
+        from pycharmm.replica_exchange import Exchanger
 
-        return DirectLabelExchanger(comm=comm, seed=seed, abort_on_error=False)
+        return Exchanger(comm=comm, seed=seed, abort_on_error=False)
     except Exception as exc:
         raise wrap_exception(
             exc,
             ExchangeTransportError,
-            "building direct label exchanger",
+            "building pyCHARMM replica exchanger",
         ) from exc
 
 
@@ -33,7 +33,9 @@ def snapshot_state(
     metadata: dict[str, Any] | None = None,
 ):
     try:
-        return exchanger.snapshot(
+        from pycharmm.replica_exchange import State
+
+        state = exchanger.read_state(
             label=label,
             include_lambdas=include_lambdas,
             include_ph=include_ph,
@@ -43,11 +45,14 @@ def snapshot_state(
             msld_theta_blocks=list(msld_theta_blocks or ()),
             metadata=metadata or {},
         )
+        if not isinstance(state, State):
+            raise TypeError("Exchanger.read_state() did not return pycharmm.replica_exchange.State")
+        return state
     except Exception as exc:
         raise wrap_exception(
             exc,
             ExchangeTransportError,
-            "snapshotting direct exchange state",
+            "reading pyCHARMM replica exchange state",
         ) from exc
 
 
@@ -56,20 +61,19 @@ def attempt_neighbor_swap(
     attempt_idx: int,
     state,
     acceptance_fn: Callable[[Any, Any], float],
-    apply_state: bool = True,
 ):
     try:
         return exchanger.attempt_neighbor_exchange(
             attempt_idx,
             state,
             acceptance_fn,
-            apply_state=apply_state,
+            apply_state=True,
         )
     except Exception as exc:
         raise wrap_exception(
             exc,
             ExchangeTransportError,
-            "attempting direct neighbor exchange",
+            "attempting pyCHARMM neighbor exchange",
         ) from exc
 
 
@@ -89,17 +93,4 @@ def ph_lambda_probability(
             exc,
             ExchangeTransportError,
             "computing pH/lambda exchange probability",
-        ) from exc
-
-
-def neighbor_partner(rank: int, size: int, attempt_idx: int) -> int | None:
-    try:
-        from pycharmm.replica_exchange import neighbor_partner as _neighbor_partner
-
-        return _neighbor_partner(rank, size, attempt_idx)
-    except Exception as exc:
-        raise wrap_exception(
-            exc,
-            ExchangeTransportError,
-            "computing neighbor exchange partner",
         ) from exc

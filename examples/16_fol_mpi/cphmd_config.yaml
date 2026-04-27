@@ -15,7 +15,7 @@ master_seed: 20260418
 
 solvation:
   input_file: pdb/folpp
-  output_dir: solvated
+  output_dir: .
   crystal_type: OCTAHEDRAL
   padding: 10.0
   salt_concentration: 0.10
@@ -24,8 +24,8 @@ solvation:
     - toppar/folpp.cgenff.prm
 
 patch:
-  input_folder: solvated
-  output_folder: solvated/prep
+  input_folder: .
+  output_folder: prep
   structure_file: solvated
   hmr: true
   selected_residues: []
@@ -46,7 +46,7 @@ patch:
 
 alf:
   nreps: 5
-  input_folder: solvated
+  input_folder: .
   temperature: 298.15
   hmr: true
   pH: true
@@ -68,7 +68,7 @@ alf:
     - toppar/fol_titratable.str
   replica_exchange:
     enabled: true
-    exchange_freq: 1000
+    exchange_interval_ps: 4.0
   phase1_cutoffs:
     cutb: 5.0
     cutc: 20.0
