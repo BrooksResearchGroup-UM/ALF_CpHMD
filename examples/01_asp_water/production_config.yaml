@@ -18,7 +18,7 @@ simulation:
   temperature: 298.15
   hmr: true
   timestep_fs: 4.0
-  nsteps_per_segment: 1000
+  md_block_steps: 1000
   lambda_save_interval_ps: 0.2
   coordinate_save_interval_ps: 20.0
   checkpoint_interval_ps: 200.0

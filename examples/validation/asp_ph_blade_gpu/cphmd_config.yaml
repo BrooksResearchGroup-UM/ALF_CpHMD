@@ -10,11 +10,11 @@ alf:
   nreps: 1
   start: 1
   end: 5
-  nsteps_per_segment: 10
+  md_block_steps: 10
   time_step_ps: 0.001
-  nsavl: 5
-  nsavc: 10
-  checkpoint_every_segments: 1
+  lambda_save_steps: 5
+  coordinate_save_steps: 10
+  checkpoint_interval_steps: 10
   ph: true
   ph_values: [4.5]
   use_gshift: true

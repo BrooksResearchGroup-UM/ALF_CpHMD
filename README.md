@@ -86,10 +86,13 @@ alf:
   nreps: 1
   start: 1
   end: 5
-  nsteps_per_segment: 10
-  nsavl: 5
-  nsavc: 10
-  checkpoint_every_segments: 1
+  md_block_steps: 10
+  lambda_save_steps: 5
+  coordinate_save_steps: 10
+  checkpoint_interval_steps: 10
+  phase1_iteration_steps: 10
+  phase2_iteration_steps: 20
+  phase3_iteration_steps: 20
   ph: false
 ```
 
@@ -109,15 +112,19 @@ Set the dynamics engine with `native.dynamics_backend`:
 Set the analysis engine with `native.analysis_backend`:
 
 - `cuda-wham`: CUDA WHAM/LMALF analysis.
-- `disabled`: fixed-segment smoke mode with no ALF bias rebuild cycle.
+- `disabled`: fixed-MD-block smoke mode with no ALF bias rebuild cycle.
 
 `use_blade` is not accepted in YAML. Use `native.dynamics_backend` instead.
 
 Runtime intervals can be written in time or step units. For example, use either
-`md_block_ps` or `md_block_steps`, either `exchange_interval_ps` or
-`exchange_interval_steps`, and either `production.duration_ns` or
-`production.duration_steps`. If both forms are present for the same quantity,
-the config is rejected.
+`md_block_ps` or `md_block_steps`, `phase1_iteration_ps` or
+`phase1_iteration_steps`, `exchange_interval_ps` or `exchange_interval_steps`,
+and `production.duration_ns` or `production.duration_steps`. If both forms are
+present for the same quantity, the config is rejected. The old
+`nsteps_per_segment`, `phase*_repeats`, and `checkpoint_every_segments` keys are
+accepted for existing configs. In that compatibility mode, `phase*_repeats`
+means MD blocks per ALF iteration; new examples use explicit MD block and ALF
+iteration language instead.
 
 ## Examples
 

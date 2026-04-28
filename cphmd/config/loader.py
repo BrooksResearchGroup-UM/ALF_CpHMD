@@ -10,6 +10,7 @@ and converts the merged dict into the appropriate dataclass
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
@@ -235,6 +236,15 @@ def load_config(path: str | Path) -> NativeRuntimeConfig:
         production_enabled=production_section is not None,
         ph_enabled=ph_enabled,
     )
+    extra_files = _dedupe_paths(
+        [
+            *(
+                _resolve_config_path(config_path.parent, path)
+                for path in runtime.get("extra_files", [])
+            ),
+            *_legacy_import_extra_files(input_folder),
+        ]
+    )
 
     return NativeRuntimeConfig(
         config_path=config_path,
@@ -265,10 +275,7 @@ def load_config(path: str | Path) -> NativeRuntimeConfig:
         production=production,
         toppar_dir=_resolve_config_path(config_path.parent, runtime.get("toppar_dir", TOPPAR_DIR)),
         topology_files=tuple(runtime.get("topology_files", _DEFAULT_TOPOLOGY_FILES)),
-        extra_files=tuple(
-            _resolve_config_path(config_path.parent, path)
-            for path in runtime.get("extra_files", [])
-        ),
+        extra_files=tuple(extra_files),
         cutnb=float(runtime.get("cutnb", 14.0)),
         ctofnb=float(runtime.get("ctofnb", 12.0)),
         ctonnb=float(runtime.get("ctonnb", 10.0)),
@@ -283,6 +290,35 @@ def _optional_mapping(raw: dict[str, Any], key: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError(f"{key} must be a mapping")
     return dict(value)
+
+
+def _legacy_import_extra_files(input_folder: Path) -> list[Path]:
+    manifest_path = input_folder / "legacy_import.json"
+    if not manifest_path.exists():
+        return []
+    try:
+        manifest = json.loads(manifest_path.read_text())
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid legacy import manifest: {manifest_path}") from exc
+
+    extra_files: list[Path] = []
+    for raw_path in manifest.get("extra_files", []):
+        path = Path(raw_path)
+        if not path.is_absolute():
+            path = input_folder / path
+        extra_files.append(path.resolve())
+    return extra_files
+
+
+def _dedupe_paths(paths: list[Path]) -> list[Path]:
+    seen: set[Path] = set()
+    result: list[Path] = []
+    for path in paths:
+        resolved = path.resolve()
+        if resolved not in seen:
+            seen.add(resolved)
+            result.append(resolved)
+    return result
 
 
 def _runtime_section(
@@ -757,11 +793,15 @@ def config_to_alf(
     return alf_config_from_mapping(cfg)
 
 
-def alf_config_from_mapping(mapping: dict[str, Any]) -> "ALFConfig":
+def alf_config_from_mapping(
+    mapping: dict[str, Any], *, include_defaults: bool = False
+) -> "ALFConfig":
     """Build an ALFConfig from an already-selected ``alf`` mapping."""
     from cphmd.training.config import ALFConfig
 
     cfg = dict(mapping)
+    if include_defaults:
+        cfg = merge_configs(_load_defaults("alf"), cfg)
 
     # Map YAML key aliases to ALFConfig field names
     if "cleanup" in cfg and "cleanup_old_analysis" not in cfg:

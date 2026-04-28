@@ -8,11 +8,14 @@ regeneration is required.
 from __future__ import annotations
 
 import hashlib
+import io
 import json
+import os
 import re
 import shutil
 import warnings
 from collections import defaultdict, deque
+from contextlib import contextmanager, redirect_stdout
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -22,7 +25,7 @@ import numpy as np
 from cphmd.native import system
 from cphmd.native.types import AtomSelection
 
-MANIFEST_VERSION = 5
+MANIFEST_VERSION = 9
 _REQUIRED_PREP_FILES = (
     "system.psf",
     "system.crd",
@@ -77,7 +80,7 @@ class LegacyConvertResult:
 
 def find_legacy_setup_script(prep_dir: str | Path, setup_script: str | None = None) -> str:
     """Find the main legacy CHARMM setup script in ``prep_dir``."""
-    prep_dir = Path(prep_dir)
+    prep_dir = Path(prep_dir).resolve()
     if setup_script is not None:
         path = prep_dir / setup_script
         if not path.exists():
@@ -99,13 +102,15 @@ def find_legacy_setup_script(prep_dir: str | Path, setup_script: str | None = No
 
 def parse_legacy_alf_info(prep_dir: str | Path) -> dict[str, Any]:
     """Parse ``prep/alf_info.py`` and return a normalized dictionary."""
-    prep_dir = Path(prep_dir)
+    prep_dir = Path(prep_dir).resolve()
     alf_info_path = prep_dir / "alf_info.py"
     if not alf_info_path.exists():
         raise FileNotFoundError(f"Required file not found: {alf_info_path}")
 
     namespace: dict[str, Any] = {"np": np}
-    exec(alf_info_path.read_text(), namespace)
+    with _pushd(prep_dir.parent):
+        with _legacy_alf_info_environment(), redirect_stdout(io.StringIO()):
+            exec(alf_info_path.read_text(), namespace)
     if "alf_info" not in namespace:
         raise ValueError(f"alf_info.py must define 'alf_info' dict: {alf_info_path}")
 
@@ -116,6 +121,29 @@ def parse_legacy_alf_info(prep_dir: str | Path) -> dict[str, Any]:
     alf_info["nsubs"] = [int(x) for x in alf_info["nsubs"]]
     alf_info["nblocks"] = int(sum(alf_info["nsubs"]))
     return alf_info
+
+
+@contextmanager
+def _pushd(path: Path):
+    old_cwd = Path.cwd()
+    os.chdir(path)
+    try:
+        yield
+    finally:
+        os.chdir(old_cwd)
+
+
+@contextmanager
+def _legacy_alf_info_environment():
+    old_charmmexec = os.environ.get("CHARMMEXEC")
+    os.environ.setdefault("CHARMMEXEC", "charmm")
+    try:
+        yield
+    finally:
+        if old_charmmexec is None:
+            os.environ.pop("CHARMMEXEC", None)
+        else:
+            os.environ["CHARMMEXEC"] = old_charmmexec
 
 
 def parse_legacy_setup_metadata(
@@ -153,8 +181,33 @@ def parse_legacy_setup_metadata(
         path = _resolve_legacy_path(path_text, prep)
         if path.name and path.suffix.lower() in {".prm", ".str"}:
             parameter_files.append(path)
+    parameter_files.extend(_legacy_unit_parameter_files(text, prep))
+    for match in re.finditer(
+        r"""(?im)\bread\.prm\s*\(\s*['"]([^'"]+)['"]""",
+        text,
+    ):
+        path = _resolve_legacy_path(match.group(1).strip(), prep)
+        if path.name and path.suffix.lower() in {".prm", ".str"}:
+            parameter_files.append(path)
     metadata.parameter_files = _dedupe_paths(parameter_files)
     return metadata
+
+
+def _legacy_unit_parameter_files(text: str, prep_dir: Path) -> list[Path]:
+    unit_paths: dict[str, Path] = {}
+    for match in re.finditer(
+        r"(?im)^\s*open\s+read\s+card\s+unit\s+(\d+)\s+name\s+(.+?)\s*(?:!.*)?$",
+        text,
+    ):
+        unit, path_text = match.groups()
+        unit_paths[unit] = _resolve_legacy_path(path_text, prep_dir)
+
+    parameter_files: list[Path] = []
+    for match in re.finditer(r"(?im)^\s*read\s+para(?:m)?\s+card\s+unit\s+(\d+)\b", text):
+        path = unit_paths.get(match.group(1))
+        if path is not None and path.suffix.lower() in {".prm", ".str"}:
+            parameter_files.append(path)
+    return parameter_files
 
 
 def build_legacy_patches_dat(
@@ -170,16 +223,29 @@ def build_legacy_patches_dat(
     prep = Path(prep_dir)
     base_resname = (resname or ligseg).upper()
     tags = _legacy_ldin_tags(setup_script, nsubs) if setup_script is not None else {}
+    script_atoms = _legacy_site_definition_atoms(setup_script) if setup_script is not None else {}
+    source_subsites = (
+        _legacy_block_call_site_subs(setup_script, nsubs)
+        if setup_script is not None
+        else _sequential_site_subs(nsubs)
+    )
     rows: list[dict[str, str]] = []
+    source_index = 0
     for site_idx, nsub in enumerate(nsubs, start=1):
         for sub_idx in range(1, nsub + 1):
-            rtf = prep / f"site{site_idx}_sub{sub_idx}_pres.rtf"
-            atoms = _read_patch_atoms(rtf)
+            source_site_idx, source_sub_idx = source_subsites[source_index]
+            source_index += 1
+            rtf = prep / f"site{source_site_idx}_sub{source_sub_idx}_pres.rtf"
+            atoms = script_atoms.get((source_site_idx, source_sub_idx))
+            if atoms is None and rtf.exists():
+                atoms = _read_patch_atoms(rtf)
+            if not atoms:
+                raise FileNotFoundError(f"Legacy patch RTF not found: {rtf}")
             rows.append(
                 {
                     "SEGID": ligseg.upper(),
                     "RESID": str(resnum),
-                    "PATCH": f"p{site_idx}_{sub_idx}",
+                    "PATCH": f"p{source_site_idx}_{source_sub_idx}",
                     "_BASE_RESNAME": base_resname,
                     "SELECT": f"s{site_idx}s{sub_idx}",
                     "ATOMS": " ".join(atoms),
@@ -187,6 +253,39 @@ def build_legacy_patches_dat(
                 }
             )
     return rows
+
+
+def _sequential_site_subs(nsubs: list[int]) -> list[tuple[int, int]]:
+    return [
+        (site_idx, sub_idx)
+        for site_idx, nsub in enumerate(nsubs, start=1)
+        for sub_idx in range(1, nsub + 1)
+    ]
+
+
+def _legacy_block_call_site_subs(
+    setup_script: str | Path,
+    nsubs: list[int],
+) -> list[tuple[int, int]]:
+    call_map: dict[int, tuple[int, int]] = {}
+    for raw_line in Path(setup_script).read_text().splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("!"):
+            continue
+        match = re.search(r"(?i)\bcall\s+(\d+)\b.*\bsite(\d+)_sub(\d+)\b", line)
+        if match is not None:
+            call_map[int(match.group(1))] = (int(match.group(2)), int(match.group(3)))
+
+    if not call_map:
+        return _sequential_site_subs(nsubs)
+
+    source_subsites: list[tuple[int, int]] = []
+    block = 1
+    for site_idx, nsub in enumerate(nsubs, start=1):
+        for sub_idx in range(1, nsub + 1):
+            block += 1
+            source_subsites.append(call_map.get(block, (site_idx, sub_idx)))
+    return source_subsites
 
 
 def convert_legacy_system(config: LegacyConvertConfig) -> LegacyConvertResult:
@@ -249,6 +348,7 @@ def convert_legacy_system(config: LegacyConvertConfig) -> LegacyConvertResult:
         resnum=metadata.resnum,
         setup_script=setup_path,
     )
+    _validate_legacy_patch_rows_against_prebuilt_psf(prep_dir, rows, setup_name)
     _write_patches_dat(output_prep / "patches.dat", rows)
     _write_box_files(output_prep, float(metadata.box))
     extra_files = _copy_extra_files(metadata.parameter_files, output_prep)
@@ -318,7 +418,10 @@ def _resolve_legacy_path(path_text: str, prep_dir: Path) -> Path:
     path_text = path_text.replace("@builddir", str(prep_dir))
     path = Path(path_text)
     if not path.is_absolute():
-        path = prep_dir / path
+        if path.parts and path.parts[0] == prep_dir.name:
+            path = prep_dir.parent / path
+        else:
+            path = prep_dir / path
     return path.resolve()
 
 
@@ -344,6 +447,38 @@ def _read_patch_atoms(rtf_path: Path) -> list[str]:
     if not atoms:
         raise ValueError(f"No ATOM records found in legacy patch RTF: {rtf_path}")
     return atoms
+
+
+def _legacy_site_definition_atoms(setup_script: str | Path) -> dict[tuple[int, int], list[str]]:
+    definitions: dict[tuple[int, int], list[str]] = {}
+    current: tuple[int, int] | None = None
+    atoms: list[str] = []
+
+    for raw_line in Path(setup_script).read_text().splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("!"):
+            continue
+        match = re.match(r"(?i)^define\s+site(\d+)_sub(\d+)\b", line)
+        if match:
+            if current is not None and atoms:
+                definitions[current] = atoms
+            current = (int(match.group(1)), int(match.group(2)))
+            atoms = []
+            continue
+        if current is None:
+            continue
+        for atom_match in re.finditer(r"(?i)\batom\s+\S+\s+\S+\s+(\S+)", line):
+            atom = atom_match.group(1).strip()
+            if atom.upper() != "NONE":
+                atoms.append(atom)
+        if re.search(r"(?i)\bend\b", line):
+            if atoms:
+                definitions[current] = atoms
+            current = None
+            atoms = []
+    if current is not None and atoms:
+        definitions[current] = atoms
+    return definitions
 
 
 def _legacy_ldin_tags(setup_script: str | Path, nsubs: list[int]) -> dict[tuple[int, int], str]:
@@ -398,11 +533,13 @@ def _legacy_source_files(prep_dir: Path, setup_path: Path, nsubs: list[int]) -> 
         prep_dir / "lpsites.inp",
         prep_dir / "restrains.str",
         prep_dir / "system_min.crd",
+        prep_dir / "minimized.psf",
+        prep_dir / "minimized.crd",
+        prep_dir / "minimized.pdb",
     ]
-    for site_idx, nsub in enumerate(nsubs, start=1):
-        for sub_idx in range(1, nsub + 1):
-            files.append(prep_dir / f"site{site_idx}_sub{sub_idx}_pres.rtf")
-            files.append(prep_dir / f"site{site_idx}_sub{sub_idx}_frag.pdb")
+    for site_idx, sub_idx in _legacy_block_call_site_subs(setup_path, nsubs):
+        files.append(prep_dir / f"site{site_idx}_sub{sub_idx}_pres.rtf")
+        files.append(prep_dir / f"site{site_idx}_sub{sub_idx}_frag.pdb")
     return [path for path in files if path.exists()]
 
 
@@ -526,6 +663,10 @@ def _write_legacy_structure(
     metadata: LegacySetupMetadata,
     patch_rows: list[dict[str, str]],
 ) -> None:
+    if _has_prebuilt_legacy_structure(prep_dir):
+        _copy_prebuilt_legacy_structure(prep_dir, output_prep, patch_rows)
+        return
+
     if not config.debug:
         system.set_prnlev(-1)
         system.set_warn_level(-1)
@@ -540,24 +681,21 @@ def _write_legacy_structure(
 
     script = _structure_only_script(
         setup_path.read_text(),
-        prep_dir=prep_dir,
+        prep_dir=Path(prep_dir.name),
         box=float(metadata.box),
         temp=metadata.temp if metadata.temp is not None else alf_info.get("temp", 298.15),
         skip_legacy_toppar=skip_legacy_toppar,
         patch_rows=patch_rows,
+        nsubs=alf_info["nsubs"],
     )
     processed = output_prep / ".legacy_structure_build.inp"
     processed.write_text(script)
     try:
-        system.stream_file(processed)
+        with _pushd(prep_dir.parent):
+            system.stream_file(processed)
         system.write_psf(output_prep / "system.psf")
         system.write_coor(output_prep / "system.crd")
         system.write_coor_pdb(output_prep / "system.pdb")
-        _rewrite_legacy_state_resnames(output_prep / "system.psf", patch_rows, "psf")
-        _rewrite_legacy_state_resnames(output_prep / "system.crd", patch_rows, "crd")
-        _rewrite_legacy_state_resnames(output_prep / "system.pdb", patch_rows, "pdb")
-        if (output_prep / "system_min.crd").exists():
-            _rewrite_legacy_state_resnames(output_prep / "system_min.crd", patch_rows, "crd")
     finally:
         processed.unlink(missing_ok=True)
         system.crystal_free()
@@ -568,6 +706,74 @@ def _write_legacy_structure(
             system.set_prnlev(5)
 
 
+def _has_prebuilt_legacy_structure(prep_dir: Path) -> bool:
+    return all((prep_dir / f"minimized.{suffix}").exists() for suffix in ("psf", "crd"))
+
+
+def _validate_legacy_patch_rows_against_prebuilt_psf(
+    prep_dir: Path,
+    patch_rows: list[dict[str, str]],
+    setup_script: str,
+) -> None:
+    psf_path = _prebuilt_legacy_psf(prep_dir)
+    if psf_path is None:
+        return
+    psf_atoms = _read_psf_atom_keys(psf_path)
+    if not psf_atoms:
+        return
+
+    empty_rows: list[str] = []
+    for row in patch_rows:
+        segid = row["SEGID"].upper()
+        resid = str(row["RESID"])
+        row_atoms = row["ATOMS"].split()
+        if not any((segid, resid, atom.upper()) in psf_atoms for atom in row_atoms):
+            empty_rows.append(f"{row['PATCH']}/{row['SELECT']}")
+    if empty_rows:
+        sample = ", ".join(empty_rows[:5])
+        raise ValueError(
+            f"Legacy setup script {setup_script!r} generated alchemical selections with no "
+            f"matching atoms in {psf_path.name}: {sample}. Check legacy_setup_script; use "
+            "the grouped final simulation script, not a full-library build template."
+        )
+
+
+def _prebuilt_legacy_psf(prep_dir: Path) -> Path | None:
+    for name in ("minimized.psf", "system.psf"):
+        path = prep_dir / name
+        if path.exists():
+            return path
+    return None
+
+
+def _read_psf_atom_keys(path: Path) -> set[tuple[str, str, str]]:
+    atoms: set[tuple[str, str, str]] = set()
+    remaining_atoms: int | None = None
+    for line in path.read_text().splitlines():
+        if remaining_atoms is None and "!NATOM" in line:
+            remaining_atoms = int(line.split()[0])
+            continue
+        if remaining_atoms:
+            parts = line.split()
+            if len(parts) >= 5:
+                atoms.add((parts[1].upper(), str(parts[2]), parts[4].upper()))
+            remaining_atoms -= 1
+    return atoms
+
+
+def _copy_prebuilt_legacy_structure(
+    prep_dir: Path,
+    output_prep: Path,
+    patch_rows: list[dict[str, str]],
+) -> None:
+    for suffix in ("psf", "crd"):
+        shutil.copy2(prep_dir / f"minimized.{suffix}", output_prep / f"system.{suffix}")
+    if (prep_dir / "minimized.pdb").exists():
+        shutil.copy2(prep_dir / "minimized.pdb", output_prep / "system.pdb")
+    elif (prep_dir / "solvent.pdb").exists():
+        shutil.copy2(prep_dir / "solvent.pdb", output_prep / "system.pdb")
+
+
 def _structure_only_script(
     script_text: str,
     *,
@@ -576,24 +782,35 @@ def _structure_only_script(
     temp: float,
     skip_legacy_toppar: bool,
     patch_rows: list[dict[str, str]],
+    nsubs: list[int],
 ) -> str:
     lines: list[str] = []
+    inserted_counts = False
     for line in script_text.splitlines():
         if re.match(r"(?i)^\s*BLOCK\b", line):
             break
-        if skip_legacy_toppar and re.match(
-            r"(?i)^\s*stream\s+@builddir/toppar\.str\b",
-            line.strip(),
-        ):
+        if skip_legacy_toppar and re.match(r"(?i)^\s*stream\b.*toppar", line.strip()):
             lines.append("! Legacy toppar.str skipped; topology files preloaded")
             continue
         line = re.sub(r"(?i)^\s*set\s+builddir\s*=\s*\S+", f"set builddir = {prep_dir}", line)
         line = re.sub(r"(?i)^\s*set\s+box\s*=\s*\S+", f"set box = {box}", line)
         line = re.sub(r"(?i)^\s*set\s+temp\s*=\s*\S+", f"set temp = {temp}", line)
+        if skip_legacy_toppar:
+            line = re.sub(r"(?i)^(\s*read\s+rtf\s+)card\b", r"\1append card", line)
+            line = re.sub(r"(?i)^(\s*read\s+para\s+)card\b", r"\1append card", line)
         lines.append(line)
+        if not inserted_counts and re.match(r"(?i)^\s*bomblev\b", line):
+            lines.extend(_legacy_count_parameter_lines(nsubs))
+            inserted_counts = True
     lines.append("")
     lines.append("return")
     return "\n".join(lines) + "\n"
+
+
+def _legacy_count_parameter_lines(nsubs: list[int]) -> list[str]:
+    lines = [f"set nsites = {len(nsubs)}", f"set nblocks = {sum(nsubs)}"]
+    lines.extend(f"set nsubs{idx} = {value}" for idx, value in enumerate(nsubs, start=1))
+    return lines
 
 
 def _rewrite_legacy_state_resnames(
@@ -661,8 +878,8 @@ def _rewrite_crd_state_resnames(
 ) -> list[str]:
     rewritten: list[str] = []
     remaining_atoms: int | None = None
-    ligand_resseq: int | None = None
-    residue_shift = _state_row_count(queues)
+    current_identity: tuple[str, str, str] | None = None
+    current_resseq = 0
     for line in lines:
         parts = line.split()
         if remaining_atoms is None and len(parts) >= 2 and parts[1].upper() == "EXT":
@@ -670,15 +887,23 @@ def _rewrite_crd_state_resnames(
             rewritten.append(line)
             continue
         if remaining_atoms:
-            line, ligand_resseq = _rewrite_crd_atom_line(
+            line = _rewrite_crd_atom_line(
                 line,
                 queues,
                 key_idx=(7, 8, 3),
                 resname_idx=2,
-                resseq_idx=1,
-                ligand_resseq=ligand_resseq,
-                residue_shift=residue_shift,
             )
+            tokens = list(re.finditer(r"\S+", line))
+            if len(tokens) > 8:
+                identity = (
+                    tokens[7].group().upper(),
+                    tokens[8].group(),
+                    tokens[2].group().upper(),
+                )
+                if identity != current_identity:
+                    current_identity = identity
+                    current_resseq += 1
+                line = f"{line[:10]}{current_resseq:10d}{line[20:]}"
             remaining_atoms -= 1
         rewritten.append(line)
     return rewritten
@@ -725,54 +950,22 @@ def _rewrite_crd_atom_line(
     *,
     key_idx: tuple[int, int, int],
     resname_idx: int,
-    resseq_idx: int,
-    ligand_resseq: int | None,
-    residue_shift: int,
-) -> tuple[str, int | None]:
+) -> str:
     tokens = list(re.finditer(r"\S+", line))
-    max_idx = max(*key_idx, resname_idx, resseq_idx)
+    max_idx = max(*key_idx, resname_idx)
     if len(tokens) <= max_idx:
-        return line, ligand_resseq
+        return line
 
     segid = tokens[key_idx[0]].group().upper()
     resid = tokens[key_idx[1]].group()
     atom = tokens[key_idx[2]].group().upper()
     queue = queues.get((segid, resid, atom))
-    resseq = _try_int(tokens[resseq_idx].group())
 
     if queue:
-        patch, state_offset = queue.popleft()
-        if ligand_resseq is None:
-            ligand_resseq = resseq
-        base_resseq = ligand_resseq if ligand_resseq is not None else resseq
+        patch, _state_offset = queue.popleft()
         next_resname = tokens[resname_idx + 1] if len(tokens) > resname_idx + 1 else None
-        line = _replace_token(line, tokens[resname_idx], patch, next_resname)
-        if base_resseq is not None:
-            next_resseq = tokens[resseq_idx + 1] if len(tokens) > resseq_idx + 1 else None
-            line = _replace_token(
-                line,
-                tokens[resseq_idx],
-                str(base_resseq + state_offset),
-                next_resseq,
-            )
-        return line, ligand_resseq
-
-    if ligand_resseq is not None and resseq is not None and resseq > ligand_resseq:
-        next_resseq = tokens[resseq_idx + 1] if len(tokens) > resseq_idx + 1 else None
-        line = _replace_token(line, tokens[resseq_idx], str(resseq + residue_shift), next_resseq)
-    return line, ligand_resseq
-
-
-def _state_row_count(queues: dict[tuple[str, str, str], deque[tuple[str, int]]]) -> int:
-    offsets = [assignment[1] for assignments in queues.values() for assignment in assignments]
-    return max(offsets, default=0)
-
-
-def _try_int(value: str) -> int | None:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None
+        return _replace_token(line, tokens[resname_idx], patch, next_resname)
+    return line
 
 
 def _replace_token(

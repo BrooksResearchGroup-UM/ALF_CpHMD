@@ -16,7 +16,11 @@ from typing import Any
 
 import typer
 
-from cphmd.config.loader import NativeRuntimeConfig, alf_config_from_mapping, load_config
+from cphmd.config.loader import (
+    NativeRuntimeConfig,
+    alf_config_from_mapping,
+    load_config,
+)
 from cphmd.simulation.backends import AnalysisBackend
 from cphmd.simulation.context import RunContext, TitratableBlock
 from cphmd.simulation.loop import SimulationLoop
@@ -182,6 +186,8 @@ def build_run_context(
     rex_requested = _rex_enabled(cfg.replica_exchange)
     if rex_requested and not cfg.ph:
         raise ValueError("replica exchange requires pH to be enabled")
+    if rex_requested and cfg.nreps <= 1:
+        raise ValueError("replica exchange requires nreps > 1")
     rex_interval = _rex_interval(
         cfg.replica_exchange,
         nsteps_per_segment=cfg.nsteps_per_segment,
@@ -190,8 +196,12 @@ def build_run_context(
     ph_values = _native_ph_values(cfg) if cfg.ph else ()
     if cfg.ph and not ph_values:
         ph_values = tuple(float(7.0) for _ in range(cfg.nreps))
-    if ph_values and len(ph_values) < cfg.nreps:
-        ph_values = ph_values + tuple(ph_values[-1] for _ in range(cfg.nreps - len(ph_values)))
+    has_explicit_ladder = _has_explicit_ph_ladder(cfg)
+    if cfg.ph and has_explicit_ladder and len(ph_values) != cfg.nreps:
+        raise ValueError(
+            "explicit pH ladder length must match nreps; "
+            f"got {len(ph_values)} for nreps={cfg.nreps}"
+        )
     rex_enabled = rex_requested and cfg.nreps > 1
     ph_for_rank = ph_values[replica_label] if ph_values and replica_label < len(ph_values) else 7.0
 
@@ -302,7 +312,16 @@ def build_hooks(cfg: NativeRuntimeConfig, ctx: RunContext):
     )
 
     alf_config = _alf_config_from_native_config(cfg)
-    repeats = _alf_repeats_for_phase(alf_config, cfg.phase)
+    phase_repeats = {
+        phase: _alf_repeats_for_phase(
+            alf_config,
+            phase,
+            nsteps_per_segment=ctx.nsteps_per_segment,
+            time_step_ps=ctx.time_step_ps,
+        )
+        for phase in (1, 2, 3)
+    }
+    repeats = phase_repeats.get(int(cfg.phase), phase_repeats[3])
     nsubs = _nsubs_from_context(ctx)
     alf_info = load_alf_info(cfg)
     if not alf_info:
@@ -316,21 +335,28 @@ def build_hooks(cfg: NativeRuntimeConfig, ctx: RunContext):
             "temp": cfg.temperature,
             "ntersite": [0, 0],
         }
+    _validate_native_phase_controls(alf_config)
     analyzer = NativeALFAnalyzer(
         config=alf_config,
         ctx=ctx,
         alf_info=alf_info,
         work_dir=cfg.run_dir,
+        initial_bias_provider=_native_initial_bias_provider(cfg, nsubs),
     )
     return ALFHooks(
         ALFTrainingConfig(
             cycle_every_segments=repeats,
             end_cycle=cfg.end,
-            cache_segments=repeats,
+            cache_segments=max(phase_repeats.values()),
             generate_dashboard_plots=bool(getattr(alf_config, "generate_dashboard_plots", True)),
             generate_population_plots=bool(getattr(alf_config, "generate_population_plots", False)),
             generate_g_profiles_2d=bool(getattr(alf_config, "generate_g_profiles_2d", False)),
             generate_g_profiles_3d=bool(getattr(alf_config, "generate_g_profiles_3d", False)),
+            phase1_repeats=phase_repeats[1],
+            phase2_repeats=phase_repeats[2],
+            phase3_repeats=phase_repeats[3],
+            phase1_cycles=getattr(alf_config, "phase1_cycles", None),
+            phase2_cycles=getattr(alf_config, "phase2_cycles", None),
         ),
         nsubs=nsubs,
         cycle_runner=ALFCycleRunner(
@@ -342,19 +368,152 @@ def build_hooks(cfg: NativeRuntimeConfig, ctx: RunContext):
     )
 
 
-def _alf_repeats_for_phase(config: Any, phase: int) -> int:
-    attr = {
+def _native_initial_bias_provider(cfg: NativeRuntimeConfig, nsubs: tuple[int, ...]):
+    alf_section = cfg.raw.get("alf", {}) or {}
+    if not (isinstance(alf_section, dict) and alf_section.get("bias_guess") is True):
+        return None
+
+    def provider():
+        import numpy as np
+        import pandas as pd
+
+        from cphmd.core.bias_guesser import guess_initial_biases_combined
+        from cphmd.training.bias_snapshot import BiasSnapshot
+
+        patch_info = pd.read_csv(_prep_dir(cfg) / "patches.dat")
+        nsubs_list = [int(value) for value in nsubs]
+        try:
+            b, c = guess_initial_biases_combined(
+                patch_info,
+                nsubs_list,
+                fnex=float(cfg.fnex),
+                legacy=False,
+                reload_system=lambda: _bootstrap_native_system(cfg),
+            )
+        finally:
+            _bootstrap_native_system(cfg)
+
+        nblocks = sum(nsubs_list)
+        b, c = _sanitize_initial_bias_arrays(b, c)
+        zeros = np.zeros((nblocks, nblocks), dtype=np.float64)
+        return BiasSnapshot.from_arrays(
+            b=b,
+            c=c,
+            x=zeros,
+            s=zeros,
+            nsubs=nsubs,
+        )
+
+    return provider
+
+
+def _sanitize_initial_bias_arrays(b, c):
+    import numpy as np
+
+    b_arr = np.asarray(b, dtype=np.float64)
+    c_arr = np.asarray(c, dtype=np.float64)
+    if np.all(np.isfinite(b_arr)) and np.all(np.isfinite(c_arr)):
+        return b_arr, c_arr
+    print("Warning: non-finite initial bias guess values were replaced with 0.0")
+    return (
+        np.nan_to_num(b_arr, nan=0.0, posinf=0.0, neginf=0.0),
+        np.nan_to_num(c_arr, nan=0.0, posinf=0.0, neginf=0.0),
+    )
+
+
+def _validate_native_phase_controls(config: Any) -> None:
+    if bool(getattr(config, "auto_phase_switch", False)) and (
+        getattr(config, "phase1_cycles", None) is not None
+        or getattr(config, "phase2_cycles", None) is not None
+    ):
+        raise ValueError(
+            "alf.auto_phase_switch cannot be combined with fixed phase iteration counts"
+        )
+
+
+_DEFAULT_ALF_ITERATION_PS = {1: 100.0, 2: 1000.0, 3: 10000.0}
+
+
+def _alf_repeats_for_phase(
+    config: Any,
+    phase: int,
+    *,
+    nsteps_per_segment: int,
+    time_step_ps: float,
+) -> int:
+    phase = int(phase)
+    repeat_attr = {
         1: "phase1_repeats",
         2: "phase2_repeats",
         3: "phase3_repeats",
-    }.get(int(phase), "phase3_repeats")
-    value = getattr(config, attr, None)
-    if value is None:
-        value = 1 if int(phase) == 1 else 2
-    repeats = int(value)
+    }.get(phase, "phase3_repeats")
+    ps_attr = f"phase{phase}_iteration_ps"
+    steps_attr = f"phase{phase}_iteration_steps"
+    values = {
+        repeat_attr: getattr(config, repeat_attr, None),
+        ps_attr: getattr(config, ps_attr, None),
+        steps_attr: getattr(config, steps_attr, None),
+    }
+    present = [name for name, value in values.items() if value is not None]
+    if len(present) > 1:
+        keys = ", ".join(f"alf.{name}" for name in present)
+        raise ValueError(f"conflicting Phase {phase} ALF iteration length keys: {keys}")
+
+    repeats_value = values[repeat_attr]
+    if repeats_value is not None:
+        repeats = int(repeats_value)
+    elif values[steps_attr] is not None:
+        repeats = _alf_repeats_from_steps(
+            values[steps_attr],
+            nsteps_per_segment=nsteps_per_segment,
+            name=f"alf.{steps_attr}",
+        )
+    else:
+        iteration_ps = values[ps_attr]
+        if iteration_ps is None:
+            iteration_ps = _DEFAULT_ALF_ITERATION_PS.get(phase, _DEFAULT_ALF_ITERATION_PS[3])
+        repeats = _alf_repeats_from_ps(
+            iteration_ps,
+            nsteps_per_segment=nsteps_per_segment,
+            time_step_ps=time_step_ps,
+            name=f"alf.{ps_attr}",
+        )
     if repeats <= 0:
-        raise ValueError(f"{attr} must be positive")
+        raise ValueError(f"alf.{repeat_attr} must be positive")
     return repeats
+
+
+def _alf_repeats_from_ps(
+    value: Any,
+    *,
+    nsteps_per_segment: int,
+    time_step_ps: float,
+    name: str,
+) -> int:
+    iteration_ps = float(value)
+    if iteration_ps <= 0:
+        raise ValueError(f"{name} must be positive")
+    md_block_ps = max(1, int(nsteps_per_segment)) * float(time_step_ps)
+    ratio = iteration_ps / md_block_ps
+    rounded = round(ratio)
+    if rounded <= 0 or abs(ratio - rounded) > 1e-9:
+        raise ValueError(f"{name} must be divisible by the MD block length")
+    return int(rounded)
+
+
+def _alf_repeats_from_steps(
+    value: Any,
+    *,
+    nsteps_per_segment: int,
+    name: str,
+) -> int:
+    iteration_steps = int(value)
+    if iteration_steps <= 0:
+        raise ValueError(f"{name} must be positive")
+    md_block_steps = max(1, int(nsteps_per_segment))
+    if iteration_steps % md_block_steps != 0:
+        raise ValueError(f"{name} must be divisible by the MD block length")
+    return max(1, iteration_steps // md_block_steps)
 
 
 def _nsubs_from_context(ctx: RunContext) -> tuple[int, ...]:
@@ -430,7 +589,7 @@ def _alf_config_from_native_config(cfg: NativeRuntimeConfig):
     alf_section = dict(cfg.raw.get("alf", {}) or {})
     if "input_folder" not in alf_section:
         alf_section["input_folder"] = cfg.input_folder
-    alf_config = alf_config_from_mapping(alf_section)
+    alf_config = alf_config_from_mapping(alf_section, include_defaults=True)
     alf_config.input_folder = cfg.input_folder
     alf_config.toppar_dir = cfg.toppar_dir
     alf_config.topology_files = list(cfg.topology_files)
@@ -606,7 +765,7 @@ def _rex_interval(
     replica_exchange: Any,
     *,
     nsteps_per_segment: int = 1,
-    time_step_ps: float = 1.0,
+    time_step_ps: float = 0.004,
 ) -> int:
     if isinstance(replica_exchange, dict):
         removed = sorted(
@@ -687,7 +846,11 @@ def _rex_interval(
                 nsteps_per_segment=nsteps_per_segment,
                 name="replica_exchange.exchange_freq",
             )
-    return 1
+    return _rex_segments_from_ps(
+        4.0,
+        nsteps_per_segment=nsteps_per_segment,
+        time_step_ps=time_step_ps,
+    )
 
 
 def _rex_segments_from_ps(
@@ -823,11 +986,7 @@ def _initial_block_stream(
     ]
 
     for idx, row in enumerate(patch_info):
-        lines.append(
-            f"CALL {idx + 2:<4} SELEct segid {str(row['SEGID']).strip()} "
-            f".and. resid {str(row['RESID']).strip()} "
-            f".and. resname {str(row['PATCH']).strip()} END"
-        )
+        lines.extend(_block_call_lines(idx + 2, row))
     lines.append("")
 
     for site in sorted({int(row["site"]) for row in patch_info}):
@@ -845,11 +1004,22 @@ def _initial_block_stream(
     )
     if ctx.ph_enabled:
         lines.append(f"PHMD pH {float(ctx.ph):.3f}")
+    elec_type = str(cfg.elec_type).lower()
     lines.extend(
         [
             "SOFT ON",
+        ]
+    )
+    if elec_type in ("pmeex", "pme_ex"):
+        lines.append("PMEL EX")
+    elif elec_type in ("pmeon", "pme_on"):
+        lines.append("PMEL ON")
+    elif elec_type in ("pmenn", "pme_nn"):
+        lines.append("PMEL NN")
+    lines.extend(
+        [
             "",
-            "LDIN 1    1.0000 0.0000 12.0 0.0000 5.0 NONE",
+            "LDIN 1    1.0000 0.0000 12.0 0.0000 5.0 ! NONE",
         ]
     )
 
@@ -858,8 +1028,8 @@ def _initial_block_stream(
         sub_count = nsubs[site - 1] if 0 < site <= len(nsubs) else 1
         lambda0 = 1.0 / max(1, sub_count)
         tag = str(row.get("TAG", "")).strip()
-        suffix = f" {tag}" if tag and tag.upper() != "NONE" else " NONE"
-        lines.append(f"LDIN {idx + 2:<4} {lambda0:.4f} 0.0000 12.0 0.0000 5.0{suffix}")
+        comment = f" ! {tag}" if tag else ""
+        lines.append(f"LDIN {idx + 2:<4} {lambda0:.4f} 0.0000 12.0 0.0000 5.0{comment}")
 
     lines.extend(
         [
@@ -879,14 +1049,6 @@ def _initial_block_stream(
         ]
     )
 
-    elec_type = str(cfg.elec_type).lower()
-    if elec_type in ("pmeex", "pme_ex"):
-        lines.append("PMEL EX")
-    elif elec_type in ("pmeon", "pme_on"):
-        lines.append("PMEL ON")
-    elif elec_type in ("pmenn", "pme_nn"):
-        lines.append("PMEL NN")
-
     lines.extend(
         [
             "",
@@ -896,6 +1058,28 @@ def _initial_block_stream(
         ]
     )
     return "\n".join(lines)
+
+
+def _block_call_lines(block_id: int, row: dict[str, Any]) -> list[str]:
+    segid = str(row["SEGID"]).strip()
+    resid = str(row["RESID"]).strip()
+    patch = str(row["PATCH"]).strip()
+    atoms = [atom.strip() for atom in str(row.get("ATOMS", "")).split() if atom.strip()]
+    if not atoms:
+        return [
+            f"CALL {block_id:<4} SELEct segid {segid} "
+            f".and. resid {resid} "
+            f".and. resname {patch} END"
+        ]
+
+    lines = [
+        f"CALL {block_id:<4} SELEct segid {segid} .and. resid {resid} -",
+        f".and. resname {patch} .and. ( -",
+    ]
+    for atom in atoms:
+        lines.append(f"type {atom} .or. -")
+    lines.append("none ) END")
+    return lines
 
 
 def _patch_rows_with_sites(rows: list[dict[str, str]]) -> list[dict[str, Any]]:
@@ -952,6 +1136,12 @@ def _zero_ldbv_stream(patch_info: list[dict[str, Any]], *, fnex: float) -> str:
 @dataclass(frozen=True)
 class _AtomSelection:
     raw: str | None = None
+
+
+_IMAGE_CENTERING_SOLVENT_SELECTION = (
+    "segid SOLV .or. segid IONS .or. segid WT00 .or. "
+    "resname TIP3 .or. resname SOD .or. resname CLA .or. resname POT .or. resname CES"
+)
 
 
 @dataclass(frozen=True)
@@ -1080,8 +1270,12 @@ def _read_topology_files(
 
 
 def _read_structure(psf_file: Path | str, crd_file: Path | str) -> None:
-    system.read_psf(psf_file)
-    system.read_coor(crd_file)
+    system.set_bomb_level(-1)
+    try:
+        system.read_psf(psf_file)
+        system.read_coor(crd_file)
+    finally:
+        system.set_bomb_level(0)
 
 
 def _setup_crystal(
@@ -1106,10 +1300,13 @@ def _setup_crystal(
     )
     system.crystal_build(cutoff=nb_config.cutim)
     if use_image_centering:
-        system.image_setup(byres=True, segid_list=["SOLV", "IONS"])
+        system.image_setup(
+            byres=True,
+            selection=_AtomSelection(raw=_IMAGE_CENTERING_SOLVENT_SELECTION),
+        )
         system.image_setup(
             byres=False,
-            selection=_AtomSelection(raw=".not. (segid SOLV .or. segid IONS)"),
+            selection=_AtomSelection(raw=f".not. ({_IMAGE_CENTERING_SOLVENT_SELECTION})"),
         )
 
 
@@ -1137,7 +1334,6 @@ def _bootstrap_native_system(cfg: NativeRuntimeConfig) -> None:
         nb_config.ffty = fft.ffty
         nb_config.fftz = fft.fftz
         _setup_crystal(box, nb_config, use_image_centering=not bool(cfg.cent_ncres))
-    system.nbonds_setup(**nb_config.to_kwargs())
 
     block_path = _block_stream_path_for_bootstrap(cfg, prep_dir)
     if block_path is not None:
@@ -1147,6 +1343,8 @@ def _bootstrap_native_system(cfg: NativeRuntimeConfig) -> None:
             "production run requires initialized BLOCK file in "
             f"{prep_dir} or {cfg.run_dir / 'prep'}"
         )
+
+    system.nbonds_setup(**nb_config.to_kwargs())
 
     restrains_path = prep_dir / "restrains.str"
     if restrains_path.exists():

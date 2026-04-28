@@ -8,6 +8,7 @@ minimized structure. Used when presets are unavailable.
 from __future__ import annotations
 
 import logging
+import os
 import re
 import tempfile
 from collections.abc import Callable
@@ -190,12 +191,30 @@ def _generate_call_statements(patch_info: pd.DataFrame) -> str:
     ]
 
     for idx, row in patch_info.iterrows():
-        lines.append(
-            f"CALL {idx + 2} SELEct segid {row['SEGID']} .and. resid {row['RESID']} "
-            f".and. resname {row['PATCH']} END"
-        )
+        lines.extend(_call_lines_from_patch_row(idx + 2, row))
 
     return "\n".join(lines) + "\n\n"
+
+
+def _call_lines_from_patch_row(block_id: int, row: pd.Series) -> list[str]:
+    segid = str(row["SEGID"]).strip()
+    resid = str(row["RESID"]).strip()
+    patch = str(row["PATCH"]).strip()
+    atoms = [atom.strip() for atom in str(row.get("ATOMS", "")).split() if atom.strip()]
+    if not atoms:
+        return [
+            f"CALL {block_id} SELEct segid {segid} .and. resid {resid} "
+            f".and. resname {patch} END"
+        ]
+
+    lines = [
+        f"CALL {block_id} SELEct segid {segid} .and. resid {resid} -",
+        f".and. resname {patch} .and. ( -",
+    ]
+    for atom in atoms:
+        lines.append(f"type {atom} .or. -")
+    lines.append("none ) END")
+    return lines
 
 
 def _generate_exclusions(patch_info: pd.DataFrame) -> str:
@@ -564,7 +583,9 @@ def _build_energy_block_command(
 
 def _execute_block_command(block_cmd: str) -> None:
     """Execute generated BLOCK input through the native CHARMM stream boundary."""
-    with tempfile.TemporaryDirectory(prefix="cphmd_bias_") as tmp:
+    tmp_root = Path(os.environ.get("CPHMD_TMPDIR") or os.environ.get("TMPDIR") or ".cphmd_tmp")
+    tmp_root.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="cphmd_bias_", dir=tmp_root) as tmp:
         script_path = Path(tmp) / "block.inp"
         script_path.write_text(block_cmd.rstrip() + "\n")
         system.stream_file(script_path)

@@ -84,4 +84,5 @@ alf:
     cutc: 0.5
     cutx: 0.2
     cuts: 0.1
-  phase2_repeats: 1
+  # Short debugging cadence: one 1000-step HMR MD block (4 ps) per Phase 2 ALF iteration.
+  phase2_iteration_ps: 4.0

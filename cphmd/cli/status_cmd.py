@@ -79,10 +79,10 @@ def render_status(report: dict[str, Any]) -> str:
     if "phase" in report:
         lines.append(f"phase: {report['phase']}")
     if "segments" in report:
-        lines.append(f"segments: {report['segments']}")
+        lines.append(f"md_blocks: {report['segments']}")
     for rank, rank_info in sorted((report.get("ranks") or {}).items()):
         lines.append(
-            f"{rank}: phase={rank_info.get('phase')} " f"segment={rank_info.get('segment_idx')}"
+            f"{rank}: phase={rank_info.get('phase')} md_block={rank_info.get('segment_idx')}"
         )
     return "\n".join(lines)
 

@@ -163,6 +163,11 @@ class SimulationLoop:
                         self._record_duration(self._cycle_seconds, cycle_started)
                     )
                     next_state = state.with_cycle_result()
+                    after_cycle_result = getattr(self.hooks, "after_cycle_result", None)
+                    if after_cycle_result is not None:
+                        adjusted_state = after_cycle_result(next_state, snapshot)
+                        if adjusted_state is not None:
+                            next_state = adjusted_state
                     self.checkpoint.write_training_sidecars(
                         cache=getattr(self.hooks, "cache", None),
                         bias_snapshot=snapshot,
@@ -246,9 +251,8 @@ class SimulationLoop:
 
     def _prepare_startup(self, state: LoopState) -> None:
         if self.ctx.dynamics_backend is DynamicsBackend.BLADE:
+            self._minimize_startup(state)
             self._initialize_native_dynamics()
-            if self._minimize_startup(state):
-                self._initialize_native_dynamics()
             self._preflight_native_dynamics()
             return
         self._minimize_startup(state)

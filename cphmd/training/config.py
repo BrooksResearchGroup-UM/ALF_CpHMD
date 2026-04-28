@@ -197,7 +197,7 @@ class ALFConfig:
     generate_g_profiles_3d: bool = False
     cent_ncres: int | bool = False
     use_presets: bool = False
-    bias_guess: bool = True
+    bias_guess: bool = False
     debug: bool = False
     coupling: Literal[0, 1, 2] = 0
     coupling_profile: bool | None = None
@@ -209,6 +209,16 @@ class ALFConfig:
     phase1_repeats: int | None = None
     phase2_repeats: int | None = None
     phase3_repeats: int | None = None
+    phase1_iteration_ps: float | None = None
+    phase2_iteration_ps: float | None = None
+    phase3_iteration_ps: float | None = None
+    phase1_iteration_steps: int | None = None
+    phase2_iteration_steps: int | None = None
+    phase3_iteration_steps: int | None = None
+    phase1_cycles: int | None = None
+    phase2_cycles: int | None = None
+    phase1_iterations: int | None = None
+    phase2_iterations: int | None = None
     analysis_window: int | list[int] | None = None
     analysis_skip: int | list[int] = 1
     fnex: float = 5.5
@@ -319,6 +329,19 @@ class ALFConfig:
             self.lambda_mass = 7.0 if self.hmr else 4.0
         if self.lambda_fbeta is None:
             self.lambda_fbeta = 7.0 if self.hmr else 10.0
+
+        for phase in (1, 2):
+            cycles_attr = f"phase{phase}_cycles"
+            iterations_attr = f"phase{phase}_iterations"
+            cycles = getattr(self, cycles_attr)
+            iterations = getattr(self, iterations_attr)
+            if cycles is not None and iterations is not None:
+                raise ValueError(
+                    f"alf.{cycles_attr} conflicts with alf.{iterations_attr}; "
+                    f"use alf.{iterations_attr}"
+                )
+            if cycles is None and iterations is not None:
+                setattr(self, cycles_attr, int(iterations))
 
         if self.bias_type is not None:
             bt = self.bias_type.lower()

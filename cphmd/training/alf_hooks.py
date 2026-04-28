@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +20,11 @@ class ALFTrainingConfig:
     generate_population_plots: bool = False
     generate_g_profiles_2d: bool = False
     generate_g_profiles_3d: bool = False
+    phase1_repeats: int | None = None
+    phase2_repeats: int | None = None
+    phase3_repeats: int | None = None
+    phase1_cycles: int | None = None
+    phase2_cycles: int | None = None
 
     def __post_init__(self) -> None:
         if self.cycle_every_segments <= 0:
@@ -28,6 +33,27 @@ class ALFTrainingConfig:
             raise ValueError("end_cycle must be positive")
         if self.cache_segments <= 0:
             raise ValueError("cache_segments must be positive")
+        for name, value in (
+            ("phase1_repeats", self.phase1_repeats),
+            ("phase2_repeats", self.phase2_repeats),
+            ("phase3_repeats", self.phase3_repeats),
+        ):
+            if value is not None and value <= 0:
+                raise ValueError(f"{name} must be positive")
+        for name, value in (
+            ("phase1_cycles", self.phase1_cycles),
+            ("phase2_cycles", self.phase2_cycles),
+        ):
+            if value is not None and value < 0:
+                raise ValueError(f"{name} must be non-negative")
+
+    def repeats_for_phase(self, phase: int) -> int:
+        value = {
+            1: self.phase1_repeats,
+            2: self.phase2_repeats,
+            3: self.phase3_repeats,
+        }.get(int(phase), self.phase3_repeats)
+        return int(value if value is not None else self.cycle_every_segments)
 
 
 class ALFHooks:
@@ -52,13 +78,16 @@ class ALFHooks:
         self.cache = cache or SegmentCache(max_segments=config.cache_segments)
         self.work_dir = Path(work_dir) if work_dir is not None else None
         self.last_snapshot: BiasSnapshot | None = None
+        self._segments_since_last_cycle = 0
 
     def on_system_loaded(self, ctx, state: LoopState | None = None) -> None:
         if not getattr(ctx, "ph_enabled", False):
+            self._initialize_biases_if_fresh(state)
             return
         native = self._native_block()
         native.set_ph(_ph_for_state(ctx, state))
         native.sync_state()
+        self._initialize_biases_if_fresh(state)
 
     def before_segment(self, state: LoopState) -> LoopState | None:
         return None
@@ -70,19 +99,36 @@ class ALFHooks:
         bias_matrix: np.ndarray,
     ) -> LoopState | None:
         self.cache = self.cache.append(state.segment_idx, lambda_matrix, bias_matrix)
+        self._segments_since_last_cycle += 1
         return None
 
     def should_trigger_cycle(self, state: LoopState) -> bool:
-        return (
-            state.segment_idx > 0
-            and state.segment_idx % self.config.cycle_every_segments == 0
-        )
+        if state.segment_idx <= 0:
+            return False
+        repeats = self.config.repeats_for_phase(state.phase)
+        if self._segments_since_last_cycle > 0:
+            return self._segments_since_last_cycle >= repeats
+        return state.segment_idx % repeats == 0
 
     def run_cycle(self, state: LoopState) -> BiasSnapshot:
         snapshot = self.cycle_runner.run_cycle(state=state, cache=self.cache)
+        self._segments_since_last_cycle = 0
         self.last_snapshot = snapshot
         self._generate_cycle_plots(state)
         return snapshot
+
+    def after_cycle_result(
+        self,
+        state: LoopState,
+        snapshot: BiasSnapshot,
+    ) -> LoopState | None:
+        phase = self._analyzer_phase(default=state.phase)
+        if phase == state.phase and not self._analyzer_stop_requested():
+            phase = self._scheduled_phase(state.cycle_idx, state.phase)
+        stop_requested = self._analyzer_stop_requested()
+        if phase == state.phase and not stop_requested:
+            return None
+        return replace(state, phase=phase, stop_requested=state.stop_requested or stop_requested)
 
     def after_rex_swap(
         self,
@@ -95,6 +141,39 @@ class ALFHooks:
 
     def is_done(self, state: LoopState) -> bool:
         return state.cycle_idx >= self.config.end_cycle
+
+    def _scheduled_phase(self, completed_cycles: int, current_phase: int) -> int:
+        phase1_cycles = self.config.phase1_cycles
+        if phase1_cycles is None:
+            return current_phase
+        if completed_cycles < phase1_cycles:
+            return 1
+
+        phase2_cycles = self.config.phase2_cycles
+        if phase2_cycles is None:
+            return 2
+        if completed_cycles < phase1_cycles + phase2_cycles:
+            return 2
+        return 3
+
+    def _initialize_biases_if_fresh(self, state: LoopState | None) -> None:
+        if state is not None and (state.segment_idx > 0 or state.cycle_idx > 0):
+            return
+        initializer = getattr(self.cycle_runner, "initialize_biases", None)
+        if initializer is None:
+            return
+        snapshot = initializer()
+        if snapshot is not None:
+            self.last_snapshot = snapshot
+
+    def _analyzer_phase(self, *, default: int) -> int:
+        analyzer = getattr(self.cycle_runner, "analyzer", None)
+        phase = getattr(analyzer, "last_phase", None)
+        return default if phase is None else int(phase)
+
+    def _analyzer_stop_requested(self) -> bool:
+        analyzer = getattr(self.cycle_runner, "analyzer", None)
+        return bool(getattr(analyzer, "last_stop_requested", False))
 
     def _native_block(self):
         if self.native_block is not None:

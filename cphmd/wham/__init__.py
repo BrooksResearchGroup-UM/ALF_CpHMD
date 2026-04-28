@@ -1496,6 +1496,7 @@ def run_wham_distributed_from_packed(
 
     f_values = comm.bcast(f_values, root=0)
     n_profiles = comm.bcast(n_profiles, root=0)
+    nf = len(f_values)
 
     # ------------------------------------------------------------------
     # Phase B: each rank computes its profile subset (slim D path)
@@ -2138,6 +2139,7 @@ def run_wham_distributed(
 
     f_values = comm.bcast(f_values, root=0)
     n_profiles = comm.bcast(n_profiles, root=0)
+    nf = len(f_values)
 
     # ------------------------------------------------------------------
     # Phase B: each rank computes its profile subset (slim D path)

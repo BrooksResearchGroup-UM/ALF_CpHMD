@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import shutil
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -28,6 +29,10 @@ class NativeALFAnalyzer:
     alf_info: dict[str, Any]
     work_dir: Path
     bias_analyzer: BiasAnalyzer | None = None
+    initial_bias_provider: Callable[[], BiasSnapshot] | None = None
+    last_phase: int | None = None
+    last_stop_requested: bool = False
+    last_stop_reason: str | None = None
 
     def __post_init__(self) -> None:
         self.work_dir = Path(self.work_dir)
@@ -42,6 +47,10 @@ class NativeALFAnalyzer:
                 int(size),
                 gpu_id=self.ctx.gpu_id,
             )
+        self._phase2_start_run: int | None = None
+        self._needs_stop_confirmation = False
+        self._ewbs_state = None
+        self._load_native_convergence_state()
 
     def analyze(self, *, state: LoopState, cache: SegmentCache) -> BiasSnapshot:
         if not cache.segment_ids:
@@ -75,7 +84,7 @@ class NativeALFAnalyzer:
                 state.phase,
                 analysis_idx,
                 coupling_scale,
-                phase2_start_run=None,
+                phase2_start_run=self._phase2_start_run,
                 alf_info=self.alf_info,
                 input_folder=self.work_dir,
                 nreps=int(self.alf_info["nreps"]),
@@ -110,26 +119,49 @@ class NativeALFAnalyzer:
                     step=analysis_idx + 1,
                 )
                 snapshot = BiasSnapshot.from_analysis_dir(analysis_dir, nsubs=nsubs)
+                self._update_native_convergence(
+                    analysis_idx=analysis_idx,
+                    phase=state.phase,
+                    cut_params=cut_params,
+                    nsubs=nsubs,
+                )
         finally:
             os.chdir(home)
 
         snapshot = self._broadcast_snapshot(snapshot)
+        self._broadcast_native_convergence_state()
         if not isinstance(snapshot, BiasSnapshot):
             raise RuntimeError("ALF analysis did not produce a bias snapshot")
         return snapshot
 
-    def _ensure_initial_analysis(self) -> None:
+    def initialize_initial_analysis(self) -> BiasSnapshot:
+        snapshot = None
+        if self.ctx.rank == 0:
+            snapshot = self._ensure_initial_analysis()
+        self._barrier()
+        snapshot = self._broadcast_snapshot(snapshot)
+        if isinstance(snapshot, BiasSnapshot):
+            return snapshot
+        nsubs = tuple(int(value) for value in self.alf_info["nsubs"])
+        return BiasSnapshot.from_analysis_dir(self.work_dir / "analysis0", nsubs=nsubs)
+
+    def _ensure_initial_analysis(self) -> BiasSnapshot:
         analysis0 = self.work_dir / "analysis0"
         block_path = self._initial_block_path()
         if (analysis0 / "b_sum.dat").exists():
             self._write_initial_block_state_hash(analysis0, block_path)
-            return
+            nsubs = tuple(int(value) for value in self.alf_info["nsubs"])
+            return BiasSnapshot.from_analysis_dir(analysis0, nsubs=nsubs)
         analysis0.mkdir(parents=True, exist_ok=True)
         nsubs = tuple(int(value) for value in self.alf_info["nsubs"])
-        snapshot = BiasSnapshot.from_block_str(block_path, nsubs=nsubs)
+        if self.initial_bias_provider is None:
+            snapshot = BiasSnapshot.from_block_str(block_path, nsubs=nsubs)
+        else:
+            snapshot = self.initial_bias_provider()
         _write_prev_and_zero_biases(analysis0, snapshot)
         set_vars_from_analysis_dir(analysis0, self.alf_info, step=1)
         self._write_initial_block_state_hash(analysis0, block_path)
+        return snapshot
 
     def _initial_block_path(self) -> Path:
         for block_path in (
@@ -271,10 +303,266 @@ class NativeALFAnalyzer:
         self.bias_analyzer._packed_sim_indices = None
         self.bias_analyzer._packed_frame_counts = None
 
+    def _update_native_convergence(
+        self,
+        *,
+        analysis_idx: int,
+        phase: int,
+        cut_params: dict[str, Any],
+        nsubs: tuple[int, ...],
+    ) -> None:
+        self.last_phase = phase
+        self.last_stop_requested = False
+        self.last_stop_reason = None
+        self._update_ewbs_state(analysis_idx)
+        lambda_data = self._load_analysis_lambda_data(analysis_idx)
+        if lambda_data is None:
+            self._save_native_convergence_state()
+            return
+
+        phase_after = phase
+        if getattr(self.config, "auto_phase_switch", False):
+            phase_after = self._check_auto_phase(
+                analysis_idx=analysis_idx,
+                phase=phase,
+                lambda_data=lambda_data,
+                cut_params=cut_params,
+                nsubs=nsubs,
+            )
+        self.last_phase = phase_after
+
+        if getattr(self.config, "auto_stop", False) and phase_after == 3:
+            self._check_auto_stop(
+                analysis_idx=analysis_idx,
+                lambda_data=lambda_data,
+                nsubs=nsubs,
+            )
+        else:
+            self._needs_stop_confirmation = False
+        self._save_native_convergence_state()
+
+    def _update_ewbs_state(self, analysis_idx: int) -> None:
+        from cphmd.core.phase_switcher import EWBSState, ewbs_bottleneck_type, update_ewbs_state
+
+        if self._ewbs_state is None:
+            self._ewbs_state = EWBSState()
+        analysis_dir = self.work_dir / f"analysis{analysis_idx}"
+        try:
+            b = np.loadtxt(analysis_dir / "b.dat")
+            c = np.loadtxt(analysis_dir / "c.dat")
+            x = np.loadtxt(analysis_dir / "x.dat")
+            s = np.loadtxt(analysis_dir / "s.dat")
+        except (FileNotFoundError, ValueError, OSError) as exc:
+            print(f"Warning: Cannot update EWBS from analysis{analysis_idx}: {exc}")
+            return
+        value = update_ewbs_state(self._ewbs_state, b, c, x, s)
+        print(
+            f"EWBS: {value:.4f} "
+            f"(bottleneck={ewbs_bottleneck_type(self._ewbs_state)})"
+        )
+
+    def _load_analysis_lambda_data(self, analysis_idx: int):
+        from cphmd.core.phase_switcher import load_lambda_data
+
+        lambda_data, _ = load_lambda_data(self.work_dir / f"analysis{analysis_idx}" / "data")
+        return lambda_data
+
+    def _check_auto_phase(
+        self,
+        *,
+        analysis_idx: int,
+        phase: int,
+        lambda_data,
+        cut_params: dict[str, Any],
+        nsubs: tuple[int, ...],
+    ) -> int:
+        from cphmd.core.phase_switcher import check_phase_transition
+
+        min_phase1 = int(self.config.phase_transition.min_phase1_runs)
+        if phase == 1 and analysis_idx < min_phase1:
+            print(
+                f"Phase check: Staying in phase 1: run {analysis_idx}<{min_phase1} "
+                "(minimum Phase 1 duration)"
+            )
+            return phase
+
+        phase2_run_count = None
+        if phase == 2 and self._phase2_start_run is not None:
+            phase2_run_count = analysis_idx - self._phase2_start_run
+
+        new_phase, reason = check_phase_transition(
+            phase,
+            lambda_data,
+            config=self.config.phase_transition,
+            **self._cphmd_phase_kwargs(analysis_idx, phase, nsubs),
+            nsubs=list(nsubs),
+            connectivity=cut_params.get("connectivity"),
+            phase2_run_count=phase2_run_count,
+            ewbs_state=self._ewbs_state,
+            expected_pops=self._expected_populations(nsubs),
+        )
+        if new_phase != phase:
+            print(f"PHASE TRANSITION: {phase} -> {new_phase}")
+            print(f"  Reason: {reason}")
+            if new_phase == 2 and self._phase2_start_run is None:
+                self._phase2_start_run = analysis_idx
+            return int(new_phase)
+        print(f"Phase check: {reason}")
+        return phase
+
+    def _check_auto_stop(
+        self,
+        *,
+        analysis_idx: int,
+        lambda_data,
+        nsubs: tuple[int, ...],
+    ) -> None:
+        from cphmd.core.phase_switcher import StopCriteriaConfig, check_phase3_stop
+
+        timestep_fs = 4.0 if getattr(self.config, "hmr", False) else 2.0
+        stop_config = StopCriteriaConfig(timestep_fs=timestep_fs, max_frac_diff=0.02)
+        should_stop, reason, _ = check_phase3_stop(
+            lambda_data,
+            stop_config,
+            bias_history=self._bias_history(analysis_idx, stop_config.bias_window),
+            nsubs=list(nsubs),
+            ewbs_state=self._ewbs_state,
+            expected_pops=self._expected_populations(nsubs),
+        )
+        if should_stop and self._needs_stop_confirmation:
+            self.last_stop_requested = True
+            self.last_stop_reason = reason
+            self._needs_stop_confirmation = False
+            print(f"CONVERGENCE CONFIRMED at run {analysis_idx}: {reason}")
+            (self.work_dir / "CONVERGED").write_text(
+                f"Converged at run {analysis_idx}\n{reason}\n",
+                encoding="utf-8",
+            )
+        elif should_stop:
+            self._needs_stop_confirmation = True
+            print(f"CONVERGENCE CANDIDATE at run {analysis_idx}: {reason}")
+        else:
+            self._needs_stop_confirmation = False
+            print(f"Stop check: {reason}")
+
+    def _bias_history(self, analysis_idx: int, window: int):
+        rows = []
+        for idx in range(max(1, analysis_idx - window + 1), analysis_idx + 1):
+            path = self.work_dir / f"analysis{idx}" / "b_sum.dat"
+            if not path.exists():
+                continue
+            try:
+                rows.append(np.loadtxt(path).ravel())
+            except (ValueError, OSError):
+                continue
+        if len(rows) < 2:
+            return None
+        return np.asarray(rows, dtype=np.float64)
+
+    def _cphmd_phase_kwargs(
+        self,
+        analysis_idx: int,
+        phase: int,
+        nsubs: tuple[int, ...],
+    ) -> dict[str, Any]:
+        patch_info = self._patch_info()
+        if patch_info is None:
+            return {}
+        kwargs: dict[str, Any] = {"patch_info": patch_info}
+        nreps = int(self.alf_info["nreps"])
+        if phase >= 2 and getattr(self.config, "ph", False) and nreps > 3:
+            from cphmd.core.cphmd_params import compute_all_site_parameters, get_delta_pKa_for_phase
+
+            params = compute_all_site_parameters(patch_info, self.config.temperature)
+            kwargs.update(
+                {
+                    "data_dir": self.work_dir / f"analysis{analysis_idx}" / "data",
+                    "effective_ph": params.effective_pH,
+                    "delta_pka": get_delta_pKa_for_phase(phase),
+                    "nreps": nreps,
+                }
+            )
+        return kwargs
+
+    def _expected_populations(self, nsubs: tuple[int, ...]):
+        patch_info = self._patch_info()
+        if patch_info is None or not getattr(self.config, "ph", False):
+            return None
+        from cphmd.core.cphmd_params import compute_all_site_parameters
+        from cphmd.core.expected_populations import compute_expected_populations
+
+        params = compute_all_site_parameters(patch_info, self.config.temperature)
+        return compute_expected_populations(patch_info, params.effective_pH, list(nsubs))
+
+    def _patch_info(self):
+        patches_path = self.work_dir / "prep" / "patches.dat"
+        if not patches_path.exists():
+            patches_path = self.ctx.run_dir / "prep" / "patches.dat"
+        if not patches_path.exists():
+            return None
+        import pandas as pd
+
+        return pd.read_csv(patches_path)
+
+    def _native_convergence_path(self) -> Path:
+        return self.work_dir / "native_convergence_state.json"
+
+    def _load_native_convergence_state(self) -> None:
+        payload_path = self._native_convergence_path()
+        if payload_path.exists():
+            try:
+                payload = json.loads(payload_path.read_text(encoding="utf-8"))
+                self._phase2_start_run = payload.get("phase2_start_run")
+                self._needs_stop_confirmation = bool(payload.get("needs_stop_confirmation", False))
+            except (OSError, json.JSONDecodeError):
+                pass
+        ewbs_path = self.work_dir / "ewbs_state.json"
+        if ewbs_path.exists():
+            try:
+                from cphmd.core.phase_switcher import EWBSState
+
+                self._ewbs_state = EWBSState.load(ewbs_path)
+            except (OSError, json.JSONDecodeError, ValueError):
+                self._ewbs_state = None
+
+    def _save_native_convergence_state(self) -> None:
+        payload = {
+            "phase2_start_run": self._phase2_start_run,
+            "needs_stop_confirmation": self._needs_stop_confirmation,
+            "last_phase": self.last_phase,
+            "last_stop_requested": self.last_stop_requested,
+            "last_stop_reason": self.last_stop_reason,
+        }
+        self._native_convergence_path().write_text(
+            json.dumps(payload, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        if self._ewbs_state is not None:
+            self._ewbs_state.save(self.work_dir / "ewbs_state.json")
+
     def _broadcast_snapshot(self, snapshot: BiasSnapshot | None) -> BiasSnapshot | None:
         if self.ctx.comm is None:
             return snapshot
         return self.ctx.comm.bcast(snapshot, root=0)
+
+    def _broadcast_native_convergence_state(self) -> None:
+        payload = None
+        if self.ctx.rank == 0:
+            payload = {
+                "last_phase": self.last_phase,
+                "last_stop_requested": self.last_stop_requested,
+                "last_stop_reason": self.last_stop_reason,
+                "phase2_start_run": self._phase2_start_run,
+                "needs_stop_confirmation": self._needs_stop_confirmation,
+            }
+        if self.ctx.comm is not None:
+            payload = self.ctx.comm.bcast(payload, root=0)
+        if isinstance(payload, dict):
+            self.last_phase = payload.get("last_phase")
+            self.last_stop_requested = bool(payload.get("last_stop_requested", False))
+            self.last_stop_reason = payload.get("last_stop_reason")
+            self._phase2_start_run = payload.get("phase2_start_run")
+            self._needs_stop_confirmation = bool(payload.get("needs_stop_confirmation", False))
 
     def _barrier(self) -> None:
         if self.ctx.comm is not None:

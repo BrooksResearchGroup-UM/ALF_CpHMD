@@ -94,3 +94,6 @@ examples/*/waterbox.*
 # Local configuration
 .env
 *.local
+
+# Local benchmark suite (not committed)
+/examples/legacy_benchmarks/
