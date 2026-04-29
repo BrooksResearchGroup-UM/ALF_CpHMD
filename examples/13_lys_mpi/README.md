@@ -1,7 +1,7 @@
 # 13 — Lysine (LYS) in Water (MPI Multi-GPU with CpHMD)
 
 Same system as `04_lys_water` but using **MPI parallel replicas** across
-multiple GPUs with **CpHMD pH coupling enabled**.
+multiple GPUs with **CpHMD pH coupling and replica exchange enabled**.
 
 Each MPI rank runs one replica on its own GPU; `nreps` is auto-detected
 from the MPI communicator size. The 5 replicas fan out around the
@@ -9,7 +9,8 @@ effective pH with `delta_pKa` spacing (1.0 in Phase 1, 0.5 in Phase 2,
 0.25 in Phase 3).
 
 This example demonstrates the recommended production setup: `mpirun` with
-`--ntasks=N --gpus-per-task=1` for N parallel pH replicas.
+`--ntasks=N --gpus-per-task=1` for N pH replicas, with native in-memory
+replica exchange attempted every 1000 MD steps.
 
 ## Prerequisites
 
@@ -57,5 +58,6 @@ For multi-site proteins with different macro-pKas (e.g., ASP + LYS),
 | GPUs | 1 | 5 (configurable) |
 | Replicas | 1 | 5 (auto from MPI size) |
 | pH coupling | off (`pH` omitted) | on (`pH: true`, auto pKa=10.5) |
+| Replica exchange | off | on (`exchange_interval_steps: 1000`) |
 | Launch | `cphmd init -c cphmd_config.yaml && mpirun -np 1 cphmd run -c cphmd_config.yaml` | `cphmd init -c cphmd_config.yaml && mpirun -np 5 cphmd run -c cphmd_config.yaml` |
 | SLURM | `--gres=gpu:1` | `--ntasks=5 --gpus-per-task=1` |

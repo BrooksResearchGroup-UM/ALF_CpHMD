@@ -192,7 +192,7 @@ def load_config(path: str | Path) -> NativeRuntimeConfig:
         key="lambda_save_interval_ps",
         step_key="lambda_save_steps",
         legacy_key="nsavl",
-        default=10,
+        default=1,
         time_step_ps=time_step_ps,
     )
     nsavc = _steps_from_interval(

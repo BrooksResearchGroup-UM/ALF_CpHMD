@@ -67,7 +67,7 @@ alf:
     - toppar/fol_titratable.str
   replica_exchange:
     enabled: true
-    exchange_interval_ps: 4.0
+    exchange_interval_steps: 1000
   phase1_cutoffs:
     cutb: 5.0
     cutc: 20.0
@@ -83,5 +83,3 @@ alf:
     cutc: 0.5
     cutx: 0.2
     cuts: 0.1
-  # Short debugging cadence: one 1000-step HMR MD block (4 ps) per Phase 2 ALF iteration.
-  phase2_iteration_ps: 4.0

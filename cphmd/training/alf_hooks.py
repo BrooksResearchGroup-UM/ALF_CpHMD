@@ -17,7 +17,8 @@ class ALFTrainingConfig:
     end_cycle: int
     cache_segments: int
     generate_dashboard_plots: bool = True
-    generate_population_plots: bool = False
+    generate_population_plots: bool = True
+    generate_hh_plots: bool = True
     generate_g_profiles_2d: bool = False
     generate_g_profiles_3d: bool = False
     phase1_repeats: int | None = None
@@ -186,6 +187,7 @@ class ALFHooks:
         if not (
             self.config.generate_dashboard_plots
             or self.config.generate_population_plots
+            or self.config.generate_hh_plots
             or self.config.generate_g_profiles_2d
             or self.config.generate_g_profiles_3d
         ):
@@ -224,6 +226,20 @@ class ALFHooks:
                 )
             except Exception as exc:
                 print(f"Warning: population convergence plots failed: {exc}")
+
+        if self.config.generate_hh_plots:
+            try:
+                analyzer = getattr(self.cycle_runner, "analyzer", None)
+                generate_hh_plots = getattr(analyzer, "generate_hh_plots", None)
+                if callable(generate_hh_plots):
+                    generate_hh_plots(
+                        analysis_idx=analysis_idx,
+                        phase=state.phase,
+                        output_dir=plots_dir,
+                        nsubs=self.nsubs,
+                    )
+            except Exception as exc:
+                print(f"Warning: HH pH plots failed: {exc}")
 
         if self.config.generate_g_profiles_2d or self.config.generate_g_profiles_3d:
             try:

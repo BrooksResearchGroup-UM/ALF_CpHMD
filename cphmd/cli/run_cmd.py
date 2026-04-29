@@ -318,6 +318,7 @@ def build_hooks(cfg: NativeRuntimeConfig, ctx: RunContext):
             phase,
             nsteps_per_segment=ctx.nsteps_per_segment,
             time_step_ps=ctx.time_step_ps,
+            replica_exchange_enabled=_rex_enabled(cfg.replica_exchange),
         )
         for phase in (1, 2, 3)
     }
@@ -349,7 +350,8 @@ def build_hooks(cfg: NativeRuntimeConfig, ctx: RunContext):
             end_cycle=cfg.end,
             cache_segments=max(phase_repeats.values()),
             generate_dashboard_plots=bool(getattr(alf_config, "generate_dashboard_plots", True)),
-            generate_population_plots=bool(getattr(alf_config, "generate_population_plots", False)),
+            generate_population_plots=bool(getattr(alf_config, "generate_population_plots", True)),
+            generate_hh_plots=bool(getattr(alf_config, "generate_hh_plots", True)),
             generate_g_profiles_2d=bool(getattr(alf_config, "generate_g_profiles_2d", False)),
             generate_g_profiles_3d=bool(getattr(alf_config, "generate_g_profiles_3d", False)),
             phase1_repeats=phase_repeats[1],
@@ -431,7 +433,7 @@ def _validate_native_phase_controls(config: Any) -> None:
         )
 
 
-_DEFAULT_ALF_ITERATION_PS = {1: 100.0, 2: 1000.0, 3: 10000.0}
+_DEFAULT_ALF_ITERATION_STEPS = {1: 40000, 2: 250000, 3: 2500000}
 
 
 def _alf_repeats_for_phase(
@@ -440,6 +442,7 @@ def _alf_repeats_for_phase(
     *,
     nsteps_per_segment: int,
     time_step_ps: float,
+    replica_exchange_enabled: bool = False,
 ) -> int:
     phase = int(phase)
     repeat_attr = {
@@ -449,10 +452,15 @@ def _alf_repeats_for_phase(
     }.get(phase, "phase3_repeats")
     ps_attr = f"phase{phase}_iteration_ps"
     steps_attr = f"phase{phase}_iteration_steps"
+    repeats_value = getattr(config, repeat_attr, None)
+    ps_value = getattr(config, ps_attr, None)
+    steps_value = getattr(config, steps_attr, None)
+    if replica_exchange_enabled and repeats_value == 1 and ps_value is None and steps_value is None:
+        repeats_value = None
     values = {
-        repeat_attr: getattr(config, repeat_attr, None),
-        ps_attr: getattr(config, ps_attr, None),
-        steps_attr: getattr(config, steps_attr, None),
+        repeat_attr: repeats_value,
+        ps_attr: ps_value,
+        steps_attr: steps_value,
     }
     present = [name for name, value in values.items() if value is not None]
     if len(present) > 1:
@@ -468,15 +476,18 @@ def _alf_repeats_for_phase(
             nsteps_per_segment=nsteps_per_segment,
             name=f"alf.{steps_attr}",
         )
-    else:
-        iteration_ps = values[ps_attr]
-        if iteration_ps is None:
-            iteration_ps = _DEFAULT_ALF_ITERATION_PS.get(phase, _DEFAULT_ALF_ITERATION_PS[3])
+    elif values[ps_attr] is not None:
         repeats = _alf_repeats_from_ps(
-            iteration_ps,
+            values[ps_attr],
             nsteps_per_segment=nsteps_per_segment,
             time_step_ps=time_step_ps,
             name=f"alf.{ps_attr}",
+        )
+    else:
+        repeats = _alf_repeats_from_steps(
+            _DEFAULT_ALF_ITERATION_STEPS.get(phase, _DEFAULT_ALF_ITERATION_STEPS[3]),
+            nsteps_per_segment=nsteps_per_segment,
+            name=f"alf.phase{phase}_iteration_steps",
         )
     if repeats <= 0:
         raise ValueError(f"alf.{repeat_attr} must be positive")
@@ -587,8 +598,7 @@ def _runtime_raw_section(cfg: NativeRuntimeConfig) -> dict[str, Any]:
 
 def _alf_config_from_native_config(cfg: NativeRuntimeConfig):
     alf_section = dict(cfg.raw.get("alf", {}) or {})
-    if "input_folder" not in alf_section:
-        alf_section["input_folder"] = cfg.input_folder
+    alf_section["input_folder"] = cfg.input_folder
     alf_config = alf_config_from_mapping(alf_section, include_defaults=True)
     alf_config.input_folder = cfg.input_folder
     alf_config.toppar_dir = cfg.toppar_dir

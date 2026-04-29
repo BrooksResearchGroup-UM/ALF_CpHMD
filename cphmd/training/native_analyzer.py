@@ -319,6 +319,7 @@ class NativeALFAnalyzer:
         if lambda_data is None:
             self._save_native_convergence_state()
             return
+        self._write_population_file(analysis_idx, lambda_data, nsubs)
 
         phase_after = phase
         if getattr(self.config, "auto_phase_switch", False):
@@ -366,6 +367,68 @@ class NativeALFAnalyzer:
 
         lambda_data, _ = load_lambda_data(self.work_dir / f"analysis{analysis_idx}" / "data")
         return lambda_data
+
+    def _write_population_file(
+        self,
+        analysis_idx: int,
+        lambda_data,
+        nsubs: tuple[int, ...],
+    ) -> None:
+        from cphmd.core.phase_switcher import (
+            calculate_populations,
+            load_lambda_data,
+            write_populations_file,
+        )
+
+        analysis_dir = self.work_dir / f"analysis{analysis_idx}"
+        data_dir = analysis_dir / "data"
+        ncentral = int(self.alf_info["nreps"]) // 2
+        central_data, _ = load_lambda_data(data_dir, replica_idx=ncentral)
+        pop_input = central_data if central_data is not None else lambda_data
+        pop_data = calculate_populations(
+            pop_input,
+            thresholds=(0.8, 0.97),
+            nsubs=list(nsubs),
+        )
+        write_populations_file(analysis_dir / "populations.dat", pop_data)
+
+    def generate_hh_plots(
+        self,
+        *,
+        analysis_idx: int,
+        phase: int,
+        output_dir: Path,
+        nsubs: tuple[int, ...],
+    ) -> None:
+        if not getattr(self.config, "ph", False):
+            return
+        patch_info = self._patch_info()
+        if patch_info is None:
+            return
+        nreps = int(self.alf_info["nreps"])
+        if nreps < 3:
+            return
+
+        from cphmd.analysis.henderson_hasselbalch import generate_hh_analysis
+        from cphmd.core.cphmd_params import compute_all_site_parameters, get_delta_pKa_for_phase
+
+        params = compute_all_site_parameters(patch_info, self.config.temperature)
+        pka_shift = {
+            str(site_id): params.effective_pH - site_params.pH0
+            for site_id, site_params in params.sites.items()
+        }
+        generate_hh_analysis(
+            run_idx=analysis_idx,
+            data_dir=self.work_dir / f"analysis{analysis_idx}" / "data",
+            patch_info=patch_info,
+            pH=params.effective_pH,
+            delta_pKa=get_delta_pKa_for_phase(phase),
+            nreps=nreps,
+            output_dir=output_dir,
+            ncentral=nreps // 2,
+            nsubs=list(nsubs),
+            pka_shift=pka_shift,
+        )
 
     def _check_auto_phase(
         self,
@@ -502,7 +565,14 @@ class NativeALFAnalyzer:
             return None
         import pandas as pd
 
-        return pd.read_csv(patches_path)
+        patch_info = pd.read_csv(patches_path)
+        if "site" not in patch_info.columns or "sub" not in patch_info.columns:
+            if "SELECT" not in patch_info.columns:
+                return patch_info
+            patch_info[["site", "sub"]] = patch_info["SELECT"].str.extract(r"(?i)s(\d+)s(\d+)")
+        patch_info["site"] = patch_info["site"].astype(int)
+        patch_info["sub"] = patch_info["sub"].astype(int)
+        return patch_info
 
     def _native_convergence_path(self) -> Path:
         return self.work_dir / "native_convergence_state.json"

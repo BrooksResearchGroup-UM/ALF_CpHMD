@@ -87,7 +87,7 @@ alf:
   start: 1
   end: 5
   md_block_steps: 10
-  lambda_save_steps: 5
+  lambda_save_steps: 1
   coordinate_save_steps: 10
   checkpoint_interval_steps: 10
   phase1_iteration_steps: 10
@@ -124,7 +124,11 @@ present for the same quantity, the config is rejected. The old
 `nsteps_per_segment`, `phase*_repeats`, and `checkpoint_every_segments` keys are
 accepted for existing configs. In that compatibility mode, `phase*_repeats`
 means MD blocks per ALF iteration; new examples use explicit MD block and ALF
-iteration language instead.
+iteration language instead. For native replica exchange, a legacy
+`phase*_repeats: 1` value is treated as an old placeholder so that
+`exchange_interval_steps` controls only the exchange cadence, not the ALF
+iteration length. Native ALF defaults save every lambda step and analyze full
+phase intervals of 40,000, 250,000, and 2,500,000 MD steps for phases 1-3.
 
 ## Examples
 

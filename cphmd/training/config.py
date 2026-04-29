@@ -192,7 +192,7 @@ class ALFConfig:
     cleanup_old_analysis: bool = False
     generate_hh_plots: bool = True
     generate_dashboard_plots: bool = True
-    generate_population_plots: bool = False
+    generate_population_plots: bool = True
     generate_g_profiles_2d: bool = False
     generate_g_profiles_3d: bool = False
     cent_ncres: int | bool = False

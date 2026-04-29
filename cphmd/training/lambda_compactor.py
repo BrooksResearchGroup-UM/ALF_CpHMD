@@ -43,9 +43,10 @@ def compact_analysis_lambda(
     expected_columns = ["time", *lambda_headers]
     replica_label = int(replica_idx)
     target_ph = _target_ph(replica_ph_values, replica_label)
+    rerun_idx = 0
 
     output_path = output_root / f"analysis{analysis_idx}" / "data" / (
-        f"Lambda.{analysis_idx}.{replica_idx}.parquet"
+        f"Lambda.{rerun_idx}.{replica_idx}.parquet"
     )
     segment_infos = _select_segment_infos(
         run_dir,
@@ -56,6 +57,7 @@ def compact_analysis_lambda(
     )
     expected_metadata = _expected_metadata(
         analysis_idx=analysis_idx,
+        rerun_idx=rerun_idx,
         replica_idx=replica_idx,
         replica_label=replica_label,
         target_ph=target_ph,
@@ -79,6 +81,7 @@ def compact_analysis_lambda(
     table = pa.concat_tables(segment_tables) if len(segment_tables) > 1 else segment_tables[0]
     metadata = _expected_metadata(
         analysis_idx=analysis_idx,
+        rerun_idx=rerun_idx,
         replica_idx=replica_idx,
         replica_label=replica_label,
         target_ph=target_ph,
@@ -218,6 +221,7 @@ def _read_segment_info(path: Path, expected_columns: list[str]) -> _SegmentInfo:
 def _expected_metadata(
     *,
     analysis_idx: int,
+    rerun_idx: int,
     replica_idx: int,
     replica_label: int,
     target_ph: float | None,
@@ -230,6 +234,7 @@ def _expected_metadata(
     metadata.update(
         {
             "analysis_idx": str(int(analysis_idx)),
+            "rerun_idx": str(int(rerun_idx)),
             "replica_idx": str(int(replica_idx)),
             "replica_label": str(int(replica_label)),
             "segment_ids": json.dumps(list(segment_ids), separators=(",", ":")),

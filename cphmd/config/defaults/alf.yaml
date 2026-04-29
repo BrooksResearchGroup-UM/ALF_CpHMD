@@ -33,20 +33,28 @@ hmr: true
 cleanup: false
 coupling: 0
 # bias_guess: false  # Native pyCHARMM ALF initializes from prep/block.str
+generate_population_plots: true
+generate_dashboard_plots: true
+generate_hh_plots: true
+# G profile plots are useful diagnostics but expensive/noisy as defaults.
+generate_g_profiles_2d: false
+generate_g_profiles_3d: false
 
 # MD block length for one continuous DynamicsScript.run() call.
 # The native runtime also accepts md_block_steps and the legacy nsteps_per_segment key.
 md_block_steps: 1000
+lambda_save_steps: 1
 
 # ALF iteration length per phase. One ALF iteration is:
 # biased MD sampling -> lambda statistics -> WHAM -> clipped bias update.
-# These defaults match the standard ALF schedule: Phase 1 ~100 ps,
-# Phase 2 ~1 ns, Phase 3 ~10 ns. Use phase*_iteration_steps for exact
-# step counts, or phase*_repeats only for backward-compatible block counts.
+# These defaults use the full MD data from each ALF iteration:
+# Phase 1 = 40,000 steps, Phase 2 = 250,000 steps, Phase 3 = 2,500,000 steps.
+# Use phase*_iteration_steps for exact step counts, phase*_iteration_ps for
+# time-based runs, or phase*_repeats only for backward-compatible block counts.
 # Native defaults when omitted:
-# phase1_iteration_ps: 100.0
-# phase2_iteration_ps: 1000.0
-# phase3_iteration_ps: 10000.0
+# phase1_iteration_steps: 40000
+# phase2_iteration_steps: 250000
+# phase3_iteration_steps: 2500000
 
 # Fixed phase schedule for native ALF, counted in completed ALF iterations.
 # auto_phase_switch must be false when these are set.

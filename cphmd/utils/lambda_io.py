@@ -293,20 +293,20 @@ def find_lambda_files(data_dir: Path, pattern: str = "Lambda.*.*") -> list[Path]
 
 
 def parse_lambda_filename(filepath: str | Path) -> tuple[int, int]:
-    """Parse a Lambda filename into analysis and replica indices."""
+    """Parse a Lambda filename into rerun and replica indices."""
     filepath = Path(filepath)
     parts = filepath.stem.split(".")
     if len(parts) != 3 or parts[0] != "Lambda":
         raise ValueError(
             f"invalid Lambda filename '{filepath.name}'; "
-            "expected Lambda.<analysis_idx>.<replica_idx>"
+            "expected Lambda.<rerun_idx>.<replica_idx>"
         )
     try:
         return int(parts[1]), int(parts[2])
     except ValueError as exc:
         raise ValueError(
             f"invalid Lambda filename '{filepath.name}'; "
-            "analysis and replica indices must be integers"
+            "rerun and replica indices must be integers"
         ) from exc
 
 

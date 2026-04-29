@@ -42,3 +42,6 @@ alf:
   auto_stop: true
   restrain_hydrogens: true
   g_imp_bins: [20, 32, 32]
+  replica_exchange:
+    enabled: true
+    exchange_interval_steps: 1000

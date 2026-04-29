@@ -631,13 +631,8 @@ def _parse_expected_lambda_file(
 ) -> tuple[int, int]:
     from cphmd.utils.lambda_io import parse_lambda_filename
 
-    analysis_idx, replica_idx = parse_lambda_filename(filepath)
-    if analysis_idx != expected_analysis_idx:
-        raise ValueError(
-            f"{filepath} has analysis index {analysis_idx}; "
-            f"expected analysis index {expected_analysis_idx}"
-        )
-    return analysis_idx, replica_idx
+    _rerun_idx, replica_idx = parse_lambda_filename(filepath)
+    return expected_analysis_idx, replica_idx
 
 
 def _find_analysis_lambda_files(data_dir: Path) -> list[Path]:
