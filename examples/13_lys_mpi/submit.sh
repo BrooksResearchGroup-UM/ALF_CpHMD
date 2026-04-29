@@ -9,23 +9,14 @@
 #SBATCH --time=2-00:00:00
 #SBATCH --output=lys_mpi_%j.out
 
-# Activate conda environment
+set -eo pipefail
+
 source ~/software/mambaforge/etc/profile.d/conda.sh
 conda activate chm_12.9
 
 cd "$SLURM_SUBMIT_DIR"
 
-# Step 1: Solvate + patch (serial, no GPU needed)
-# Uncomment if prep/ does not exist yet:
-# python run.py solvate
-# python run.py patch
+# Optional setup refresh if prep/ is missing:
+# python run.py setup
 
-# Step 2: Initialize then run ALF with MPI (one replica per GPU)
-# nreps is auto-detected from MPI communicator size (= ntasks)
-# Per-rank output goes to python_log_rank{0..4}.out
-cphmd init -c cphmd_config.yaml
-mpirun -np "$SLURM_NTASKS" \
-    --bind-to none --map-by slot \
-    --mca pml ob1 --mca btl tcp,self \
-    -x OMP_NUM_THREADS=1 \
-    cphmd run -c cphmd_config.yaml
+bash ../_run_native_alf.sh cphmd_config.yaml

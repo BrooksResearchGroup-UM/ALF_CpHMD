@@ -3,9 +3,10 @@
 Hen egg-white lysozyme (2LZT) with all titratable residues at pH 4.0.
 
 This example demonstrates CpHMD on a full protein with multiple titratable
-sites and inter-site coupling. The workflow fetches 2LZT from RCSB, prepares
-`PSF/CRD/PDB` inputs with CRIMM, solvates the system, patches titratable
-residues, and then runs ALF.
+sites and inter-site coupling. The setup workflow fetches 2LZT from RCSB,
+prepares `PSF/CRD/PDB` inputs with CRIMM, solvates the system, and patches
+titratable residues. The ALF run uses the native `cphmd init` / `cphmd run`
+path.
 
 ## Titratable Residues
 
@@ -33,11 +34,12 @@ python run.py solvate
 # Step 3: Apply titratable patches (all residues)
 python run.py patch
 
-# Step 4: Run ALF simulation
-python run.py alf
+# Native ALF run
+cphmd init -c cphmd_config.yaml
+mpirun -np 1 cphmd run -c cphmd_config.yaml
 
-# Or run all steps:
-python run.py all
+# Or run all setup steps:
+python run.py setup
 ```
 
 ## SLURM Submission
@@ -49,7 +51,7 @@ python run.py solvate
 python run.py patch
 
 # Submit ALF to GPU cluster:
-sbatch submit.sh alf
+sbatch submit.sh
 ```
 
 ## Configuration
@@ -71,16 +73,16 @@ See `cphmd_config.yaml` for all settings. Key options:
 │   ├── molecule.crd          # Prepared lysozyme coordinates
 │   └── molecule.pdb          # Prepared visualization PDB
 ├── cphmd_config.yaml         # Workflow configuration
-├── run.py                    # Unified workflow runner
+├── run.py                    # Setup helper
 ├── submit.sh                 # SLURM submission template
 └── README.md                 # This file
 ```
 
 ## Expected Output
 
-After solvation and patching:
+After setup:
 ```
-solvated.psf, solvated.crd, solvated.pdb
+solvated.psf, solvated.crd, solvated.pdb  # In this example folder
 waterbox.psf, waterbox.crd
 molecule.psf, molecule.crd
 box.dat
@@ -93,8 +95,8 @@ prep/
 
 After ALF simulation:
 ```
-analysis{N}/                   # Bias parameters per iteration
-run{N}/                        # MD trajectories
-plots/                         # Population and convergence plots
-ewbs_state.json                # Convergence tracking
+state/                         # Native run marker and scheduler metadata
+res/rep*/                      # Lambda parquet segments and checkpoints
+analysis{N}/                   # Bias parameters per ALF iteration
+plots/                         # Dashboard and optional diagnostic plots
 ```

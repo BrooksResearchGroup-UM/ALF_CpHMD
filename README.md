@@ -128,9 +128,20 @@ iteration language instead.
 
 ## Examples
 
-`examples/00_glu_water` and `examples/01_asp_water` contain small prepared
-systems. The `examples/validation/` configs are short smoke runs that reuse
-those systems:
+Examples are meant to run from inside their own folders. Use `python run.py
+setup` only when regenerating setup inputs, then launch the native runtime with
+`cphmd init` and `cphmd run`:
+
+```bash
+cd examples/01_asp_water
+python run.py setup
+cphmd init -c cphmd_config.yaml
+mpirun -np 1 cphmd run -c cphmd_config.yaml
+```
+
+See `examples/README.md` for the full example workflow. The
+`examples/validation/` configs are short smoke runs that reuse prepared
+systems:
 
 ```bash
 python -m cphmd.cli.main init -c examples/validation/asp_no_ph_domdec_cpu/cphmd_config.yaml

@@ -10,7 +10,7 @@ master_seed: 20260418
 # macro-pKa internally. The 5 replicas fan out around it with delta_pKa
 # spacing (1.0/0.5/0.25 depending on phase).
 #
-# Steps: build → solvate → patch → alf (via mpirun)
+# Setup steps: build → solvate → patch. Launch ALF with cphmd init/run via mpirun.
 
 build:
   residue: LYS

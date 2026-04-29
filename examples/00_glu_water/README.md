@@ -13,13 +13,16 @@ flattening for a 3-state system (GLU deprotonated + two protonated forms).
 ## Quick Start
 
 ```bash
-# Run all steps sequentially
-python run.py all
+# Optional setup refresh if prep/ is missing
+python run.py setup
 
-# Or run steps individually
+# Or run setup steps individually
 python run.py solvate   # Solvate GLU in octahedral water box
 python run.py patch     # Apply titratable patches (GLH1, GLH2)
-python run.py alf       # Run ALF simulation (requires GPU)
+
+# Native ALF run
+cphmd init -c cphmd_config.yaml
+mpirun -np 1 cphmd run -c cphmd_config.yaml
 ```
 
 ## Configuration
@@ -42,6 +45,7 @@ sbatch submit.sh
 ## Output
 
 After convergence (~50-100 runs):
+- `state/` — Native run-state marker and scheduler metadata
+- `res/rep00/` — Per-MD-block lambda parquet and checkpoint files
 - `analysis*/` — Bias parameters per iteration
-- `run*/` — MD trajectory data
-- `plots/` — Energy profile convergence plots
+- `plots/` — Dashboard and optional diagnostic plots

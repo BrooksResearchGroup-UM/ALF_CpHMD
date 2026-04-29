@@ -7,18 +7,14 @@
 #SBATCH --time=48:00:00
 #SBATCH --output=glu_water_%j.out
 
-# Activate conda environment
+set -eo pipefail
+
 source ~/software/mambaforge/etc/profile.d/conda.sh
 conda activate chm_12.9
 
 cd "$SLURM_SUBMIT_DIR"
 
-# Step 1: Solvate + patch (serial, no GPU needed for setup)
-# python run.py solvate
-# python run.py patch
+# Optional setup refresh if prep/ is missing:
+# python run.py setup
 
-# Step 2: Run ALF (requires GPU)
-python run.py alf
-
-# Or run everything in one go:
-# python run.py all
+bash ../_run_native_alf.sh cphmd_config.yaml

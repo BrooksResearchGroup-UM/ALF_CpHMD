@@ -1,17 +1,13 @@
 #!/usr/bin/env python3
-"""Run CpHMD workflow from YAML config."""
-import os
+"""Run local setup steps for this example."""
 import sys
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
+EXAMPLES_DIR = Path(__file__).resolve().parents[1]
+if str(EXAMPLES_DIR) not in sys.path:
+    sys.path.insert(0, str(EXAMPLES_DIR))
 
-from cphmd.config import run_workflow
+from _setup_workflow import main
 
 if __name__ == "__main__":
-    example_dir = Path(__file__).resolve().parent
-    os.chdir(example_dir)
-    step = sys.argv[1] if len(sys.argv) > 1 else "all"
-    run_workflow(example_dir / "cphmd_config.yaml", step)
+    main(Path(__file__).resolve().parent)

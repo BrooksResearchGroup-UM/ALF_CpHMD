@@ -15,14 +15,17 @@ two protonated forms (ASH1 on OD1, ASH2 on OD2).
 ## Quick Start
 
 ```bash
-# Run all steps sequentially (build → solvate → patch → alf)
-python run.py all
+# Optional setup refresh if prep/ is missing
+python run.py setup
 
-# Or run steps individually
+# Or run setup steps individually
 python run.py build     # Build ASP pentapeptide structure
 python run.py solvate   # Solvate in octahedral water box
 python run.py patch     # Apply titratable patches (ASH1, ASH2)
-python run.py alf       # Run ALF simulation (requires GPU)
+
+# Native ALF run
+cphmd init -c cphmd_config.yaml
+mpirun -np 1 cphmd run -c cphmd_config.yaml
 ```
 
 ## Configuration
@@ -49,5 +52,6 @@ sbatch submit.sh
 After convergence (~50-100 runs):
 - `pdb/asp.pdb` — Built structure
 - `prep/` — Patched system files
+- `state/` — Native run-state marker and scheduler metadata
+- `res/rep00/` — Per-MD-block lambda parquet and checkpoint files
 - `analysis*/` — Bias parameters per iteration
-- `run*/` — MD trajectory data

@@ -6,20 +6,26 @@ analysis method that combines WHAM and LMALF approaches.
 ## Usage
 
 ```bash
-# Solvate (uses PDB from ../00_glu_water/pdb/)
+# Optional setup refresh if prep/ is missing
+python run.py setup
+
+# Or run setup steps individually
 python run.py solvate
 python run.py patch
 
-# Run ALF with hybrid analysis
-python run.py alf         # Interactive
-sbatch submit.sh          # SLURM batch
+# Native ALF run with hybrid analysis
+cphmd init -c cphmd_config.yaml
+mpirun -np 1 cphmd run -c cphmd_config.yaml
+
+# Slurm batch
+sbatch submit.sh
 ```
 
-## CLI Equivalent
+## Native CLI
 
 ```bash
 cphmd init -c cphmd_config.yaml
-mpirun -np <nreps> cphmd run -c cphmd_config.yaml
+mpirun -np 1 cphmd run -c cphmd_config.yaml
 ```
 
 Set `analysis_method: hybrid` and any hybrid-analysis options in `cphmd_config.yaml`.

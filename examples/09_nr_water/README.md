@@ -34,16 +34,19 @@ by deleting the H36 proton from the N2 ring nitrogen.
 ## Usage
 
 ```bash
-# Setup (CPU, no GPU needed)
+# Optional setup refresh if prep/ is missing
+python run.py setup
+
+# Or run setup steps individually
 python run.py solvate
 python run.py patch
 
-# ALF simulation (requires GPU)
-python run.py alf         # Interactive
-sbatch submit.sh          # SLURM batch
+# Native ALF run
+cphmd init -c cphmd_config.yaml
+mpirun -np 1 cphmd run -c cphmd_config.yaml
 
-# Or run everything
-python run.py all
+# Slurm batch
+sbatch submit.sh
 ```
 
 ## Key Points
@@ -52,3 +55,5 @@ python run.py all
 - The `ligand_patches` section in `cphmd_config.yaml` defines the titratable site
 - `extra_files` must include ligand RTF/PRM/STR in solvation, patching, and ALF sections
 - `selected_residues: []` skips standard amino acid patching (ligand only)
+- Runtime files are written in this example folder (`prep/`, `state/`, `res/`);
+  no separate `solvated/` run folder is used.

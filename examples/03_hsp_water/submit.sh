@@ -9,11 +9,14 @@
 #SBATCH --export=NONE
 #SBATCH --output=hsp_water_%j.out
 
-# Activate conda environment
+set -eo pipefail
+
 source ~/software/mambaforge/etc/profile.d/conda.sh
 conda activate chm_12.9
 
 cd "$SLURM_SUBMIT_DIR"
 
-# Run full workflow: build → solvate → patch → alf
-"$CONDA_PREFIX/bin/python" run.py all
+# Optional setup refresh if prep/ is missing:
+# python run.py setup
+
+bash ../_run_native_alf.sh cphmd_config.yaml

@@ -8,9 +8,14 @@
 #SBATCH --time=24:00:00
 #SBATCH --output=glu_hybrid_%j.out
 
+set -eo pipefail
+
 source ~/software/mambaforge/etc/profile.d/conda.sh
 conda activate chm_12.9
 
 cd "$SLURM_SUBMIT_DIR"
 
-python run.py alf
+# Optional setup refresh if prep/ is missing:
+# python run.py setup
+
+bash ../_run_native_alf.sh cphmd_config.yaml

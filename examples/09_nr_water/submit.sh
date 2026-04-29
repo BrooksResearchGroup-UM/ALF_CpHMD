@@ -7,10 +7,14 @@
 #SBATCH --time=72:00:00
 #SBATCH --output=nr_alf_%j.out
 
+set -eo pipefail
+
 source ~/software/mambaforge/etc/profile.d/conda.sh
 conda activate chm_12.9
 
 cd "$SLURM_SUBMIT_DIR"
 
-# Run ALF (solvation + patching already done)
-python run.py alf
+# Optional setup refresh if prep/ is missing:
+# python run.py setup
+
+bash ../_run_native_alf.sh cphmd_config.yaml

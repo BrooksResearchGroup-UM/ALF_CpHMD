@@ -15,7 +15,6 @@ solvation:
 patch:
   input_folder: .
   output_folder: prep
-  structure_file: solvated
   hmr: true
   selected_residues: []  # No standard amino acids — ligand only
   extra_files:

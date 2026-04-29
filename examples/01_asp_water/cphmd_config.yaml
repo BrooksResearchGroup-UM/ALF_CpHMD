@@ -3,7 +3,7 @@ master_seed: 20260418
 #
 # Full workflow including build step.
 # No pre-built PDB — the build step creates ALA-ALA-ASP-ALA-ALA pentapeptide.
-# Steps: build → solvate → patch → alf
+# Setup steps: build → solvate → patch. Launch ALF with cphmd init/run.
 
 build:
   residue: ASP
