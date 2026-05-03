@@ -128,6 +128,16 @@ class RunContext:
     def checkpoint_path(self) -> Path:
         return self.rank_dir / "checkpoint.json"
 
+    @property
+    def restart_path(self) -> Path:
+        return self.rank_dir / "checkpoint.restart"
+
+    def restart_path_for_segment(self, segment_idx: int) -> Path:
+        return self.rank_dir / f"checkpoint_segment_{int(segment_idx):06d}.restart"
+
+    def coordinate_path_for_segment(self, segment_idx: int) -> Path:
+        return self.rank_dir / f"checkpoint_segment_{int(segment_idx):06d}.crd"
+
     def segment_path(self, segment_idx: int) -> Path:
         return self.rank_dir / f"segment_{segment_idx:06d}.parquet"
 

@@ -80,12 +80,13 @@ def run_init(
 
 
 def _maybe_run_setup_pipeline(cfg: NativeRuntimeConfig, *, reinit_build: bool = False) -> None:
-    alf_info = cfg.input_folder / "prep" / "alf_info.py"
-    if cfg.raw.get("solvation") and (reinit_build or not alf_info.exists()):
+    prep_dir = cfg.input_folder / "prep"
+    prep_ready = (prep_dir / "patches.dat").exists() or (prep_dir / "alf_info.py").exists()
+    if cfg.raw.get("solvation") and (reinit_build or not prep_ready):
         from cphmd.config.loader import _run_solvate
 
         _run_solvate(cfg.config_path)
-    if cfg.raw.get("patch") and (reinit_build or not alf_info.exists()):
+    if cfg.raw.get("patch") and (reinit_build or not prep_ready):
         from cphmd.config.loader import _run_patch
 
         _run_patch(cfg.config_path)

@@ -100,3 +100,12 @@ class Archiver:
             metadata,
             precision=self.ctx.lambda_precision,
         )
+
+    def prune_from_segment(self, segment_idx: int) -> None:
+        for path in self.ctx.rank_dir.glob("segment_*.parquet"):
+            try:
+                current = int(path.stem.rsplit("_", 1)[1])
+            except (IndexError, ValueError):
+                continue
+            if current >= int(segment_idx):
+                path.unlink(missing_ok=True)

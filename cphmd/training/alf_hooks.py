@@ -111,6 +111,15 @@ class ALFHooks:
             return self._segments_since_last_cycle >= repeats
         return state.segment_idx % repeats == 0
 
+    def will_trigger_cycle_after_next_segment(self, state: LoopState) -> bool:
+        next_state = state.advance_segment()
+        if next_state.segment_idx <= 0:
+            return False
+        repeats = self.config.repeats_for_phase(next_state.phase)
+        if self._segments_since_last_cycle > 0:
+            return self._segments_since_last_cycle + 1 >= repeats
+        return next_state.segment_idx % repeats == 0
+
     def run_cycle(self, state: LoopState) -> BiasSnapshot:
         snapshot = self.cycle_runner.run_cycle(state=state, cache=self.cache)
         self._segments_since_last_cycle = 0

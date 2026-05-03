@@ -5,6 +5,7 @@ import logging
 import os
 import time
 from collections.abc import Callable, Iterable
+from pathlib import Path
 from types import ModuleType
 from typing import Any
 
@@ -46,10 +47,12 @@ class SimulationLoop:
         self.hooks = hooks
         modules = tuple(native_modules) if native_modules is not None else default_native_modules()
         self._native_modules = modules
+        self._use_charmm_restarts = _use_charmm_restarts(ctx, hooks)
         self.checkpoint = checkpoint or CheckpointManager(
             ctx,
             native_modules=modules,
             require_charmm_restart=True,
+            force_iteration_restart=not self._use_charmm_restarts,
         )
         self.archiver = archiver or Archiver(ctx)
         self.rex_driver = rex_driver if rex_driver is not None else self._build_rex_driver()
@@ -81,22 +84,45 @@ class SimulationLoop:
     def run(self) -> LoopState:
         state, rng_state = self.checkpoint.resume_or_fresh()
         resumed = state.segment_idx > 0 or state.run_idx > 0 or state.cycle_idx > 0
+        fresh_start_resume = self._resume_requires_fresh_start()
         if self.ctx.rex_enabled and state.replica_label is None:
             state = state.with_initial_label(self.ctx.replica_label)
         on_system_loaded = getattr(self.hooks, "on_system_loaded", None)
         if on_system_loaded is not None:
             on_system_loaded(self.ctx, state)
         if resumed:
-            self._restore_training_state(state)
-        if not resumed:
-            self._prepare_startup(state)
+            self._restore_training_state(
+                state,
+                restore_segment_cache=not fresh_start_resume,
+            )
+        if resumed and fresh_start_resume:
+            self._prune_outputs_from_segment(state.segment_idx)
+        if not resumed or fresh_start_resume:
+            loaded_coordinate_checkpoint = (
+                self._load_resume_coordinate_checkpoint(state) if fresh_start_resume else False
+            )
+            self._prepare_startup(
+                state,
+                force_minimization=fresh_start_resume and not loaded_coordinate_checkpoint,
+            )
         else:
+            self._restore_native_dynamics_constraints(state)
             self._initialize_native_dynamics()
             self._preflight_native_dynamics()
         on_native_ready = getattr(self.hooks, "on_native_ready", None)
         if on_native_ready is not None:
             on_native_ready(self.ctx, state)
         stop_token = self._install_signal_handlers()
+        restart_consumed = False
+        fresh_start_consumed = False
+        restart_checkpoint_segment = (
+            state.segment_idx if resumed and self._use_charmm_restarts else None
+        )
+        restart_checkpoint_path = (
+            self._resume_charmm_restart_path()
+            if resumed and self._use_charmm_restarts
+            else None
+        )
         try:
             while not self.hooks.is_done(state):
                 wrote_checkpoint = False
@@ -112,6 +138,18 @@ class SimulationLoop:
                         state = next_state
                 segment_started = self._time_fn()
                 segment_seed = state.integrator_seed
+                restart_read_path = None
+                if (
+                    self._use_charmm_restarts
+                    and resumed
+                    and not fresh_start_resume
+                    and not restart_consumed
+                ):
+                    restart_read_path = restart_checkpoint_path
+                restart_write_path = None
+                if self._use_charmm_restarts and self._should_write_restart_after_segment(state):
+                    restart_write_path = self.ctx.restart_path_for_segment(state.segment_idx + 1)
+                restart_written_segment = state.segment_idx + 1 if restart_write_path else None
                 lambda_matrix, bias_matrix = self._run_segment(
                     nsteps=self.ctx.nsteps_per_segment,
                     nsavl=self.ctx.nsavl,
@@ -120,11 +158,20 @@ class SimulationLoop:
                     temperature=self.ctx.temperature,
                     gpu_id=self.ctx.gpu_id,
                     dynamics_backend=self.ctx.dynamics_backend,
-                    start=(not resumed and state.segment_idx == 0),
+                    start=(
+                        (not resumed and state.segment_idx == 0)
+                        or (fresh_start_resume and not fresh_start_consumed)
+                    ),
                     lambda_headers=self.ctx.lambda_headers,
                     iseed=segment_seed,
                     lambda_parquet_path=self.ctx.native_lambda_scratch_path(state.segment_idx),
+                    restart_read_path=restart_read_path,
+                    restart_write_path=restart_write_path,
                 )
+                if restart_read_path is not None:
+                    restart_consumed = True
+                if fresh_start_resume and not fresh_start_consumed:
+                    fresh_start_consumed = True
                 if segment_seed is not None:
                     state = state.with_integrator_seed(None)
                 self._walltime_guard.record_segment_duration(
@@ -137,7 +184,15 @@ class SimulationLoop:
                 if next_state is not None:
                     state = next_state
                 state = state.advance_segment()
-                if self.rex_driver is not None and self.rex_driver.should_attempt(state):
+                if restart_written_segment == state.segment_idx:
+                    restart_checkpoint_segment = state.segment_idx
+                    restart_checkpoint_path = restart_write_path
+                cycle_due = self._should_trigger_cycle(state)
+                if (
+                    self.rex_driver is not None
+                    and not cycle_due
+                    and self.rex_driver.should_attempt(state)
+                ):
                     previous_accepted = state.rex_accepted
                     rex_started = self._time_fn()
                     rex_result = self.rex_driver.attempt(state)
@@ -156,7 +211,7 @@ class SimulationLoop:
                             accepted=sum(state.rex_accepted) > sum(previous_accepted),
                         )
                         self._record_duration(self._rex_hook_seconds, rex_hook_started)
-                if self._should_trigger_cycle(state):
+                if cycle_due:
                     cycle_started = self._time_fn()
                     snapshot = self.hooks.run_cycle(state)
                     self._walltime_guard.record_cycle_duration(
@@ -168,6 +223,20 @@ class SimulationLoop:
                         adjusted_state = after_cycle_result(next_state, snapshot)
                         if adjusted_state is not None:
                             next_state = adjusted_state
+                    if (
+                        not self._use_charmm_restarts
+                        and getattr(self.hooks, "uses_training_sidecars", False)
+                    ):
+                        self._write_coordinate_checkpoint(next_state)
+                    charmm_restart = (
+                        self._required_charmm_restart_metadata(
+                            next_state,
+                            restart_checkpoint_segment,
+                            restart_checkpoint_path,
+                        )
+                        if self._use_charmm_restarts
+                        else None
+                    )
                     self.checkpoint.write_training_sidecars(
                         cache=getattr(self.hooks, "cache", None),
                         bias_snapshot=snapshot,
@@ -176,7 +245,12 @@ class SimulationLoop:
                     state = next_state
                     checkpoint_started = self._time_fn()
                     rng_state = _with_production_rng_state(rng_state, state)
-                    self.checkpoint.write(state, rng_state=rng_state)
+                    self.checkpoint.write(
+                        state,
+                        rng_state=rng_state,
+                        charmm_restart=charmm_restart,
+                    )
+                    self.checkpoint.prune_charmm_restarts(charmm_restart)
                     self._write_status_summary(state)
                     self._walltime_guard.record_checkpoint_duration(
                         self._record_duration(self._checkpoint_seconds, checkpoint_started)
@@ -184,19 +258,55 @@ class SimulationLoop:
                     wrote_checkpoint = True
                 if (
                     not wrote_checkpoint
+                    and not getattr(self.hooks, "uses_training_sidecars", False)
                     and state.segment_idx % self.ctx.checkpoint_every_segments == 0
                 ):
                     checkpoint_started = self._time_fn()
                     rng_state = _with_production_rng_state(rng_state, state)
-                    self.checkpoint.write(state, rng_state=rng_state)
+                    charmm_restart = (
+                        self._required_charmm_restart_metadata(
+                            state,
+                            restart_checkpoint_segment,
+                            restart_checkpoint_path,
+                        )
+                        if self._use_charmm_restarts
+                        else None
+                    )
+                    self.checkpoint.write(
+                        state,
+                        rng_state=rng_state,
+                        charmm_restart=charmm_restart,
+                    )
+                    self.checkpoint.prune_charmm_restarts(
+                        self._optional_charmm_restart_metadata(
+                            state,
+                            restart_checkpoint_segment,
+                            restart_checkpoint_path,
+                        )
+                    )
                     self._write_status_summary(state)
                     self._walltime_guard.record_checkpoint_duration(
                         self._record_duration(self._checkpoint_seconds, checkpoint_started)
                     )
         finally:
             self._restore_signal_handlers(stop_token)
-        self.checkpoint.write_final(state, rng_state=_with_production_rng_state(rng_state, state))
         final_run_state = "stopped" if state.stop_requested else "completed"
+        final_restart = (
+            self._optional_charmm_restart_metadata(
+                state,
+                restart_checkpoint_segment,
+                restart_checkpoint_path,
+            )
+            if self._use_charmm_restarts
+            else None
+        )
+        if final_restart is not None or not _state_needs_charmm_restart(state):
+            self.checkpoint.write_final(
+                state,
+                rng_state=_with_production_rng_state(rng_state, state),
+                charmm_restart=final_restart,
+            )
+            self.checkpoint.prune_charmm_restarts(final_restart)
         self._write_status_summary(state, run_state=final_run_state)
         self._write_timing_summary(state, run_state=final_run_state)
         return state
@@ -240,31 +350,48 @@ class SimulationLoop:
             if preflight is not None:
                 preflight(gpu=self.ctx.dynamics_backend is DynamicsBackend.DOMDEC_GPU)
 
-    def _minimize_startup(self, state: LoopState) -> bool:
-        if self.ctx.startup_minimization_segments <= 0:
+    def _minimize_startup(self, state: LoopState, *, force: bool = False) -> bool:
+        if self.ctx.startup_minimization_segments <= 0 and not force:
             return False
         minimizer = self._native_minimizer()
         minimize = getattr(minimizer, "minimize_startup", None)
         if minimize is not None:
-            return bool(minimize(self.ctx, state, dynamics_backend=self.ctx.dynamics_backend))
+            return bool(
+                minimize(
+                    self.ctx,
+                    state,
+                    dynamics_backend=self.ctx.dynamics_backend,
+                    force=force,
+                )
+            )
         return False
 
-    def _prepare_startup(self, state: LoopState) -> None:
+    def _prepare_startup(
+        self,
+        state: LoopState,
+        *,
+        force_minimization: bool = False,
+    ) -> None:
         if self.ctx.dynamics_backend is DynamicsBackend.BLADE:
-            self._minimize_startup(state)
+            self._minimize_startup(state, force=force_minimization)
             self._initialize_native_dynamics()
             self._preflight_native_dynamics()
             return
-        self._minimize_startup(state)
+        self._minimize_startup(state, force=force_minimization)
         self._initialize_native_dynamics()
         self._preflight_native_dynamics()
 
-    def _restore_training_state(self, state: LoopState) -> None:
+    def _restore_training_state(
+        self,
+        state: LoopState,
+        *,
+        restore_segment_cache: bool = True,
+    ) -> None:
         cache = getattr(self.hooks, "cache", None)
         if cache is None and not getattr(self.hooks, "uses_training_sidecars", False):
             return
         cache_reader = getattr(self.checkpoint, "read_segment_cache", None)
-        if cache is not None and cache_reader is not None:
+        if restore_segment_cache and cache is not None and cache_reader is not None:
             restored_cache = cache_reader(max_segments=cache.max_segments, state=state)
             if restored_cache is not None:
                 self.hooks.cache = restored_cache
@@ -272,7 +399,7 @@ class SimulationLoop:
         bias_reader = getattr(self.checkpoint, "read_bias_snapshot", None)
         if bias_reader is None:
             return
-        snapshot = bias_reader(nsubs=self.ctx.nsubsites[1:], state=state)
+        snapshot = bias_reader(nsubs=_bias_nsubs_from_context(self.ctx), state=state)
         if snapshot is not None:
             self._bias_rebuilder().apply(snapshot)
 
@@ -286,10 +413,96 @@ class SimulationLoop:
         )
 
     def _cycle_would_fire_next_segment(self, state: LoopState) -> bool:
+        predictor = getattr(self.hooks, "will_trigger_cycle_after_next_segment", None)
+        if predictor is not None:
+            return bool(predictor(state))
         trigger = getattr(self.hooks, "should_trigger_cycle", None)
         if trigger is None:
             return False
         return bool(trigger(state.advance_segment()))
+
+    def _should_write_restart_after_segment(self, state: LoopState) -> bool:
+        if not self._use_charmm_restarts:
+            return False
+        if self.hooks.is_done(state.advance_segment()):
+            return True
+        if getattr(self.hooks, "uses_training_sidecars", False):
+            return self._cycle_would_fire_next_segment(state)
+        return (state.segment_idx + 1) % self.ctx.checkpoint_every_segments == 0
+
+    def _required_charmm_restart_metadata(
+        self,
+        state: LoopState,
+        restart_checkpoint_segment: int | None,
+        restart_checkpoint_path: Path | None,
+    ) -> dict[str, Any]:
+        metadata = self._optional_charmm_restart_metadata(
+            state,
+            restart_checkpoint_segment,
+            restart_checkpoint_path,
+        )
+        if metadata is None:
+            raise RuntimeError(
+                "refusing to write resumable checkpoint without matching CHARMM restart"
+            )
+        return metadata
+
+    def _optional_charmm_restart_metadata(
+        self,
+        state: LoopState,
+        restart_checkpoint_segment: int | None,
+        restart_checkpoint_path: Path | None,
+    ) -> dict[str, Any] | None:
+        if not _state_needs_charmm_restart(state):
+            return None
+        if restart_checkpoint_segment != state.segment_idx:
+            return None
+        if restart_checkpoint_path is None:
+            return None
+        return self.checkpoint.charmm_restart_metadata(state, restart_checkpoint_path)
+
+    def _resume_charmm_restart_path(self) -> Path | None:
+        getter = getattr(self.checkpoint, "resume_charmm_restart_path", None)
+        if getter is not None:
+            return getter()
+        return self.ctx.restart_path
+
+    def _resume_coordinate_checkpoint_path(self) -> Path | None:
+        getter = getattr(self.checkpoint, "resume_coordinate_checkpoint_path", None)
+        if getter is not None:
+            return getter()
+        return None
+
+    def _resume_requires_fresh_start(self) -> bool:
+        getter = getattr(self.checkpoint, "resume_requires_fresh_start", None)
+        if getter is None:
+            return False
+        return bool(getter())
+
+    def _load_resume_coordinate_checkpoint(self, state: LoopState) -> bool:
+        path = self._resume_coordinate_checkpoint_path()
+        if path is None:
+            return False
+        loader = getattr(self._native_minimizer(), "load_coordinate_checkpoint", None)
+        if loader is not None:
+            return bool(loader(self.ctx, state, path))
+        return False
+
+    def _write_coordinate_checkpoint(self, state: LoopState) -> None:
+        writer = getattr(self._native_minimizer(), "write_coordinate_checkpoint", None)
+        if writer is None:
+            return
+        writer(self.ctx, state, self.ctx.coordinate_path_for_segment(state.segment_idx))
+
+    def _restore_native_dynamics_constraints(self, state: LoopState) -> None:
+        restorer = getattr(self._native_minimizer(), "restore_dynamics_constraints", None)
+        if restorer is not None:
+            restorer(self.ctx, state)
+
+    def _prune_outputs_from_segment(self, segment_idx: int) -> None:
+        pruner = getattr(self.archiver, "prune_from_segment", None)
+        if pruner is not None:
+            pruner(segment_idx)
 
     def _record_duration(self, bucket: list[float], start: float) -> float:
         duration = max(0.0, self._time_fn() - start)
@@ -410,6 +623,21 @@ def _with_production_rng_state(rng_state: dict[str, Any], state: LoopState) -> d
         "integrator_seed": state.integrator_seed,
     }
     return updated
+
+
+def _state_needs_charmm_restart(state: LoopState) -> bool:
+    return state.segment_idx > 0 or state.run_idx > 0 or state.cycle_idx > 0
+
+
+def _use_charmm_restarts(ctx: RunContext, hooks: LoopHooks) -> bool:
+    return True
+
+
+def _bias_nsubs_from_context(ctx: RunContext) -> tuple[int, ...]:
+    return tuple(
+        sum(1 for value in ctx.nsubsites[1:] if value == site)
+        for site in range(1, ctx.nsites + 1)
+    )
 
 
 def _debug_timings_enabled() -> bool:

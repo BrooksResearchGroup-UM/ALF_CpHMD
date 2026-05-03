@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 from cphmd.native.errors import SystemLoadError, wrap_exception
+from cphmd.simulation.backends import DynamicsBackend
 from cphmd.simulation.context import LoopState, RunContext
 
 _STARTUP_MINIMIZATION_RUNS = 5
@@ -19,17 +21,18 @@ def minimize_startup(
     state: LoopState,
     *,
     dynamics_backend: DynamicsBackend | str | None = None,
+    force: bool = False,
 ) -> bool:
     """Run the legacy-compatible early CPU SD minimization before native dynamics."""
 
     run_limit = int(getattr(ctx, "startup_minimization_segments", _STARTUP_MINIMIZATION_RUNS))
-    if run_limit <= 0 or state.run_idx >= run_limit:
+    if not force and (run_limit <= 0 or state.run_idx >= run_limit):
         return False
 
     from cphmd.native import system
 
     min_crd = ctx.run_dir / "prep" / "system_min.crd"
-    if min_crd.exists() and _matches_loaded_topology(min_crd):
+    if not force and min_crd.exists() and _matches_loaded_topology(min_crd):
         system.read_coor(min_crd)
         _shake_on(system)
         return False
@@ -48,6 +51,44 @@ def minimize_startup(
     except Exception as exc:
         raise wrap_exception(exc, SystemLoadError, "running startup minimization") from exc
     return False
+
+
+def load_coordinate_checkpoint(ctx: RunContext, state: LoopState, path: str | Path) -> bool:
+    """Load a per-rank coordinate checkpoint before fresh-start native dynamics."""
+
+    from cphmd.native import system
+
+    try:
+        system.read_coor(path)
+        _shake_on(system)
+    except Exception as exc:
+        raise wrap_exception(exc, SystemLoadError, f"loading coordinate checkpoint {path}") from exc
+    return True
+
+
+def restore_dynamics_constraints(ctx: RunContext, state: LoopState) -> None:
+    """Restore runtime constraints after loading a binary dynamics restart."""
+
+    from cphmd.native import system
+
+    try:
+        _shake_on(system)
+    except Exception as exc:
+        raise wrap_exception(exc, SystemLoadError, "restoring SHAKE constraints") from exc
+
+
+def write_coordinate_checkpoint(ctx: RunContext, state: LoopState, path: str | Path) -> Path:
+    """Write a per-rank coordinate checkpoint at an ALF cycle boundary."""
+
+    from cphmd.native import system
+
+    output = Path(path)
+    try:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        system.write_coor(output)
+    except Exception as exc:
+        raise wrap_exception(exc, SystemLoadError, f"writing coordinate checkpoint {path}") from exc
+    return output
 
 
 def _run_cpu_startup_minimization(system) -> None:

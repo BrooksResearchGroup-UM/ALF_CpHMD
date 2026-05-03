@@ -9,6 +9,7 @@ import numpy as np
 
 from cphmd.native.errors import DynamicsRunError, wrap_exception
 from cphmd.simulation.backends import DomdecConfig, DynamicsBackend, parse_dynamics_backend
+from cphmd.utils.charmm_path import qpath
 
 _TABLE_METADATA_COLUMNS = frozenset({"STEP", "TIME"})
 
@@ -32,50 +33,68 @@ def run_segment(
     lambda_headers: tuple[str, ...] | list[str] | None = None,
     iseed: int | None = None,
     lambda_parquet_path: str | Path | None = None,
+    restart_read_path: str | Path | None = None,
+    restart_write_path: str | Path | None = None,
 ) -> SegmentResult:
     try:
         import pycharmm
+        from pycharmm.charmm_file import CharmmFile
 
         backend = _resolve_backend(dynamics_backend)
         native_lambda_parquet = _native_lambda_parquet_path(lambda_parquet_path)
-        script_kwargs = dict(
-            start=start,
-            restart=False,
-            timestep=timestep,
-            nstep=nsteps,
-            nsavl=nsavl,
-            nsavc=nsavc,
-            nprint=nsavl,
-            iprfrq=nsavl,
-            firstt=temperature,
-            finalt=temperature,
-            tstruc=temperature,
-            tbath=temperature,
-            ichecw=0,
-            ihtfrq=0,
-            ieqfrq=0,
-            iasors=1,
-            iasvel=1,
-            iscvel=0,
-            inbfrq=0,
-            ilbfrq=0,
-            imgfrq=0,
-            ntrfrq=_ntrfrq_for_backend(backend, nsavl=nsavl),
-            echeck=-1,
-            iuncrd=-1,
-            iunwri=-1,
-            lambdata=True,
-        )
-        if backend is DynamicsBackend.BLADE:
-            script_kwargs["blade"] = True
-        if iseed is not None:
-            _set_rng_seeds(pycharmm, int(iseed))
-        native_lambda_parquet.parent.mkdir(parents=True, exist_ok=True)
-        _unlink_if_present(native_lambda_parquet)
+        restart_reader = None
+        restart_writer = None
+        restart_tmp_path = None
         try:
+            restart_reader = _open_restart_reader(CharmmFile, restart_read_path)
+            restart_writer, restart_tmp_path, restart_final_path = _open_restart_writer(
+                CharmmFile,
+                restart_write_path,
+            )
+            script_kwargs = dict(
+                start=start and restart_reader is None,
+                restart=restart_reader is not None,
+                timestep=timestep,
+                nstep=nsteps,
+                nsavl=nsavl,
+                nsavc=nsavc,
+                nprint=nsavl,
+                iprfrq=nsavl,
+                firstt=temperature,
+                finalt=temperature,
+                tstruc=temperature,
+                tbath=temperature,
+                ichecw=0,
+                ihtfrq=0,
+                ieqfrq=0,
+                iasors=1,
+                iasvel=1,
+                iscvel=0,
+                inbfrq=0,
+                ilbfrq=0,
+                imgfrq=0,
+                ntrfrq=_ntrfrq_for_backend(backend, nsavl=nsavl),
+                echeck=-1,
+                iuncrd=-1,
+                iunrea=restart_reader.file_unit if restart_reader is not None else -1,
+                iunwri=restart_writer.file_unit if restart_writer is not None else -1,
+                lambdata=True,
+            )
+            if restart_writer is not None:
+                script_kwargs["isvfrq"] = nsteps
+            if backend is DynamicsBackend.BLADE:
+                script_kwargs["blade"] = True
+            if iseed is not None:
+                _set_rng_seeds(pycharmm, int(iseed))
+            native_lambda_parquet.parent.mkdir(parents=True, exist_ok=True)
+            _unlink_if_present(native_lambda_parquet)
             script_kwargs["lambda_parquet"] = native_lambda_parquet
             script = pycharmm.DynamicsScript(**script_kwargs)
             script.run()
+            if restart_writer is not None:
+                restart_writer.close()
+                restart_writer = None
+                os.replace(restart_tmp_path, restart_final_path)
             lambda_matrix = _lambda_matrix_from_parquet(
                 native_lambda_parquet,
                 expected_columns=len(lambda_headers) if lambda_headers is not None else None,
@@ -89,6 +108,12 @@ def run_segment(
                 ),
             )
         finally:
+            if restart_reader is not None:
+                restart_reader.close()
+            if restart_writer is not None:
+                restart_writer.close()
+            if restart_tmp_path is not None:
+                _unlink_if_present(restart_tmp_path)
             _unlink_if_present(native_lambda_parquet)
     except DynamicsRunError:
         raise
@@ -162,6 +187,36 @@ def _unlink_if_present(path: Path) -> None:
         path.unlink()
     except FileNotFoundError:
         return
+
+
+def _open_restart_reader(charmm_file_cls, path: str | Path | None):
+    if path is None:
+        return None
+    restart_path = Path(path)
+    if not restart_path.exists():
+        raise DynamicsRunError(f"restart file does not exist: {restart_path}")
+    return charmm_file_cls(
+        file_name=qpath(restart_path),
+        file_unit=-1,
+        read_only=True,
+        formatted=True,
+    )
+
+
+def _open_restart_writer(charmm_file_cls, path: str | Path | None):
+    if path is None:
+        return None, None, None
+    final_path = Path(path)
+    final_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = final_path.with_name(f"{final_path.name}.tmp.{os.getpid()}")
+    _unlink_if_present(tmp_path)
+    writer = charmm_file_cls(
+        file_name=qpath(tmp_path),
+        file_unit=-1,
+        read_only=False,
+        formatted=True,
+    )
+    return writer, tmp_path, final_path
 
 
 def enable_fast_routines() -> None:
